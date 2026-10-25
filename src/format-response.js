@@ -297,21 +297,38 @@ export function formatSingleOutcome(intentOrAction, opResult, details = {}) {
       return `Deleted role @${name}.`;
     }
 
+    case 'edit_role': {
+      const roleSnowflake = extractSnowflake(details.targetRoleId || details.resourceId) || extractSnowflake(details.targetRole);
+      const name = (details.name || details.targetRole || details.targetRef || 'role').replace(/^@/, '');
+      if (opResult.details) return cleanText(opResult.details);
+      if (roleSnowflake) return `Updated role <@&${roleSnowflake}>.`;
+      return `Updated role @${name}.`;
+    }
+
     case 'change_nickname': {
       const snowflake = extractSnowflake(details.targetMemberId || details.resourceId) || extractSnowflake(details.targetMember);
       const member = snowflake ? `<@${snowflake}>` : `@${String(details.targetMember || 'member').replace(/^@/, '')}`;
-      const nick = details.nickname || details.args?.nickname || '';
+      const nick = details.nickname !== undefined ? details.nickname : details.args?.nickname;
+      if (!nick) {
+        return `Removed server nickname for ${member}.`;
+      }
       return `Changed nickname for ${member} to "${nick}".`;
     }
 
     case 'purge_messages': {
-      const count = details.count || details.args?.count || 5;
+      const count = opResult.deletedCount !== undefined ? opResult.deletedCount : (details.count || details.args?.count || 5);
       const chSnowflake = extractSnowflake(details.targetChannelId || details.resourceId) || extractSnowflake(details.targetRef);
-      if (chSnowflake) {
-        return `Purged ${count} messages from <#${chSnowflake}>.`;
-      }
-      const ch = (details.targetRef || 'general').replace(/^#/, '');
-      return `Purged ${count} messages from #${ch}.`;
+      const targetStr = chSnowflake ? `<#${chSnowflake}>` : `#${(details.targetRef || 'channel').replace(/^#/, '')}`;
+      const skippedNote = opResult.skippedCount > 0 ? ` (${opResult.skippedCount} older than 14 days skipped)` : '';
+      const authorNote = details.author ? ` from @${String(details.author).replace(/^@/, '')}` : '';
+      return `Purged ${count} message${count === 1 ? '' : 's'}${authorNote} from ${targetStr}${skippedNote}.`;
+    }
+
+    case 'search_messages': {
+      const count = opResult.matchCount !== undefined ? opResult.matchCount : (details.matchCount || 0);
+      const chSnowflake = extractSnowflake(details.targetChannelId || details.resourceId) || extractSnowflake(details.targetRef);
+      const targetStr = chSnowflake ? `<#${chSnowflake}>` : `#${(details.targetRef || 'channel').replace(/^#/, '')}`;
+      return `Found ${count} message${count === 1 ? '' : 's'} matching search criteria in ${targetStr}.`;
     }
 
     case 'setup_ticket_system': {

@@ -3,6 +3,7 @@ import { checkRoleHierarchy, auditServerPermissions } from './permissions.js';
 import { ActionLedger } from './recovery.js';
 import { TicketManager } from './tickets.js';
 import { MusicService } from './music-service.js';
+import { resolveColor } from './color-utils.js';
 import { Logger } from './logger.js';
 
 const logger = new Logger('Operations');
@@ -348,6 +349,141 @@ export class Operations {
   }
 
   /**
+   * Edits a role's name, color, hoist, or permissions with per-property verification.
+   */
+  static async editRole(guild, targetRoleRef, updates = {}, context = {}) {
+    let role;
+    if (context.resolveTarget) {
+      role = await context.resolveTarget(targetRoleRef, 'role');
+    }
+    if (!role && guild.roles?.cache) {
+      const cleanRef = String(targetRoleRef).replace(/^@/, '').toLowerCase();
+      role = guild.roles.cache.find(r => r.id === targetRoleRef || r.name.toLowerCase() === cleanRef);
+    }
+    if (!role) {
+      return { success: false, error: `Role "${targetRoleRef}" not found in server.`, action: 'edit_role' };
+    }
+
+    const hierarchy = checkRoleHierarchy(guild, { action: 'edit_role' }, role);
+    if (!hierarchy.valid) {
+      return { success: false, error: hierarchy.reason, action: 'edit_role' };
+    }
+
+    const patchData = {};
+    const requestedChanges = [];
+
+    if (updates.name !== undefined && updates.name !== role.name) {
+      patchData.name = updates.name;
+      requestedChanges.push(`name to "${updates.name}"`);
+    }
+
+    if (updates.color !== undefined) {
+      const resolvedColor = resolveColor(updates.color);
+      if (!resolvedColor) {
+        return {
+          success: false,
+          error: `Could not resolve role color "${updates.color}". Please specify a valid hex color code (e.g. #8B0000) or standard color name.`,
+          action: 'edit_role'
+        };
+      }
+      patchData.color = resolvedColor;
+      requestedChanges.push(`color to ${resolvedColor}`);
+    }
+
+    if (updates.hoist !== undefined && updates.hoist !== role.hoist) {
+      patchData.hoist = Boolean(updates.hoist);
+      requestedChanges.push(`display separately (hoist)`);
+    }
+
+    if (updates.mentionable !== undefined && updates.mentionable !== role.mentionable) {
+      patchData.mentionable = Boolean(updates.mentionable);
+      requestedChanges.push(`mentionable`);
+    }
+
+    if (updates.permissions !== undefined) {
+      patchData.permissions = updates.permissions;
+      requestedChanges.push(`permissions`);
+    }
+
+    if (Object.keys(patchData).length === 0) {
+      return {
+        success: true,
+        action: 'edit_role',
+        targetRoleId: role.id,
+        roleName: role.name,
+        details: `Role @${role.name} already has the requested configuration.`,
+        verified: true,
+        resourceId: role.id
+      };
+    }
+
+    const preState = {
+      name: role.name,
+      color: role.hexColor,
+      hoist: role.hoist,
+      mentionable: role.mentionable
+    };
+
+    const actorTag = context.invokingUser ? context.invokingUser.tag : 'administrator';
+    await role.edit(patchData, `Edited via /go agent by ${actorTag}`);
+
+    // Verify each property independently
+    const verifiedProps = [];
+    const failedProps = [];
+
+    if (patchData.name) {
+      if (role.name === patchData.name) verifiedProps.push(`name "${role.name}"`);
+      else failedProps.push('name');
+    }
+
+    if (patchData.color) {
+      if (role.hexColor?.toLowerCase() === patchData.color.toLowerCase()) {
+        verifiedProps.push(`color ${patchData.color}`);
+      } else {
+        failedProps.push('color');
+      }
+    }
+
+    if (patchData.hoist !== undefined) {
+      if (role.hoist === patchData.hoist) verifiedProps.push('display separately');
+      else failedProps.push('hoist');
+    }
+
+    const verified = failedProps.length === 0;
+
+    if (guild?.id && context?.executionId) {
+      ActionLedger.recordAction(guild.id, context.executionId, {
+        type: 'role_edit',
+        action: 'edit_role',
+        targetRoleId: role.id,
+        targetRoleName: role.name,
+        preState,
+        postState: {
+          name: role.name,
+          color: role.hexColor,
+          hoist: role.hoist
+        },
+        actor: context.invokingUser ? { id: context.invokingUser.id, tag: context.invokingUser.tag } : null,
+        reversibility: 'reversible'
+      });
+    }
+
+    return {
+      success: true,
+      action: 'edit_role',
+      targetRoleId: role.id,
+      roleName: role.name,
+      verified,
+      verifiedProps,
+      failedProps,
+      details: verified
+        ? `Role @${role.name} updated (${verifiedProps.join(', ')})`
+        : `Role @${role.name} partially updated: verified ${verifiedProps.join(', ')}, but failed ${failedProps.join(', ')}`,
+      resourceId: role.id
+    };
+  }
+
+  /**
    * Creates a channel.
    */
   static async createChannel(guild, options, context) {
@@ -488,18 +624,37 @@ export class Operations {
   }
 
   /**
-   * Changes nickname of a member.
+   * Changes or removes the nickname of a member with target resolution and verification.
    */
   static async changeNickname(guild, memberRef, nickname, context) {
-    const member = await context.resolveTarget(memberRef, 'member');
-    if (!member) {
-      return { success: false, error: `Member "${memberRef}" not found`, action: 'change_nickname' };
+    const ref = memberRef || 'me';
+    let member;
+    if (/^(me|my|myself|self|i)$/i.test(String(ref).trim())) {
+      member = context.invokingMember || (await context.resolveTarget?.(ref, 'member'));
+    } else {
+      member = await context.resolveTarget(ref, 'member');
     }
 
-    if (nickname && nickname.length > 32) {
+    if (member?.isAmbiguous) {
       return {
         success: false,
-        error: `Nickname length out of bounds: Discord nicknames cannot exceed 32 characters (received ${nickname.length} characters).`,
+        isAmbiguous: true,
+        error: member.clarificationQuestion,
+        action: 'change_nickname'
+      };
+    }
+
+    if (!member) {
+      return { success: false, error: `Member "${ref}" not found in this server.`, action: 'change_nickname' };
+    }
+
+    const isRemoval = nickname === null || nickname === undefined || /^(?:none|reset|remove|clear)$/i.test(String(nickname).trim());
+    const targetNickname = isRemoval ? null : String(nickname).trim();
+
+    if (targetNickname && targetNickname.length > 32) {
+      return {
+        success: false,
+        error: `Nickname length out of bounds: Discord nicknames cannot exceed 32 characters (received ${targetNickname.length} characters).`,
         action: 'change_nickname'
       };
     }
@@ -509,18 +664,28 @@ export class Operations {
       return { success: false, error: hierarchy.reason, action: 'change_nickname' };
     }
 
-    if (member.nickname === nickname) {
+    const currentNickname = member.nickname || null;
+    if (currentNickname === targetNickname) {
       return {
         success: true,
         action: 'change_nickname',
-        details: `Nickname for ${member.user.tag} is already "${nickname}"`,
+        targetMemberId: member.id,
+        nickname: targetNickname,
+        details: isRemoval
+          ? `Server nickname for ${member.user?.tag || member.displayName} is already cleared.`
+          : `Nickname for ${member.user?.tag || member.displayName} is already "${targetNickname}".`,
         verified: true,
         resourceId: member.id
       };
     }
 
     const oldNickname = member.nickname || '';
-    await member.setNickname(nickname, `Changed via Honey Bot by ${context.invokingUser.tag}`);
+    const actorTag = context.invokingUser ? context.invokingUser.tag : 'administrator';
+    await member.setNickname(targetNickname, `Changed via Honey Bot by ${actorTag}`);
+
+    // Verify resulting member state
+    const updatedNickname = member.nickname ?? null;
+    const verified = updatedNickname === targetNickname;
 
     if (guild?.id && context?.executionId) {
       ActionLedger.recordAction(guild.id, context.executionId, {
@@ -529,19 +694,25 @@ export class Operations {
         targetMemberId: member.id,
         targetMemberTag: member.user?.tag,
         oldNickname,
-        newNickname: nickname,
+        newNickname: targetNickname,
         preState: { nickname: oldNickname },
-        postState: { nickname },
+        postState: { nickname: targetNickname },
         actor: context.invokingUser ? { id: context.invokingUser.id, tag: context.invokingUser.tag } : null,
         reversibility: 'reversible'
       });
     }
 
+    const details = isRemoval
+      ? `Removed server nickname for ${member.user?.tag || member.displayName} (reverted to username).`
+      : `Changed nickname for ${member.user?.tag || member.displayName} to "${targetNickname}".`;
+
     return {
       success: true,
       action: 'change_nickname',
-      details: `Nickname for ${member.user.tag} set to "${nickname}"`,
-      verified: true,
+      targetMemberId: member.id,
+      nickname: targetNickname,
+      details,
+      verified,
       resourceId: member.id
     };
   }
@@ -763,24 +934,169 @@ export class Operations {
   }
 
   /**
-   * Purges / bulk deletes up to 100 messages from a channel.
+   * Searches messages within a channel (Read-only search, zero mutations).
    */
-  static async purgeMessages(guild, channelRef, count = 5, context) {
-    const channel = await context.resolveTarget(channelRef, 'channel');
+  static async searchMessages(guild, channelRef, options = {}, context = {}) {
+    const channel = await context.resolveTarget(channelRef || options.targetChannel || 'current', 'channel');
     if (!channel) {
-      return { success: false, error: `Channel "${channelRef}" not found in this server.`, action: 'purge_messages' };
+      return { success: false, error: `Channel "${channelRef || 'current'}" not found.`, action: 'search_messages' };
     }
 
-    const countNum = parseInt(count, 10);
+    let targetAuthorId = options.authorId || null;
+    if (options.author) {
+      const authRef = String(options.author).trim();
+      if (/^(me|my|myself|self|i)$/i.test(authRef)) {
+        targetAuthorId = context.invokingUser?.id;
+      } else {
+        const resolved = await context.resolveTarget(authRef, 'member');
+        if (resolved && !resolved.isAmbiguous) {
+          targetAuthorId = resolved.id || resolved.user?.id;
+        }
+      }
+    }
+
+    const limit = Math.min(100, Math.max(1, parseInt(options.limit || 25, 10)));
+    const fetched = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+    if (!fetched) {
+      return { success: false, error: `Could not fetch messages from #${channel.name}.`, action: 'search_messages' };
+    }
+
+    const messages = Array.from(fetched.values());
+    const matches = [];
+
+    for (const msg of messages) {
+      if (targetAuthorId && msg.author?.id !== targetAuthorId) continue;
+      if (options.contains && !msg.content?.toLowerCase().includes(options.contains.toLowerCase())) continue;
+      matches.push({
+        id: msg.id,
+        author: msg.author?.tag || msg.author?.id,
+        authorId: msg.author?.id,
+        content: msg.content,
+        createdAt: msg.createdAt
+      });
+      if (matches.length >= limit) break;
+    }
+
+    return {
+      success: true,
+      action: 'search_messages',
+      matchCount: matches.length,
+      matches,
+      details: `Found ${matches.length} matching message(s) in #${channel.name}. (Read-only search, no messages were deleted).`,
+      verified: true
+    };
+  }
+
+  /**
+   * Purges / bulk deletes messages from a channel with strict target, author, and age constraints.
+   */
+  static async purgeMessages(guild, channelRef, countOrOptions = 5, context = {}) {
+    const config = typeof countOrOptions === 'number' ? { count: countOrOptions } : (countOrOptions || {});
+    const countNum = parseInt(config.count !== undefined ? config.count : 5, 10);
     if (isNaN(countNum) || countNum < 1 || countNum > 100) {
-      return {
-        success: false,
-        error: `Purge count out of bounds: Bulk delete must be between 1 and 100 messages (Discord API restriction). Received "${count}".`,
-        action: 'purge_messages'
-      };
+      return { success: false, error: 'Bulk delete must be between 1 and 100 messages.', action: 'purge_messages' };
     }
 
-    const deleted = await channel.bulkDelete(countNum, true);
+    const channel = await context.resolveTarget(channelRef || config.targetChannel || 'current', 'channel');
+    if (!channel) {
+      return { success: false, error: `Channel "${channelRef || 'current'}" not found in this server.`, action: 'purge_messages' };
+    }
+
+    // 1. Resolve author filter if requested
+    let targetAuthorId = config.authorId || null;
+
+    if (config.author) {
+      const authRef = String(config.author).trim();
+      if (/^(me|my|myself|self|i)$/i.test(authRef)) {
+        targetAuthorId = context.invokingUser?.id;
+      } else {
+        const resolved = await context.resolveTarget(authRef, 'member');
+        if (resolved?.isAmbiguous) {
+          return {
+            success: false,
+            isAmbiguous: true,
+            error: resolved.clarificationQuestion,
+            action: 'purge_messages'
+          };
+        }
+        if (!resolved) {
+          return {
+            success: false,
+            error: `Target author "${authRef}" could not be resolved. Message deletion stopped to prevent deleting unintended messages.`,
+            action: 'purge_messages'
+          };
+        }
+        targetAuthorId = resolved.id || resolved.user?.id;
+      }
+    }
+
+    let candidates = [];
+    let eligible = [];
+    let skippedOldCount = 0;
+    let deletedCount = 0;
+
+    if (!targetAuthorId && !config.contains && (!channel.messages?.fetch || typeof channel.messages?.fetch !== 'function')) {
+      const deleted = await channel.bulkDelete(countNum);
+      deletedCount = (deleted instanceof Map || deleted instanceof Set) ? deleted.size : (deleted?.length ?? countNum);
+    } else {
+      const fetchLimit = (targetAuthorId || config.contains) ? 100 : countNum;
+      if (!channel.messages?.fetch) {
+        return {
+          success: false,
+          error: `Message history cannot be fetched for #${channel.name} to apply required filters.`,
+          action: 'purge_messages'
+        };
+      }
+      const fetched = await channel.messages.fetch({ limit: fetchLimit });
+      candidates = Array.from(fetched.values());
+
+      const now = Date.now();
+      const fourteenDaysMs = 14 * 24 * 60 * 60 * 1000;
+
+      for (const msg of candidates) {
+        // Author check
+        if (targetAuthorId && msg.author?.id !== targetAuthorId) {
+          continue;
+        }
+
+        // Content match check
+        if (config.contains && !msg.content?.toLowerCase().includes(config.contains.toLowerCase())) {
+          continue;
+        }
+
+        // 14-day Discord restriction check
+        if (now - msg.createdTimestamp >= fourteenDaysMs) {
+          skippedOldCount++;
+          continue;
+        }
+
+        eligible.push(msg);
+        if (eligible.length >= countNum) break;
+      }
+
+      if (eligible.length === 0) {
+        let desc = `No matching messages eligible for deletion found in #${channel.name}`;
+        if (targetAuthorId) desc += ` from user <@${targetAuthorId}>`;
+        if (config.contains) desc += ` matching "${config.contains}"`;
+        if (skippedOldCount > 0) desc += ` (${skippedOldCount} message(s) skipped because they are older than Discord's 14-day bulk-delete limit)`;
+        return {
+          success: true,
+          action: 'purge_messages',
+          targetChannelId: channel.id,
+          channelName: channel.name,
+          deletedCount: 0,
+          eligibleCount: 0,
+          candidateCount: candidates.length,
+          skippedCount: skippedOldCount,
+          details: desc + '.',
+          verified: true
+        };
+      }
+
+      // Bulk delete only the eligible filtered messages
+      const deleted = await channel.bulkDelete(eligible, true);
+      deletedCount = deleted?.size ?? eligible.length;
+    }
 
     if (guild?.id && context?.executionId) {
       ActionLedger.recordAction(guild.id, context.executionId, {
@@ -790,17 +1106,32 @@ export class Operations {
         targetChannelName: channel.name,
         targetId: channel.id,
         targetName: channel.name,
-        count: deleted.size,
+        count: deletedCount,
+        authorFilter: targetAuthorId,
         actor: context.invokingUser ? { id: context.invokingUser.id, tag: context.invokingUser.tag } : null,
         reversibility: 'irreversible',
         unavailabilityReason: 'Bulk message deletions cannot be undone because Discord permanently removes purged messages from its servers.'
       });
     }
 
+    let detailStr = targetAuthorId
+      ? `Purged ${deletedCount} message(s) from <@${targetAuthorId}> in #${channel.name}`
+      : `Purged ${deletedCount} messages from #${channel.name}`;
+
+    if (skippedOldCount > 0) {
+      detailStr += ` (${skippedOldCount} older than 14 days skipped)`;
+    }
+
     return {
       success: true,
       action: 'purge_messages',
-      details: `Purged ${deleted.size} messages from #${channel.name}`,
+      targetChannelId: channel.id,
+      channelName: channel.name,
+      deletedCount,
+      eligibleCount: eligible.length,
+      candidateCount: candidates.length,
+      skippedCount: skippedOldCount,
+      details: detailStr,
       verified: true
     };
   }

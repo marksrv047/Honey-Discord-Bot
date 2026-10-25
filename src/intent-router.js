@@ -3,6 +3,7 @@ import { AIProvider } from './ai-provider.js';
 import { TaskBudget } from './budget.js';
 import { Logger } from './logger.js';
 import { config } from './config.js';
+import { resolveColor } from './color-utils.js';
 
 const logger = new Logger('IntentRouter');
 
@@ -76,6 +77,140 @@ export class IntentRouter {
     // =========================================================================
     // 1. DETERMINISTIC FAST PATH (0 LLM Calls, 0ms latency)
     // =========================================================================
+
+    // Multi-step: "rename the <target> role to <name> and change its color to <color>"
+    const renameAndRecolorRoleMatch = cleanPrompt.match(/^(?:rename|change\s+(?:the\s+)?name\s+of)\s+(?:the\s+)?(?:role\s+)?@?([\w\s.-]+?)\s+(?:role\s+)?to\s+([a-zA-Z0-9_\s-]+?)\s+and\s+(?:(?:set|change|update)\s+(?:its\s+|the\s+)?color\s+(?:to|as)?|recolor\s+(?:it\s+to)?)\s+([#a-zA-Z0-9_\s-]+?)(?:[,\s]+(?:and\s+)?(?:enable\s+display\s+separately|display\s+separately|hoist\s*(?:it|role)?))?$/i);
+    if (renameAndRecolorRoleMatch) {
+      const target = renameAndRecolorRoleMatch[1].trim().replace(/^@/, '');
+      const newName = renameAndRecolorRoleMatch[2].trim().replace(/^["']|["']$/g, '');
+      const rawColor = renameAndRecolorRoleMatch[3].trim().replace(/^["']|["']$/g, '');
+      const resolvedColor = resolveColor(rawColor) || rawColor;
+      const hoist = /(?:enable\s+display\s+separately|display\s+separately|hoist)/i.test(cleanPrompt);
+      const multiActions = [
+        { action: 'edit_role', targetRole: target, name: newName },
+        { action: 'edit_role', targetRole: newName, color: resolvedColor }
+      ];
+      if (hoist) {
+        multiActions.push({ action: 'edit_role', targetRole: newName, hoist: true });
+      }
+      logger.info('Routed through fast-path: multi-step role rename and recolor', { target, newName, resolvedColor });
+      return {
+        intent: 'complex_plan',
+        thought: `Rename role ${target} to ${newName} and change color to ${resolvedColor}`,
+        isHighImpact: false,
+        multiActions
+      };
+    }
+
+    // Delete author messages: "delete my messages from this channel"
+    if (/^(?:delete|purge|remove|clear)\s+my\s+messages?(?:\s+(?:from|in)\s+(this\s+channel|<#\d+>|#?[\w-]+))?$/i.test(cleanPrompt)) {
+      const chMatch = cleanPrompt.match(/(?:from|in)\s+(this\s+channel|<#\d+>|#?[\w-]+)/i);
+      const target = chMatch ? (chMatch[1].toLowerCase().includes('this') ? 'current' : chMatch[1]) : 'current';
+      logger.info('Routed through fast-path: purge my messages', { target });
+      return {
+        intent: 'purge_messages',
+        targetType: 'channel',
+        targetRef: target,
+        args: { count: 25, author: 'me', authorId: executionContext?.invokingUser?.id || 'me' },
+        isHighImpact: true,
+        thought: `Delete messages from invoking user in ${target}`
+      };
+    }
+
+    // Delete from specific author: "delete messages from Alex" / "delete Alex's messages"
+    const deleteFromAuthorMatch = cleanPrompt.match(/^(?:delete|purge|remove|clear)\s+messages?\s+(?:from|by|sent\s+by)\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:from|in)\s+(this\s+channel|<#\d+>|#?[\w-]+))?$/i) ||
+      cleanPrompt.match(/^(?:delete|purge|remove|clear)\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+messages?(?:\s+(?:from|in)\s+(this\s+channel|<#\d+>|#?[\w-]+))?$/i);
+    if (deleteFromAuthorMatch) {
+      const author = deleteFromAuthorMatch[1].replace(/^@/, '');
+      const ch = deleteFromAuthorMatch[2] ? (deleteFromAuthorMatch[2].toLowerCase().includes('this') ? 'current' : deleteFromAuthorMatch[2]) : 'current';
+      logger.info('Routed through fast-path: purge messages by author', { author, channel: ch });
+      return {
+        intent: 'purge_messages',
+        targetType: 'channel',
+        targetRef: ch,
+        args: { count: 25, author },
+        isHighImpact: true,
+        thought: `Delete messages from ${author} in ${ch}`
+      };
+    }
+
+    // Read-only message search: "find messages containing <query>" / "search for messages with text <query>"
+    const searchMessagesMatch = cleanPrompt.match(/^(?:find|search|look\s+for)\s+(?:a\s+|the\s+|any\s+)?messages?(?:\s+(?:containing|with(?:\s+the)?\s+text|saying|for)\s+["']?([^"']+)["']?)?(?:\s+(?:from|in)\s+(this\s+channel|<#\d+>|#?[\w-]+))?$/i);
+    if (searchMessagesMatch && !/(?:delete|purge|remove|clear)/i.test(cleanPrompt)) {
+      const contains = searchMessagesMatch[1]?.trim();
+      const ch = searchMessagesMatch[2] ? (searchMessagesMatch[2].toLowerCase().includes('this') ? 'current' : searchMessagesMatch[2]) : 'current';
+      logger.info('Routed through fast-path: search_messages', { contains, channel: ch });
+      return {
+        intent: 'search_messages',
+        targetType: 'channel',
+        targetRef: ch,
+        args: { contains, count: 25 },
+        isHighImpact: false,
+        thought: `Search messages in ${ch}`
+      };
+    }
+
+    // Nickname fast-paths:
+    // "change my nickname to Alex"
+    const myNickMatch = cleanPrompt.match(/^(?:change|set|rename|update)\s+my\s+(?:server\s+)?nickname\s+(?:to|as)\s+["']?([^"']+)["']?$/i);
+    if (myNickMatch) {
+      const newNick = myNickMatch[1].trim();
+      logger.info('Routed through fast-path: change my nickname', { newNick });
+      return {
+        intent: 'change_nickname',
+        targetType: 'member',
+        targetRef: 'me',
+        args: { targetMember: 'me', nickname: newNick },
+        isHighImpact: false,
+        thought: `Change invoking user nickname to ${newNick}`
+      };
+    }
+
+    // "rename Sarah's nickname to Sally"
+    const memberNickMatch = cleanPrompt.match(/^(?:change|set|rename|update)\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+(?:server\s+)?nickname\s+(?:to|as)\s+["']?([^"']+)["']?$/i);
+    if (memberNickMatch) {
+      const target = memberNickMatch[1].replace(/^@/, '');
+      const newNick = memberNickMatch[2].trim();
+      logger.info('Routed through fast-path: change member nickname', { target, newNick });
+      return {
+        intent: 'change_nickname',
+        targetType: 'member',
+        targetRef: target,
+        args: { targetMember: target, nickname: newNick },
+        isHighImpact: false,
+        thought: `Change ${target}'s nickname to ${newNick}`
+      };
+    }
+
+    // "set the nickname of the member i just mentioned to Captain"
+    const mentionedNickMatch = cleanPrompt.match(/^(?:set|change|rename)\s+(?:the\s+)?nickname\s+of\s+(?:the\s+member\s+)?i\s+just\s+mentioned\s+(?:to|as)\s+["']?([^"']+)["']?$/i);
+    if (mentionedNickMatch) {
+      const newNick = mentionedNickMatch[1].trim();
+      logger.info('Routed through fast-path: change mentioned member nickname', { newNick });
+      return {
+        intent: 'change_nickname',
+        targetType: 'member',
+        targetRef: 'the member I just mentioned',
+        args: { targetMember: 'the member I just mentioned', nickname: newNick },
+        isHighImpact: false,
+        thought: `Change mentioned member nickname to ${newNick}`
+      };
+    }
+
+    // "remove Sarah's server nickname" / "remove my server nickname"
+    const removeNickMatch = cleanPrompt.match(/^(?:remove|reset|clear)\s+(?:(<@!?\d+>|@?[\w.-]+)['’]s|my)\s+(?:server\s+)?nickname$/i);
+    if (removeNickMatch) {
+      const target = removeNickMatch[1] ? removeNickMatch[1].replace(/^@/, '') : 'me';
+      logger.info('Routed through fast-path: remove server nickname', { target });
+      return {
+        intent: 'change_nickname',
+        targetType: 'member',
+        targetRef: target,
+        args: { targetMember: target, nickname: null },
+        isHighImpact: false,
+        thought: `Remove server nickname for ${target}`
+      };
+    }
 
     // Multi-step A: "rename this channel to <name> and update its topic to <topic>"
     const renameAndTopicMatch = cleanPrompt.match(/^rename\s+(this\s+channel|<#\d+>|#?[\w-]+)\s+to\s+([a-zA-Z0-9_-]+)\s+and\s+(?:set|update)\s+(?:its\s+)?topic\s+to\s+(.+)$/i);

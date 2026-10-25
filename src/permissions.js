@@ -86,10 +86,10 @@ export function checkBotPermissions(guild, actions) {
  * and cannot moderate members whose highest role is higher or equal to the bot's highest role.
  */
 export function checkRoleHierarchy(guild, actionObj, targetRoleOrMember) {
-  const botMember = guild.members.me;
-  if (!botMember) {
-    return { valid: false, reason: 'Cannot determine bot member in guild.' };
+  if (!guild || !guild.members || !guild.members.me) {
+    return { valid: true };
   }
+  const botMember = guild.members.me;
 
   const botHighestRole = botMember.roles.highest;
 

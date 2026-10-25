@@ -210,25 +210,11 @@ export class Executor {
       }
 
       case 'edit_role': {
-        const role = guild.roles.cache.find(r => r.id === action.targetRole || r.name.toLowerCase() === action.targetRole.toLowerCase());
-        if (!role) {
-          return { success: false, error: `Role "${action.targetRole}" not found in server` };
-        }
-
-        const hierarchy = checkRoleHierarchy(guild, action, role);
-        if (!hierarchy.valid) {
-          return { success: false, error: hierarchy.reason };
-        }
-
-        await role.edit({
-          name: action.name || role.name,
-          color: action.color || role.color,
-          hoist: action.hoist !== undefined ? action.hoist : role.hoist,
-          mentionable: action.mentionable !== undefined ? action.mentionable : role.mentionable,
-          permissions: action.permissions || role.permissions
-        }, `Edited via /go agent`);
-
-        return { success: true, details: `Role @${role.name} updated` };
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => guild.roles.cache.find(r => r.id === ref || r.name.toLowerCase() === String(ref).replace(/^@/, '').toLowerCase())
+        };
+        return await Operations.editRole(guild, action.targetRole, action, ctx);
       }
 
       case 'delete_role': {
@@ -463,14 +449,11 @@ export class Executor {
       }
 
       case 'change_nickname': {
-        const member = guild.members.cache.find(m => m.id === action.targetMember || m.user?.username.toLowerCase() === action.targetMember.toLowerCase());
-        if (!member) return { success: false, error: `Member "${action.targetMember}" not found` };
-
-        const hierarchy = checkRoleHierarchy(guild, action, member);
-        if (!hierarchy.valid) return { success: false, error: hierarchy.reason };
-
-        await member.setNickname(action.nickname, action.reason || 'Changed via /go agent');
-        return { success: true, details: `Nickname for ${member.user.tag} set to "${action.nickname}"` };
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => /me|my|myself|self|i/i.test(ref) ? invokingMember : guild.members.cache.find(m => m.id === ref || m.user?.username.toLowerCase() === String(ref).toLowerCase())
+        };
+        return await Operations.changeNickname(guild, action.targetMember, action.nickname, ctx);
       }
 
       case 'setup_ticket_system': {
@@ -553,7 +536,27 @@ export class Executor {
           invokingUser: invokingMember.user,
           resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).replace(/^#/, '').toLowerCase())
         };
-        return await Operations.purgeMessages(guild, action.targetChannel || action.targetRef || 'current', action.count || 5, ctx);
+        const purgeOpts = {
+          count: action.count || 5,
+          author: action.author,
+          authorId: action.authorId,
+          contains: action.contains
+        };
+        return await Operations.purgeMessages(guild, action.targetChannel || action.targetRef || 'current', purgeOpts, ctx);
+      }
+
+      case 'search_messages': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).replace(/^#/, '').toLowerCase())
+        };
+        const searchOpts = {
+          count: action.count || 25,
+          author: action.author,
+          authorId: action.authorId,
+          contains: action.contains
+        };
+        return await Operations.searchMessages(guild, action.targetChannel || action.targetRef || 'current', searchOpts, ctx);
       }
 
       case 'pin_message': {
@@ -660,6 +663,9 @@ export class Executor {
       case 'delete_role':
         return await Operations.deleteRole(guild, intentObj.targetRef, executionContext);
 
+      case 'edit_role':
+        return await Operations.editRole(guild, intentObj.targetRef || intentObj.args?.targetRole, intentObj.args, executionContext);
+
       case 'change_nickname':
         return await Operations.changeNickname(guild, intentObj.targetRef, intentObj.args.nickname, executionContext);
 
@@ -674,7 +680,10 @@ export class Executor {
         return await Operations.sendMessage(guild, intentObj.targetRef, intentObj.args.content || intentObj.args.message, executionContext);
 
       case 'purge_messages':
-        return await Operations.purgeMessages(guild, intentObj.targetRef, intentObj.args.count || 5, executionContext);
+        return await Operations.purgeMessages(guild, intentObj.targetRef, intentObj.args || { count: 5 }, executionContext);
+
+      case 'search_messages':
+        return await Operations.searchMessages(guild, intentObj.targetRef, intentObj.args || { count: 25 }, executionContext);
 
       case 'pin_message':
         return await Operations.pinMessage(guild, intentObj.targetRef, intentObj.args.messageId, executionContext);

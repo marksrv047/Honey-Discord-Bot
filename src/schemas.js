@@ -88,7 +88,7 @@ export const EditRoleSchema = z.object({
   action: z.literal('edit_role'),
   targetRole: z.string().min(1), // Role name or ID
   name: z.string().min(1).max(100).optional(),
-  color: HexColorSchema.optional(),
+  color: z.string().optional(), // Hex code or standard color name (e.g. #8B0000 or dark red)
   hoist: z.boolean().optional(),
   mentionable: z.boolean().optional(),
   permissions: z.array(DiscordPermissionEnum).optional()
@@ -182,7 +182,7 @@ export const UnbanMemberSchema = z.object({
 export const ChangeNicknameSchema = z.object({
   action: z.literal('change_nickname'),
   targetMember: z.string().min(1),
-  nickname: z.string().max(32),
+  nickname: z.string().max(32).nullable().optional(),
   reason: z.string().max(512).optional().default('Nickname changed via /go agent')
 });
 
@@ -248,7 +248,19 @@ export const SendMessageSchema = z.object({
 export const PurgeMessagesSchema = z.object({
   action: z.literal('purge_messages'),
   targetChannel: z.string().default('current'),
-  count: z.number().int().min(1).max(100).default(5)
+  count: z.number().int().min(1).max(100).default(5),
+  author: z.string().optional(),
+  authorId: z.string().optional(),
+  contains: z.string().optional()
+});
+
+export const SearchMessagesSchema = z.object({
+  action: z.literal('search_messages'),
+  targetChannel: z.string().default('current'),
+  count: z.number().int().min(1).max(100).default(25),
+  author: z.string().optional(),
+  authorId: z.string().optional(),
+  contains: z.string().optional()
 });
 
 export const PinMessageSchema = z.object({
@@ -360,6 +372,7 @@ export const ActionSchema = z.discriminatedUnion('action', [
   SendAnnouncementSchema,
   SendMessageSchema,
   PurgeMessagesSchema,
+  SearchMessagesSchema,
   PinMessageSchema,
   UnpinMessageSchema,
   AddReactionSchema,

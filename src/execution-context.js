@@ -112,6 +112,15 @@ export class ExecutionContext {
       }
     }
 
+    // 1b. Current Member / Invoking User contextual resolution ("me", "my", "myself")
+    if (resourceType === 'member' && /^(me|my|myself|i|current|self)$/i.test(refStr)) {
+      resolved = this.invokingMember;
+      if (resolved) {
+        this.targetCache.set(cacheKey, resolved);
+        return resolved;
+      }
+    }
+
     // 2. Contextual history resolution ("the channel we just created", "the role I mentioned", "that user")
     if (resourceType === 'channel' && /(?:the\s+)?(?:channel\s+we\s+just\s+created|created\s+channel|that\s+channel)/i.test(refStr)) {
       const lastCreated = ActionLedger.getLastCreatedChannel(this.guild.id);
@@ -135,7 +144,7 @@ export class ExecutionContext {
       }
     }
 
-    if (resourceType === 'member' && /(?:that\s+user|that\s+member)/i.test(refStr)) {
+    if (resourceType === 'member' && /(?:that\s+user|that\s+member|the\s+member\s+i\s+just\s+mentioned|the\s+user\s+i\s+just\s+mentioned)/i.test(refStr)) {
       const lastTargeted = this.targetCache.get('last_targeted_member');
       if (lastTargeted) return lastTargeted;
     }

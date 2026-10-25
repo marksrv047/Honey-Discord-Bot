@@ -19,6 +19,7 @@ import { ModlogInterpreter } from './modlog-interpreter.js';
 import { TemporaryFeedback } from './temporary-feedback.js';
 import { HelpManager } from './help.js';
 import { DiagnosticService } from './diagnostic-service.js';
+import { CompletenessChecker } from './completeness-checker.js';
 import { Logger } from './logger.js';
 
 const logger = new Logger('Commands');
@@ -182,6 +183,47 @@ async function handleGoCommand(interaction) {
         embeds: [],
         components: []
       });
+    }
+
+    // Phase 1.5: Deterministic Request-Completeness & Target-Safety Gate
+    let actionsToVerify = [];
+    if (interpreted.multiActions && interpreted.multiActions.length > 0) {
+      actionsToVerify = interpreted.multiActions;
+    } else if (interpreted.intent) {
+      actionsToVerify = [{
+        action: interpreted.intent,
+        targetChannel: interpreted.targetRef,
+        targetRole: interpreted.targetRef,
+        targetMember: interpreted.targetRef,
+        targetRef: interpreted.targetRef,
+        ...interpreted.args
+      }];
+    }
+
+    const checkResult = CompletenessChecker.verify(userPrompt, {
+      thoughtProcess: interpreted.thought || 'Administrative operation',
+      isHighImpact: Boolean(interpreted.isHighImpact),
+      actions: actionsToVerify
+    }, executionContext);
+
+    if (!checkResult.valid) {
+      isDone = true;
+      clearTimeout(timeoutGuard);
+      return await interaction.editReply({
+        content: `⚠️ **Request Incomplete or Invalid:**\n${checkResult.errors.join('\n')}\n\n*Please specify the missing details or targets.*`
+      });
+    }
+
+    const repairedPlan = checkResult.repairedPlan;
+    if (repairedPlan.actions.length > 1) {
+      interpreted.multiActions = repairedPlan.actions;
+      interpreted.thought = repairedPlan.thoughtProcess;
+      interpreted.isHighImpact = repairedPlan.isHighImpact;
+    } else if (repairedPlan.actions.length === 1) {
+      delete interpreted.multiActions;
+      interpreted.intent = repairedPlan.actions[0].action;
+      interpreted.targetRef = repairedPlan.actions[0].targetRole || repairedPlan.actions[0].targetChannel || repairedPlan.actions[0].targetMember || repairedPlan.actions[0].targetRef;
+      interpreted.args = { ...repairedPlan.actions[0] };
     }
 
     // Phase 2: Check if multi-step complex plan or single-step direct operation

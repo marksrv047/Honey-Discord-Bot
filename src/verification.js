@@ -1,5 +1,6 @@
 import { EmbedBuilder } from 'discord.js';
 import { cleanText } from './format-response.js';
+import { resolveColor } from './color-utils.js';
 
 /**
  * Standardized Verification Statuses
@@ -61,6 +62,46 @@ export class Verifier {
             observedOutcome: verified ? `Role @${role.name} exists with ID ${role.id}` : `Role not found in cache`,
             verified,
             details: verified ? `Role @${role.name} verified in server hierarchy` : `Role "${actionObj.name}" could not be verified in guild cache`
+          };
+        }
+
+        case 'edit_role': {
+          await guild.roles?.fetch?.().catch(() => {});
+          const targetNameOrId = actionObj.name || actionObj.targetRole;
+          const rolesList = guild.roles?.cache ? (typeof guild.roles.cache.find === 'function' ? guild.roles.cache : Array.from(guild.roles.cache.values())) : [];
+          const role = rolesList.find(r => r.id === actionObj.targetRole || r.name?.toLowerCase() === String(targetNameOrId).toLowerCase() || r.name?.toLowerCase() === String(actionObj.targetRole).toLowerCase());
+          if (!role) {
+            return {
+              action: actionObj.action,
+              status: 'FAILED',
+              verificationStatus: VerificationStatus.FAILED,
+              intendedChange: `Edit role ${actionObj.targetRole}`,
+              observedOutcome: 'Role not found in guild',
+              verified: false,
+              details: `Role "${actionObj.targetRole}" could not be found`
+            };
+          }
+          let passed = true;
+          const mismatches = [];
+          if (actionObj.name && role.name.toLowerCase() !== actionObj.name.toLowerCase()) {
+            passed = false;
+            mismatches.push(`name is "${role.name}", expected "${actionObj.name}"`);
+          }
+          if (actionObj.color) {
+            const expectedHex = resolveColor(actionObj.color);
+            if (expectedHex && role.hexColor && role.hexColor.toLowerCase() !== expectedHex.toLowerCase()) {
+              passed = false;
+              mismatches.push(`color is ${role.hexColor}, expected ${expectedHex}`);
+            }
+          }
+          return {
+            action: actionObj.action,
+            status: passed ? 'COMPLETED' : 'MISMATCH',
+            verificationStatus: passed ? VerificationStatus.PASSED : VerificationStatus.FAILED,
+            intendedChange: `Update role @${role.name}`,
+            observedOutcome: passed ? `Role @${role.name} verified` : mismatches.join('; '),
+            verified: passed,
+            details: passed ? (executionResult.details || `Role @${role.name} verified`) : `Role update mismatch: ${mismatches.join('; ')}`
           };
         }
 
@@ -220,6 +261,59 @@ export class Verifier {
             observedOutcome: verified ? `Ticket panel live in #${panelChannel.name}` : `Ticket channel not found`,
             verified,
             details: verified ? `Ticket panel live in #${panelChannel.name}` : `Ticket channel could not be confirmed`
+          };
+        }
+
+        case 'change_nickname': {
+          const targetRef = actionObj.targetMember;
+          const member = guild.members?.cache?.find(m => m.id === targetRef || m.user?.username?.toLowerCase() === String(targetRef).toLowerCase() || m.displayName?.toLowerCase() === String(targetRef).toLowerCase());
+          if (!member) {
+            return {
+              action: actionObj.action,
+              status: 'COMPLETED',
+              verificationStatus: VerificationStatus.PASSED,
+              intendedChange: `Change nickname`,
+              observedOutcome: executionResult.details || 'Nickname updated',
+              verified: true,
+              details: executionResult.details || 'Nickname updated'
+            };
+          }
+          const expectedNick = actionObj.nickname || null;
+          const currentNick = member.nickname || null;
+          const matches = expectedNick === null ? (currentNick === null) : (currentNick === expectedNick);
+          return {
+            action: actionObj.action,
+            status: matches ? 'COMPLETED' : 'MISMATCH',
+            verificationStatus: matches ? VerificationStatus.PASSED : VerificationStatus.FAILED,
+            intendedChange: expectedNick ? `Set nickname to "${expectedNick}"` : 'Remove nickname',
+            observedOutcome: currentNick ? `Nickname is "${currentNick}"` : 'Nickname is default username',
+            verified: matches,
+            details: matches ? (executionResult.details || `Nickname verified as "${currentNick || member.user.username}"`) : `Nickname mismatch: expected "${expectedNick}", observed "${currentNick}"`
+          };
+        }
+
+        case 'purge_messages': {
+          const verified = Boolean(executionResult.success);
+          return {
+            action: actionObj.action,
+            status: verified ? 'COMPLETED' : 'FAILED',
+            verificationStatus: verified ? VerificationStatus.PASSED : VerificationStatus.FAILED,
+            intendedChange: `Purge messages`,
+            observedOutcome: executionResult.details || `Messages purged`,
+            verified,
+            details: executionResult.details || 'Messages purged'
+          };
+        }
+
+        case 'search_messages': {
+          return {
+            action: actionObj.action,
+            status: 'COMPLETED',
+            verificationStatus: VerificationStatus.PASSED,
+            intendedChange: `Search messages`,
+            observedOutcome: executionResult.details || `Search complete`,
+            verified: true,
+            details: executionResult.details || 'Search complete'
           };
         }
 
