@@ -69,10 +69,27 @@ export class Executor {
   static async executePlan(guild, plan, executionId, invokingMember) {
     const sortedActions = Executor.orderActions(plan.actions);
     const results = [];
+    const failedTargets = new Set();
 
     logger.info(`Starting execution ${executionId} with ${sortedActions.length} actions`, { guild: guild.name });
 
     for (const action of sortedActions) {
+      // Check if this action depends on a target that failed previously in this execution
+      const target = action.targetChannel || action.targetRole || action.targetMember || action.name;
+      if (target && failedTargets.has(String(target).toLowerCase())) {
+        logger.warn(`Skipping action ${action.action} because prerequisite target ${target} failed`);
+        results.push({
+          action: action.action,
+          status: 'SKIPPED',
+          verificationStatus: 'failed',
+          intendedChange: `Execute ${action.action}`,
+          observedOutcome: 'Prerequisite action failed: target resource was not created',
+          verified: false,
+          details: `Skipped: Prerequisite target "${target}" failed to create.`
+        });
+        continue;
+      }
+
       // 1. Spacing delay between calls to prevent rate limits
       await new Promise(r => setTimeout(r, config.safety.actionDelayMs));
 
@@ -87,6 +104,13 @@ export class Executor {
           success: false,
           error: classified.userMessage
         };
+      }
+
+      // If a creation action failed, record it so dependent actions don't run
+      if (!executionResult.success) {
+        if (action.action === 'create_channel' || action.action === 'create_role') {
+          if (action.name) failedTargets.add(action.name.toLowerCase());
+        }
       }
 
       // 2. Post-Verification Phase
@@ -329,7 +353,9 @@ export class Executor {
       }
 
       case 'timeout_member': {
-        const member = guild.members.cache.find(m => m.id === action.targetMember || m.user?.username.toLowerCase() === action.targetMember.toLowerCase());
+        const rawTarget = String(action.targetMember || action.targetRef || '');
+        const cleanId = rawTarget.replace(/[<@!>]/g, '').trim();
+        const member = guild.members.cache.find(m => m.id === cleanId || m.id === rawTarget || m.user?.username.toLowerCase() === rawTarget.toLowerCase() || m.displayName?.toLowerCase() === rawTarget.toLowerCase());
         if (!member) {
           return { success: false, error: `Member "${action.targetMember}" not found in server` };
         }
@@ -337,49 +363,103 @@ export class Executor {
         const hierarchy = checkRoleHierarchy(guild, action, member);
         if (!hierarchy.valid) return { success: false, error: hierarchy.reason };
 
-        await member.timeout(action.durationMinutes * 60 * 1000, action.reason || 'Timeout issued via /go agent');
-        return { success: true, details: `Member ${member.user.tag} timed out for ${action.durationMinutes}m` };
+        const safeReason = String(action.reason || 'No reason provided').slice(0, 512);
+        await member.timeout(action.durationMinutes * 60 * 1000, safeReason);
+        return {
+          success: true,
+          action: 'timeout_member',
+          details: `Member ${member.user.tag} timed out for ${action.durationMinutes}m`,
+          verified: true,
+          resourceId: member.id,
+          targetMemberId: member.id,
+          targetMemberTag: member.user?.tag,
+          durationMinutes: action.durationMinutes,
+          reason: safeReason
+        };
       }
 
       case 'remove_timeout': {
-        const member = guild.members.cache.find(m => m.id === action.targetMember || m.user?.username.toLowerCase() === action.targetMember.toLowerCase());
+        const rawTarget = String(action.targetMember || action.targetRef || '');
+        const cleanId = rawTarget.replace(/[<@!>]/g, '').trim();
+        const member = guild.members.cache.find(m => m.id === cleanId || m.id === rawTarget || m.user?.username.toLowerCase() === rawTarget.toLowerCase() || m.displayName?.toLowerCase() === rawTarget.toLowerCase());
         if (!member) return { success: false, error: `Member "${action.targetMember}" not found` };
 
-        await member.timeout(null, action.reason || 'Timeout removed via /go agent');
-        return { success: true, details: `Timeout removed from ${member.user.tag}` };
+        const safeReason = String(action.reason || 'No reason provided').slice(0, 512);
+        await member.timeout(null, safeReason);
+        return {
+          success: true,
+          action: 'remove_timeout',
+          details: `Timeout removed from ${member.user.tag}`,
+          verified: true,
+          resourceId: member.id,
+          targetMemberId: member.id,
+          targetMemberTag: member.user?.tag
+        };
       }
 
       case 'kick_member': {
-        const member = guild.members.cache.find(m => m.id === action.targetMember || m.user?.username.toLowerCase() === action.targetMember.toLowerCase());
+        const rawTarget = String(action.targetMember || action.targetRef || '');
+        const cleanId = rawTarget.replace(/[<@!>]/g, '').trim();
+        const member = guild.members.cache.find(m => m.id === cleanId || m.id === rawTarget || m.user?.username.toLowerCase() === rawTarget.toLowerCase() || m.displayName?.toLowerCase() === rawTarget.toLowerCase());
         if (!member) return { success: false, error: `Member "${action.targetMember}" not found` };
 
         const hierarchy = checkRoleHierarchy(guild, action, member);
         if (!hierarchy.valid) return { success: false, error: hierarchy.reason };
 
-        await member.kick(action.reason || 'Kicked via /go agent');
-        return { success: true, details: `Member ${member.user.tag} kicked` };
+        const safeReason = String(action.reason || 'No reason provided').slice(0, 512);
+        await member.kick(safeReason);
+        return {
+          success: true,
+          action: 'kick_member',
+          details: `Member ${member.user.tag} kicked`,
+          verified: true,
+          resourceId: member.id,
+          targetMemberId: member.id,
+          targetMemberTag: member.user?.tag,
+          targetMember: member.user?.tag,
+          reason: safeReason
+        };
       }
 
       case 'ban_member': {
-        const member = guild.members.cache.find(m => m.id === action.targetMember || m.user?.username.toLowerCase() === action.targetMember.toLowerCase());
-        const targetId = member ? member.id : action.targetMember;
+        const rawTarget = String(action.targetMember || action.targetRef || '');
+        const cleanId = rawTarget.replace(/[<@!>]/g, '').trim();
+        const member = guild.members.cache.find(m => m.id === cleanId || m.id === rawTarget || m.user?.username.toLowerCase() === rawTarget.toLowerCase() || m.displayName?.toLowerCase() === rawTarget.toLowerCase());
+        const targetId = member ? member.id : cleanId;
 
         if (member) {
           const hierarchy = checkRoleHierarchy(guild, action, member);
           if (!hierarchy.valid) return { success: false, error: hierarchy.reason };
         }
 
+        const safeReason = String(action.reason || 'No reason provided').slice(0, 512);
         await guild.members.ban(targetId, {
           deleteMessageSeconds: (action.deleteMessageDays || 0) * 86400,
-          reason: action.reason || 'Banned via /go agent'
+          reason: safeReason
         });
 
-        return { success: true, details: `User ${targetId} banned` };
+        return {
+          success: true,
+          action: 'ban_member',
+          details: `User ${targetId} banned`,
+          verified: true,
+          resourceId: targetId,
+          targetMemberId: targetId,
+          targetMemberTag: member?.user?.tag,
+          reason: safeReason
+        };
       }
 
       case 'unban_member': {
         await guild.members.unban(action.targetMemberId, action.reason || 'Unbanned via /go agent');
-        return { success: true, details: `User ID ${action.targetMemberId} unbanned` };
+        return {
+          success: true,
+          action: 'unban_member',
+          details: `User ID ${action.targetMemberId} unbanned`,
+          verified: true,
+          resourceId: action.targetMemberId,
+          targetMemberId: action.targetMemberId
+        };
       }
 
       case 'change_nickname': {

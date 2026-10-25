@@ -64,3 +64,39 @@ test('Confirmations: requestConfirmation safely prepares truncated description w
   assert.ok(capturedEmbed.data.description.length <= 4096);
   assert.match(capturedEmbed.data.description, /additional action/);
 });
+
+test('Confirmations: formatActionSummary handles undefined descriptions safely', () => {
+  assert.equal(
+    ConfirmationManager.formatActionSummary({ action: 'update_server_description' }),
+    '""'
+  );
+  assert.equal(
+    ConfirmationManager.formatActionSummary({ action: 'create_channel' }),
+    '`#unnamed` (GUILD_TEXT)'
+  );
+});
+
+test('Confirmations: requestConfirmation handles undeferred interaction with reply()', async () => {
+  let replyCalled = false;
+  const mockInteraction = {
+    id: 'int_undeferred',
+    user: { id: 'user_2', username: 'UndeferredUser' },
+    deferred: false,
+    replied: false,
+    reply: async (payload) => {
+      replyCalled = true;
+      const confirmCustomId = payload.components[0].components[0].data.custom_id;
+      return {
+        awaitMessageComponent: async () => ({
+          customId: confirmCustomId,
+          update: async () => {}
+        })
+      };
+    }
+  };
+
+  const confirmed = await ConfirmationManager.requestConfirmation(mockInteraction, { actions: [] });
+  assert.equal(replyCalled, true);
+  assert.equal(confirmed, true);
+});
+

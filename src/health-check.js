@@ -136,7 +136,12 @@ export class HealthCheckEngine {
       './recovery.js',
       './intent-router.js',
       './confirmations.js',
-      './commands.js'
+      './commands.js',
+      './mod-log.js',
+      './modlog-interpreter.js',
+      './temporary-feedback.js',
+      './help.js',
+      './gateway-events.js'
     ];
 
     for (const relPath of modulesToTest) {
@@ -168,6 +173,38 @@ export class HealthCheckEngine {
           remediation: `Fix syntax or import error in ${relPath}.`
         });
       }
+    }
+
+    // Five-Command Architecture Verification
+    try {
+      const { slashCommands } = await import(`./commands.js?t=${Date.now()}`);
+      const commandNames = slashCommands.map(c => c.name).sort();
+      const expected = ['diagnose', 'go', 'help', 'modlog', 'undo'];
+      const matches = JSON.stringify(commandNames) === JSON.stringify(expected);
+
+      if (matches) {
+        checks.push({
+          name: 'Five-Command Architecture',
+          status: CheckStatus.PASSED,
+          message: `Registered exactly five agreed top-level slash commands: ${commandNames.join(', ')}.`
+        });
+      } else {
+        checks.push({
+          name: 'Five-Command Architecture',
+          status: CheckStatus.FAILED,
+          severity: Severity.HIGH,
+          message: `Unexpected command registration: found [${commandNames.join(', ')}], expected [${expected.join(', ')}].`,
+          remediation: 'Ensure commands.js exposes exactly /go, /modlog, /diagnose, /undo, /help.'
+        });
+      }
+    } catch (err) {
+      checks.push({
+        name: 'Five-Command Architecture',
+        status: CheckStatus.FAILED,
+        severity: Severity.HIGH,
+        message: `Failed to inspect slashCommands: ${err.message}`,
+        remediation: 'Verify commands.js exports valid slashCommands array.'
+      });
     }
 
     // Process exception handlers

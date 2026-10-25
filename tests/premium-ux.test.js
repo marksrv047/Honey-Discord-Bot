@@ -5,6 +5,7 @@ import {
   formatConfirmationQuestion,
   formatMultiActionSummary,
   formatAuditSummary,
+  formatRefinedResponse,
   cleanText
 } from '../src/format-response.js';
 
@@ -106,4 +107,25 @@ test('Premium UX: Default responses contain zero emojis', () => {
   for (const resp of responses) {
     assert.equal(emojiRegex.test(resp), false, `Response contained forbidden emoji: "${resp}"`);
   }
+});
+
+test('Premium UX: formatRefinedResponse properly sequences bullets, replaces @Role, and strips cheesy persona', () => {
+  const cheesyHorizontalInput = '🐝 Buzz buzz! Happy to help—here are some role ideas for Elsewhere ˎˊ-:\n• @Admin – server managers • @Moderator – chat moderators • @Artist – creators • @Gamer – gaming fans. Mix and match to fit your vibe!';
+
+  const refined = formatRefinedResponse(cheesyHorizontalInput);
+
+  // Must not contain bee buzz or persona
+  assert.equal(/buzz/i.test(refined), false);
+  assert.equal(/happy to help/i.test(refined), false);
+  assert.equal(/mix and match/i.test(refined), false);
+  assert.equal(/🐝/.test(refined), false);
+
+  // Must have bullets on separate lines
+  assert.ok(refined.includes('\n• **Admin** – server managers'));
+  assert.ok(refined.includes('\n• **Moderator** – chat moderators'));
+  assert.ok(refined.includes('\n• **Artist** – creators'));
+  assert.ok(refined.includes('\n• **Gamer** – gaming fans'));
+
+  // Header should be clean without decorative tails and capitalized
+  assert.ok(refined.startsWith('Here are some role ideas for Elsewhere:'));
 });

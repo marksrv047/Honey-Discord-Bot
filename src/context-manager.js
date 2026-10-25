@@ -30,11 +30,21 @@ export class ContextManager {
       invokingUser: compactCtx.invokingUser.tag
     };
 
+function getCacheValues(cache) {
+  if (!cache) return [];
+  if (Array.isArray(cache)) return cache;
+  if (typeof cache.values === 'function') {
+    return Array.from(cache.values());
+  }
+  return [];
+}
+
     // If the prompt mentions specific roles or channels that are already in cache, include only them!
     const guild = executionContext.guild;
     if (guild && !isDiscovery) {
       // Find any role mentioned in prompt
-      const mentionedRoles = guild.roles.cache
+      const allRoles = getCacheValues(guild.roles?.cache);
+      const mentionedRoles = allRoles
         .filter(r => promptLower.includes(r.name.toLowerCase()) || promptLower.includes(r.id))
         .map(r => ({ id: r.id, name: r.name }))
         .slice(0, 5);
@@ -44,7 +54,8 @@ export class ContextManager {
       }
 
       // Find any channel mentioned in prompt (other than current)
-      const mentionedChannels = guild.channels.cache
+      const allChannels = getCacheValues(guild.channels?.cache);
+      const mentionedChannels = allChannels
         .filter(c => c.id !== compactCtx.currentChannel?.id && 
           (promptLower.includes(c.name.toLowerCase()) || promptLower.includes(c.id)))
         .map(c => ({ id: c.id, name: c.name }))

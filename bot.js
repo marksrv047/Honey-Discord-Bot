@@ -23,6 +23,8 @@ import { config, validateConfig } from './src/config.js';
 import { handleCommandInteraction } from './src/commands.js';
 import { TicketManager } from './src/tickets.js';
 import { RoleMenuManager } from './src/role-menu.js';
+import { registerGatewayEventListeners } from './src/gateway-events.js';
+import { ActionLedger } from './src/recovery.js';
 import { Logger } from './src/logger.js';
 
 const logger = new Logger('Bot');
@@ -50,9 +52,13 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  res.writeHead(200, { 'Content-Type': 'application/json' });
+  const isDiscordReady = Boolean(client && client.isReady());
+  const statusCode = isDiscordReady ? 200 : 503;
+
+  res.writeHead(statusCode, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({
-    status: 'online',
+    status: isDiscordReady ? 'online' : 'discord_unavailable',
+    discordReady: isDiscordReady,
     bot: client.user ? client.user.tag : botLoginStatus,
     discordTokenConfigured: Boolean(config.discord.token),
     geminiKeyConfigured: Boolean(config.ai.gemini.apiKey),
@@ -112,9 +118,13 @@ if (!validation.valid) {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildModeration
   ]
 });
+
+// Register external gateway moderation event listeners
+registerGatewayEventListeners(client);
 
 // Debug and Gateway status listeners
 client.on('debug', (info) => {
@@ -136,6 +146,19 @@ client.on('shardError', (err, shardId) => {
   logger.error(`Discord Shard ${shardId} Error:`, { error: err.message });
 });
 
+client.on('shardDisconnect', (event, shardId) => {
+  lastLoginError = `Shard ${shardId} disconnected (code: ${event?.code || 'unknown'})`;
+  botLoginStatus = 'disconnected';
+  logger.warn(`Discord Shard ${shardId} disconnected. Triggering reconnect check in 10s...`);
+  scheduleReconnect(10000);
+});
+
+client.on('shardResume', (shardId, replayedEvents) => {
+  botLoginStatus = 'connected';
+  lastLoginError = null;
+  logger.info(`Discord Shard ${shardId} connection resumed (${replayedEvents} events replayed).`);
+});
+
 // Event: Client Ready
 client.once(Events.ClientReady, (readyClient) => {
   botLoginStatus = 'connected';
@@ -147,6 +170,9 @@ client.once(Events.ClientReady, (readyClient) => {
     activities: [{ name: '/go <instruction>', type: ActivityType.Playing }],
     status: 'online'
   });
+
+  // Load and reconcile action history
+  ActionLedger.loadAllHistory(readyClient);
 });
 
 // Event: Mention response in chat
@@ -203,16 +229,49 @@ const shutdown = () => {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-// Log in
-if (config.discord.token) {
+// Auto-Reconnecting Discord Gateway Login Engine
+let reconnectTimer = null;
+let isReconnecting = false;
+
+function scheduleReconnect(delayMs = 15000) {
+  if (isReconnecting || (client && client.isReady())) return;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+
+  logger.info(`Scheduling Discord reconnect in ${Math.round(delayMs / 1000)}s...`);
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
+    await startDiscordLogin();
+  }, delayMs);
+}
+
+async function startDiscordLogin() {
+  if (!config.discord.token) {
+    botLoginStatus = 'missing_token';
+    lastLoginError = 'DISCORD_TOKEN environment variable is missing.';
+    logger.error('DISCORD_TOKEN is not set in environment. Bot cannot connect to Discord.');
+    return;
+  }
+
+  if (client.isReady()) {
+    botLoginStatus = 'connected';
+    return;
+  }
+
+  isReconnecting = true;
   logger.info('Attempting login to Discord Gateway...');
-  client.login(config.discord.token.trim()).catch(err => {
+  try {
+    await client.login(config.discord.token.trim());
+    botLoginStatus = 'connected';
+    lastLoginError = null;
+  } catch (err) {
     lastLoginError = err.message;
     botLoginStatus = 'failed_login: ' + err.message;
     logger.error('Failed to log in to Discord', { error: err.message });
-  });
-} else {
-  botLoginStatus = 'missing_token';
-  lastLoginError = 'DISCORD_TOKEN environment variable is missing in Render Environment settings.';
-  logger.error('DISCORD_TOKEN is not set in environment. Bot cannot connect to Discord.');
+    scheduleReconnect(15000);
+  } finally {
+    isReconnecting = false;
+  }
 }
+
+// Initial login
+startDiscordLogin();

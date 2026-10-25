@@ -49,7 +49,25 @@ export class Operations {
       };
     }
 
+    const oldName = channel.name;
     await channel.setName(newName, `Renamed via Honey Bot by ${context.invokingUser.tag}`);
+
+    if (guild?.id && context?.executionId) {
+      ActionLedger.recordAction(guild.id, context.executionId, {
+        type: 'channel_rename',
+        action: 'rename_channel',
+        id: channel.id,
+        targetId: channel.id,
+        targetName: channel.name,
+        oldName,
+        newName,
+        preState: { name: oldName },
+        postState: { name: newName },
+        actor: context.invokingUser ? { id: context.invokingUser.id, tag: context.invokingUser.tag } : null,
+        reversibility: 'reversible'
+      });
+    }
+
     return {
       success: true,
       action: 'rename_channel',
@@ -78,7 +96,25 @@ export class Operations {
       };
     }
 
+    const oldTopic = channel.topic || '';
     await channel.setTopic(topic, `Topic updated via Honey Bot by ${context.invokingUser.tag}`);
+
+    if (guild?.id && context?.executionId) {
+      ActionLedger.recordAction(guild.id, context.executionId, {
+        type: 'channel_topic',
+        action: 'edit_channel_topic',
+        id: channel.id,
+        targetId: channel.id,
+        targetName: channel.name,
+        oldTopic,
+        newTopic: topic,
+        preState: { topic: oldTopic },
+        postState: { topic },
+        actor: context.invokingUser ? { id: context.invokingUser.id, tag: context.invokingUser.tag } : null,
+        reversibility: 'reversible'
+      });
+    }
+
     return {
       success: true,
       action: 'edit_channel_topic',
@@ -116,7 +152,24 @@ export class Operations {
       };
     }
 
+    const oldSlowmode = channel.rateLimitPerUser || 0;
     await channel.setRateLimitPerUser(sec, `Slowmode set via Honey Bot by ${context.invokingUser.tag}`);
+
+    if (guild?.id && context?.executionId) {
+      ActionLedger.recordAction(guild.id, context.executionId, {
+        type: 'channel_slowmode',
+        action: 'set_channel_slowmode',
+        id: channel.id,
+        targetId: channel.id,
+        targetName: channel.name,
+        oldSlowmode,
+        newSlowmode: sec,
+        preState: { slowmode: oldSlowmode },
+        postState: { slowmode: sec },
+        actor: context.invokingUser ? { id: context.invokingUser.id, tag: context.invokingUser.tag } : null,
+        reversibility: 'reversible'
+      });
+    }
     return {
       success: true,
       action: 'set_channel_slowmode',
@@ -179,6 +232,9 @@ export class Operations {
     if (!member) {
       return { success: false, error: `Member "${memberRef}" not found`, action: 'assign_role' };
     }
+    if (member.isAmbiguous) {
+      return { success: false, error: member.clarificationQuestion, isAmbiguous: true, action: 'assign_role' };
+    }
 
     const role = await context.resolveTarget(roleRef, 'role');
     if (!role) {
@@ -203,6 +259,24 @@ export class Operations {
     }
 
     await member.roles.add(role, `Assigned via Honey Bot by ${context.invokingUser.tag}`);
+
+    if (guild?.id && context?.executionId) {
+      ActionLedger.recordAction(guild.id, context.executionId, {
+        type: 'role_assignment',
+        action: 'assign_role',
+        targetMemberId: member.id,
+        targetMemberTag: member.user?.tag,
+        targetRoleId: role.id,
+        targetRoleName: role.name,
+        targetId: role.id,
+        targetName: role.name,
+        preState: { hasRole: false },
+        postState: { hasRole: true },
+        actor: context.invokingUser ? { id: context.invokingUser.id, tag: context.invokingUser.tag } : null,
+        reversibility: 'reversible'
+      });
+    }
+
     return {
       success: true,
       action: 'assign_role',
@@ -219,6 +293,9 @@ export class Operations {
     const member = await context.resolveTarget(memberRef, 'member');
     if (!member) {
       return { success: false, error: `Member "${memberRef}" not found`, action: 'remove_role' };
+    }
+    if (member.isAmbiguous) {
+      return { success: false, error: member.clarificationQuestion, isAmbiguous: true, action: 'remove_role' };
     }
 
     const role = await context.resolveTarget(roleRef, 'role');
@@ -242,6 +319,24 @@ export class Operations {
     }
 
     await member.roles.remove(role, `Removed via Honey Bot by ${context.invokingUser.tag}`);
+
+    if (guild?.id && context?.executionId) {
+      ActionLedger.recordAction(guild.id, context.executionId, {
+        type: 'role_removal',
+        action: 'remove_role',
+        targetMemberId: member.id,
+        targetMemberTag: member.user?.tag,
+        targetRoleId: role.id,
+        targetRoleName: role.name,
+        targetId: role.id,
+        targetName: role.name,
+        preState: { hasRole: true },
+        postState: { hasRole: false },
+        actor: context.invokingUser ? { id: context.invokingUser.id, tag: context.invokingUser.tag } : null,
+        reversibility: 'reversible'
+      });
+    }
+
     return {
       success: true,
       action: 'remove_role',
@@ -290,7 +385,7 @@ export class Operations {
       reason: `Created via Honey Bot by ${context.invokingUser.tag}`
     });
 
-    ActionLedger.recordCreatedResource(context.executionId, 'channel', channel.id, channel.name);
+    ActionLedger.recordCreatedResource(context.executionId, 'channel', channel.id, channel.name, guild.id);
 
     return {
       success: true,
@@ -325,7 +420,7 @@ export class Operations {
       reason: `Created via Honey Bot by ${context.invokingUser.tag}`
     });
 
-    ActionLedger.recordCreatedResource(context.executionId, 'role', role.id, role.name);
+    ActionLedger.recordCreatedResource(context.executionId, 'role', role.id, role.name, guild.id);
 
     return {
       success: true,
@@ -423,7 +518,24 @@ export class Operations {
       };
     }
 
+    const oldNickname = member.nickname || '';
     await member.setNickname(nickname, `Changed via Honey Bot by ${context.invokingUser.tag}`);
+
+    if (guild?.id && context?.executionId) {
+      ActionLedger.recordAction(guild.id, context.executionId, {
+        type: 'nickname_change',
+        action: 'change_nickname',
+        targetMemberId: member.id,
+        targetMemberTag: member.user?.tag,
+        oldNickname,
+        newNickname: nickname,
+        preState: { nickname: oldNickname },
+        postState: { nickname },
+        actor: context.invokingUser ? { id: context.invokingUser.id, tag: context.invokingUser.tag } : null,
+        reversibility: 'reversible'
+      });
+    }
+
     return {
       success: true,
       action: 'change_nickname',
@@ -668,6 +780,22 @@ export class Operations {
     }
 
     const deleted = await channel.bulkDelete(countNum, true);
+
+    if (guild?.id && context?.executionId) {
+      ActionLedger.recordAction(guild.id, context.executionId, {
+        type: 'purge_messages',
+        action: 'purge_messages',
+        targetChannelId: channel.id,
+        targetChannelName: channel.name,
+        targetId: channel.id,
+        targetName: channel.name,
+        count: deleted.size,
+        actor: context.invokingUser ? { id: context.invokingUser.id, tag: context.invokingUser.tag } : null,
+        reversibility: 'irreversible',
+        unavailabilityReason: 'Bulk message deletions cannot be undone because Discord permanently removes purged messages from its servers.'
+      });
+    }
+
     return {
       success: true,
       action: 'purge_messages',

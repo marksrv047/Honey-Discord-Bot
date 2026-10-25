@@ -5,28 +5,35 @@ import { Verifier } from './verification.js';
 import { ConfirmationManager } from './confirmations.js';
 import { checkUserAuthorization, checkBotPermissions } from './permissions.js';
 import { getGuildStateSnapshot } from './server-state.js';
-import { ActionLedger, createErrorEmbed } from './recovery.js';
+import { ActionLedger, RecoveryEngine, RecoveryRegistry, createErrorEmbed } from './recovery.js';
 import { ExecutionContext } from './execution-context.js';
 import { IntentRouter } from './intent-router.js';
 import { TaskWorkflow } from './task-workflow.js';
 import { validateConfig, config } from './config.js';
 import { SecurityGate, SecurityPolicyViolationError } from './security-gate.js';
 import { HealthCheckEngine } from './health-check.js';
-import { formatSingleOutcome } from './format-response.js';
+import { formatSingleOutcome, formatRefinedResponse, formatMultiActionSummary } from './format-response.js';
+import { ResponseService } from './response-service.js';
+import { ModLogService } from './mod-log.js';
+import { ModlogInterpreter } from './modlog-interpreter.js';
+import { TemporaryFeedback } from './temporary-feedback.js';
+import { HelpManager } from './help.js';
+import { DiagnosticService } from './diagnostic-service.js';
 import { Logger } from './logger.js';
 
 const logger = new Logger('Commands');
 const planner = new Planner();
 const intentRouter = new IntentRouter();
+const modlogInterpreter = new ModlogInterpreter();
 
 /**
- * Slash command definitions for Discord registration.
+ * Exactly five top-level slash command definitions for Discord registration.
  */
 export const slashCommands = [
-  // Primary /go command
+  // 1. Primary /go command
   new SlashCommandBuilder()
     .setName('go')
-    .setDescription('Autonomous AI Discord Administration Agent')
+    .setDescription('Natural-language execution of supported Discord actions')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption(option =>
       option
@@ -35,23 +42,52 @@ export const slashCommands = [
         .setRequired(true)
     ),
 
-  // Safety /undo command
+  // 2. Moderation Logging /modlog command
+  new SlashCommandBuilder()
+    .setName('modlog')
+    .setDescription('Natural-language configuration and management of moderation logging')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption(option =>
+      option
+        .setName('prompt')
+        .setDescription('Describe your logging configuration or inspection request in plain English')
+        .setRequired(true)
+    ),
+
+  // 3. Diagnostics /diagnose command
+  new SlashCommandBuilder()
+    .setName('diagnose')
+    .setDescription('Health checks, diagnostics, and supported safe repairs')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption(option =>
+      option
+        .setName('prompt')
+        .setDescription('Optional description of specific problem to diagnose')
+        .setRequired(false)
+    ),
+
+  // 4. Safety /undo command
   new SlashCommandBuilder()
     .setName('undo')
-    .setDescription('Reverts the most recent administrative plan executed by the bot')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  // Diagnostics command
-  new SlashCommandBuilder()
-    .setName('diagnostics')
-    .setDescription('Inspects AI provider status, zero-cost guarantee, and Discord permissions')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  // Comprehensive self-audit and health diagnostics command
-  new SlashCommandBuilder()
-    .setName('audit')
-    .setDescription('Runs comprehensive self-audit and health diagnostics across all subsystems')
+    .setDescription('Reversal of supported, reversible actions')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption(option =>
+      option
+        .setName('prompt')
+        .setDescription('Optional description of what to undo')
+        .setRequired(false)
+    ),
+
+  // 5. Help /help command
+  new SlashCommandBuilder()
+    .setName('help')
+    .setDescription('An approachable explanation of Honey Bot and how to use it')
+    .addStringOption(option =>
+      option
+        .setName('prompt')
+        .setDescription('Optional question about Honey Bot features or setup')
+        .setRequired(false)
+    )
 ];
 
 /**
@@ -71,10 +107,14 @@ export async function handleCommandInteraction(interaction) {
 
   if (commandName === 'go') {
     await handleGoCommand(interaction);
+  } else if (commandName === 'modlog') {
+    await handleModlogCommand(interaction);
+  } else if (commandName === 'diagnose' || commandName === 'diagnostics' || commandName === 'audit') {
+    await handleDiagnoseCommand(interaction);
   } else if (commandName === 'undo') {
     await handleUndoCommand(interaction);
-  } else if (commandName === 'diagnostics' || commandName === 'audit') {
-    await handleAuditCommand(interaction);
+  } else if (commandName === 'help') {
+    await handleHelpCommand(interaction);
   }
 }
 
@@ -132,12 +172,13 @@ async function handleGoCommand(interaction) {
       });
     }
 
-    // Check if conversational / greeting
+    // Check if conversational / greeting / advice
     if (interpreted.conversationalResponse) {
       isDone = true;
       clearTimeout(timeoutGuard);
+      const refinedContent = formatRefinedResponse(interpreted.conversationalResponse);
       return await interaction.editReply({
-        content: interpreted.conversationalResponse,
+        content: refinedContent,
         embeds: [],
         components: []
       });
@@ -188,8 +229,29 @@ async function handleGoCommand(interaction) {
       const results = await Executor.executePlan(guild, plan, executionId, member);
       isDone = true;
       clearTimeout(timeoutGuard);
+
+      // Centralized mod-log recording for multi-action plan
+      for (const res of results) {
+        await ModLogService.logAction(guild, {
+          action: res.action,
+          actor: interaction.user,
+          target: res.target || res.action,
+          reason: plan.thoughtProcess || 'Multi-action plan',
+          outcome: res.status === 'COMPLETED' ? 'succeeded' : 'failed',
+          failureReason: res.details,
+          executionId,
+          source: '/go'
+        }).catch(() => {});
+      }
+
       const reportEmbed = Verifier.generateReportEmbed(plan, results, executionId);
-      return await interaction.editReply({ content: '', embeds: [reportEmbed], components: [] });
+      const summaryText = formatMultiActionSummary(results);
+      return await interaction.editReply({
+        content: summaryText,
+        embeds: [reportEmbed],
+        components: [],
+        allowedMentions: ResponseService.getAllowedMentions()
+      });
     }
 
     // Phase 3: Minimal Execution Path (Single-Resource Targeted Operation)
@@ -206,6 +268,16 @@ async function handleGoCommand(interaction) {
     if (!userAuth.authorized) {
       isDone = true;
       clearTimeout(timeoutGuard);
+      await ModLogService.logAction(guild, {
+        action: interpreted.intent,
+        actor: interaction.user,
+        target: interpreted.targetRef,
+        reason: interpreted.args?.reason || 'No reason provided',
+        outcome: 'denied',
+        failureReason: userAuth.reason,
+        executionId,
+        source: '/go'
+      }).catch(() => {});
       return await interaction.editReply({ content: `🛑 **Unauthorized:** ${userAuth.reason}` });
     }
 
@@ -213,6 +285,16 @@ async function handleGoCommand(interaction) {
     if (!botAuth.capable) {
       isDone = true;
       clearTimeout(timeoutGuard);
+      await ModLogService.logAction(guild, {
+        action: interpreted.intent,
+        actor: interaction.user,
+        target: interpreted.targetRef,
+        reason: interpreted.args?.reason || 'No reason provided',
+        outcome: 'failed',
+        failureReason: botAuth.reason,
+        executionId,
+        source: '/go'
+      }).catch(() => {});
       return await interaction.editReply({ content: `⚠️ **Bot Permission Error:** ${botAuth.reason}` });
     }
 
@@ -222,6 +304,16 @@ async function handleGoCommand(interaction) {
     } catch (secErr) {
       isDone = true;
       clearTimeout(timeoutGuard);
+      await ModLogService.logAction(guild, {
+        action: interpreted.intent,
+        actor: interaction.user,
+        target: interpreted.targetRef,
+        reason: interpreted.args?.reason || 'No reason provided',
+        outcome: 'denied',
+        failureReason: `Security Gate refusal: ${secErr.message}`,
+        executionId,
+        source: '/go'
+      }).catch(() => {});
       return await interaction.editReply({ content: `🛑 **Security Refusal:** ${secErr.message}` });
     }
 
@@ -234,6 +326,16 @@ async function handleGoCommand(interaction) {
       });
       if (!confirmed) {
         isDone = true;
+        await ModLogService.logAction(guild, {
+          action: interpreted.intent,
+          actor: interaction.user,
+          target: interpreted.targetRef,
+          reason: interpreted.args?.reason || 'No reason provided',
+          outcome: 'denied',
+          failureReason: 'Confirmation rejected by user',
+          executionId,
+          source: '/go'
+        }).catch(() => {});
         return;
       }
     }
@@ -244,28 +346,60 @@ async function handleGoCommand(interaction) {
     isDone = true;
     clearTimeout(timeoutGuard);
 
+    // Centralized mod-log recording for single action
+    await ModLogService.logAction(guild, {
+      action: interpreted.intent,
+      actor: interaction.user,
+      target: interpreted.targetRef,
+      reason: interpreted.args?.reason || 'No reason provided',
+      duration: interpreted.args?.durationMinutes,
+      count: interpreted.args?.count,
+      outcome: opResult.success ? 'succeeded' : 'failed',
+      failureReason: opResult.error,
+      executionId,
+      source: '/go'
+    }).catch(() => {});
+
     if (!opResult.success) {
+      if (opResult.isAmbiguous) {
+        return await interaction.editReply({
+          content: `❓ **Clarification Needed:**\n${opResult.error}\n\n*Please specify the user ID or exact mention.*`,
+          embeds: [],
+          components: []
+        });
+      }
       const errorEmbed = createErrorEmbed(new Error(opResult.error || 'Operation failed'), executionId);
       return await interaction.editReply({ content: '', embeds: [errorEmbed], components: [] });
     }
 
-    // Format concise outcome message (premium minimal UX)
+    // Format concise outcome message (premium minimal UX with verified smart mentions)
     const outcomeMessage = formatSingleOutcome(interpreted.intent, opResult, {
       ...interpreted.args,
+      ...opResult,
       targetRef: interpreted.targetRef,
       name: interpreted.args?.name
     });
 
-    await interaction.editReply({
+    const replyMsg = await interaction.editReply({
       content: outcomeMessage,
       embeds: [],
-      components: []
+      components: [],
+      allowedMentions: ResponseService.getAllowedMentions()
     }).catch(async (editErr) => {
       // If the interaction message was deleted in a bulk purge, post directly to channel
       if (editErr?.code === 10008 || editErr?.message?.includes('Unknown Message')) {
-        await interaction.channel?.send(outcomeMessage).catch(() => {});
+        return await interaction.channel?.send({
+          content: outcomeMessage,
+          allowedMentions: ResponseService.getAllowedMentions()
+        }).catch(() => null);
       }
+      return null;
     });
+
+    // If purge was successful, schedule auto-deletion of bot confirmation after 7 seconds
+    if (interpreted.intent === 'purge_messages' && opResult.success && replyMsg) {
+      TemporaryFeedback.scheduleDeletion(replyMsg, 7000);
+    }
 
   } catch (err) {
     isDone = true;
@@ -283,80 +417,392 @@ async function handleGoCommand(interaction) {
 }
 
 /**
+ * Handles the /modlog command for natural-language moderation log management.
+ */
+async function handleModlogCommand(interaction) {
+  await interaction.deferReply();
+  const guild = interaction.guild;
+  const member = interaction.member;
+  const prompt = interaction.options.getString('prompt');
+
+  // 1. Authorization check: Administrator or ManageGuild or Guild Owner
+  const isAuthorized = member.permissions.has(PermissionFlagsBits.Administrator) ||
+    member.permissions.has(PermissionFlagsBits.ManageGuild) ||
+    member.id === guild.ownerId;
+
+  if (!isAuthorized) {
+    return await interaction.editReply({
+      content: 'Unauthorized: Moderation log configuration requires Administrator or Manage Server permissions.'
+    });
+  }
+
+  // 2. Natural language interpretation
+  const interpreted = await modlogInterpreter.interpret(prompt);
+
+  // Check out-of-scope requests (e.g. general moderation mutations that belong to /go)
+  if (interpreted.intent === 'out_of_scope') {
+    return await interaction.editReply({
+      content: interpreted.explanation || 'This request belongs to /go. /modlog is specifically for configuring, verifying, testing, and troubleshooting moderation logging.'
+    });
+  }
+
+  // Check clarification
+  if (interpreted.intent === 'clarification_needed') {
+    return await interaction.editReply({
+      content: interpreted.clarificationQuestion
+    });
+  }
+
+  // 3. Dispatch operation
+  switch (interpreted.intent) {
+    case 'inspect_config': {
+      const conf = ModLogService.getConfig(guild.id);
+      if (!conf || !conf.channelId) {
+        return await interaction.editReply({
+          content: 'No mod-log channel is configured for this server.'
+        });
+      }
+
+      if (!conf.enabled) {
+        return await interaction.editReply({
+          content: 'Mod logging is disabled for this server. The previous channel configuration has been preserved.',
+          allowedMentions: ResponseService.getAllowedMentions()
+        });
+      }
+
+      const chMention = ResponseService.formatChannelMention(conf.channelId, conf.channelName);
+      let msg = `Mod logging is configured for ${chMention}. The channel is accessible and delivery is enabled.`;
+      if (conf.lastDeliveryFailure) {
+        msg += ` Note: Last delivery failure: ${conf.lastDeliveryFailure.error}`;
+      }
+      return await interaction.editReply({
+        content: msg,
+        allowedMentions: ResponseService.getAllowedMentions()
+      });
+    }
+
+    case 'configure_channel': {
+      let targetRef = interpreted.targetChannel;
+      if (targetRef === 'current' || !targetRef) {
+        targetRef = interaction.channelId;
+      }
+
+      const res = await ModLogService.setLogChannel(guild, targetRef, interaction.user.tag);
+      if (!res.success) {
+        return await interaction.editReply({
+          content: `Couldn't configure mod-log channel: ${res.error}`,
+          allowedMentions: ResponseService.getAllowedMentions()
+        });
+      }
+
+      const chMention = ResponseService.formatChannelMention(res.channel?.id, res.channel?.name);
+      if (interpreted.testAfterConfig) {
+        const testRes = await ModLogService.testLogChannel(guild);
+        if (testRes.success) {
+          return await interaction.editReply({
+            content: `Mod logging is configured for ${chMention}. The channel is accessible, and the test entry was delivered.`,
+            allowedMentions: ResponseService.getAllowedMentions()
+          });
+        } else {
+          return await interaction.editReply({
+            content: `The channel was updated, but delivery could not be verified. The saved configuration is ${chMention}.`,
+            allowedMentions: ResponseService.getAllowedMentions()
+          });
+        }
+      }
+
+      return await interaction.editReply({
+        content: `Mod logging is configured for ${chMention}.`,
+        allowedMentions: ResponseService.getAllowedMentions()
+      });
+    }
+
+    case 'test_channel': {
+      const conf = ModLogService.getConfig(guild.id);
+      if (!conf || !conf.channelId) {
+        return await interaction.editReply({
+          content: 'No mod-log channel is configured for this server.',
+          allowedMentions: ResponseService.getAllowedMentions()
+        });
+      }
+
+      const testRes = await ModLogService.testLogChannel(guild);
+      const chMention = ResponseService.formatChannelMention(testRes.channel?.id || conf.channelId, testRes.channel?.name || conf.channelName);
+      if (testRes.success) {
+        return await interaction.editReply({
+          content: `Mod logging is configured for ${chMention}. The channel is accessible, and the test entry was delivered.`,
+          allowedMentions: ResponseService.getAllowedMentions()
+        });
+      } else {
+        if (testRes.error?.includes('SendMessages') || testRes.error?.includes('permission')) {
+          return await interaction.editReply({
+            content: `The configured channel is ${chMention}, but Honey Bot cannot send messages there. Grant the bot Send Messages permission and try again.`,
+            allowedMentions: ResponseService.getAllowedMentions()
+          });
+        }
+        return await interaction.editReply({
+          content: `Moderation log test failed: ${testRes.error}`,
+          allowedMentions: ResponseService.getAllowedMentions()
+        });
+      }
+    }
+
+    case 'enable_logging': {
+      const res = await ModLogService.enableLogging(guild, interaction.user.tag);
+      if (res.success) {
+        const chMention = ResponseService.formatChannelMention(res.channel?.id, res.channel?.name);
+        return await interaction.editReply({
+          content: `Mod logging is configured for ${chMention}. Delivery is enabled.`,
+          allowedMentions: ResponseService.getAllowedMentions()
+        });
+      } else {
+        return await interaction.editReply({
+          content: `Couldn't enable logging: ${res.error}`,
+          allowedMentions: ResponseService.getAllowedMentions()
+        });
+      }
+    }
+
+    case 'disable_logging': {
+      ModLogService.disableLogging(guild.id, interaction.user.tag);
+      return await interaction.editReply({
+        content: 'Mod logging is disabled for this server. The previous channel configuration has been preserved.',
+        allowedMentions: ResponseService.getAllowedMentions()
+      });
+    }
+
+    case 'troubleshoot_config': {
+      const report = await ModLogService.troubleshoot(guild, {
+        autoRepair: Boolean(interpreted.repair),
+        userTagOrId: interaction.user.tag
+      });
+      if (interpreted.repair || (report.findings && report.findings.length > 0) || report.pendingCount > 0) {
+        const embed = ResponseService.buildModlogReportEmbed(report, guild);
+        return await interaction.editReply({
+          content: '',
+          embeds: [embed],
+          allowedMentions: ResponseService.getAllowedMentions()
+        });
+      }
+      return await interaction.editReply({
+        content: report.userMessage,
+        allowedMentions: ResponseService.getAllowedMentions()
+      });
+    }
+
+    default: {
+      return await interaction.editReply({
+        content: 'Could not resolve the mod-log request. You can say "set #channel as log channel", "which channel is configured", "test logging", or "disable logging".',
+        allowedMentions: ResponseService.getAllowedMentions()
+      });
+    }
+  }
+}
+
+/**
+ * Handles the /diagnose command.
+ * Flexible, natural-language-driven system diagnostics, model discovery, and safe repairs.
+ */
+async function handleDiagnoseCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true }).catch(() => {});
+  const prompt = interaction.options.getString('prompt');
+
+  const result = await DiagnosticService.diagnose(prompt, {
+    client: interaction.client,
+    guild: interaction.guild,
+    member: interaction.member,
+    user: interaction.user
+  });
+
+  if (result.checks && Object.keys(result.checks).length > 1) {
+    const embed = ResponseService.buildDiagnosticEmbed(result, result.correlationId);
+    return await interaction.editReply({
+      content: '',
+      embeds: [embed],
+      allowedMentions: ResponseService.getAllowedMentions()
+    });
+  }
+
+  await interaction.editReply({
+    content: result.response,
+    allowedMentions: ResponseService.getAllowedMentions()
+  });
+}
+
+/**
  * Handles the /undo command.
  */
 async function handleUndoCommand(interaction) {
   await interaction.deferReply();
 
   const guild = interaction.guild;
-  const lastEntry = ActionLedger.getLastExecution(guild.id);
+  const member = interaction.member;
+  const prompt = interaction.options.getString('prompt');
+  const recoveryExecutionId = Logger.generateExecutionId();
 
-  if (!lastEntry) {
+  // 1. Target Selection via RecoveryEngine
+  const selection = RecoveryEngine.selectTarget(guild.id, prompt, interaction.user);
+
+  // If clarification needed (ambiguity detected)
+  if (selection.isAmbiguous) {
     return await interaction.editReply({
-      content: 'No recent created channels or roles found in this session to undo.'
+      content: selection.clarificationQuestion
     });
   }
 
-  const [executionId, resources] = lastEntry;
-  const result = await ActionLedger.rollbackExecution(guild, executionId);
-
-  if (result.success) {
-    const embed = new EmbedBuilder()
-      .setTitle('Rollback Successful')
-      .setDescription(`Execution \`${executionId}\` has been reversed.\n\n` + result.report.map(r => `• ${r}`).join('\n'))
-      .setColor(0x5865F2);
-
-    await interaction.editReply({ embeds: [embed] });
-  } else {
-    await interaction.editReply(`Rollback failed: ${result.message}`);
+  // If listing recent actions
+  if (selection.isList) {
+    return await interaction.editReply({
+      content: selection.text
+    });
   }
+
+  // If selection failed with error (e.g. cross-guild error, not found)
+  if (selection.error) {
+    return await interaction.editReply({
+      content: selection.error
+    });
+  }
+
+  // 2. Handle Multi-Action Plan Recovery
+  if (selection.multiActionPlan) {
+    const actions = selection.multiActionPlan;
+    // Check authorizations & anti-nuke
+    for (const act of actions) {
+      const auth = RecoveryEngine.checkAuthorization(member, guild, act);
+      if (!auth.authorized) {
+        return await interaction.editReply({
+          content: auth.reason || "I can't perform this recovery with the current permissions."
+        });
+      }
+      const antiNuke = RecoveryEngine.checkAntiNuke(act, guild, member);
+      if (!antiNuke.safe) {
+        return await interaction.editReply({
+          content: antiNuke.reason
+        });
+      }
+    }
+
+    // Consequential confirmation for multi-action recovery
+    const confirmed = await ConfirmationManager.requestConfirmation(interaction, {
+      thoughtProcess: `Reverse all actions from execution ${selection.executionId}`,
+      actions: actions.map(a => ({
+        action: `undo_${a.action}`,
+        target: a.targetName || a.name || a.targetId
+      }))
+    });
+    if (!confirmed) return;
+
+    // Re-verify authorization upon confirmation
+    for (const act of actions) {
+      const auth = RecoveryEngine.checkAuthorization(member, guild, act);
+      if (!auth.authorized) {
+        return await interaction.editReply({
+          content: "I can't perform this recovery with the current permissions."
+        });
+      }
+    }
+
+    const multiRes = await RecoveryEngine.executeMultiStepRecovery(guild, actions, interaction.user, recoveryExecutionId);
+    return await interaction.editReply({
+      content: multiRes.message
+    });
+  }
+
+  const candidate = selection.candidate;
+  if (!candidate) {
+    return await interaction.editReply({
+      content: 'No recent actions found in this server to undo.'
+    });
+  }
+
+  // 3. Authorization check on candidate
+  const auth = RecoveryEngine.checkAuthorization(member, guild, candidate);
+  if (!auth.authorized) {
+    await ModLogService.logAction(guild, {
+      action: 'undo_recovery',
+      actor: interaction.user,
+      target: candidate.targetName || candidate.name || candidate.targetId || candidate.action,
+      reason: `Unauthorized recovery attempt for ${candidate.action}`,
+      outcome: 'denied',
+      failureReason: auth.reason,
+      executionId: recoveryExecutionId,
+      source: '/undo'
+    }).catch(() => {});
+
+    return await interaction.editReply({
+      content: auth.reason || "I can't perform this recovery with the current permissions."
+    });
+  }
+
+  // 4. Immutable anti-nuke check
+  const antiNuke = RecoveryEngine.checkAntiNuke(candidate, guild, member);
+  if (!antiNuke.safe) {
+    await ModLogService.logAction(guild, {
+      action: 'undo_recovery',
+      actor: interaction.user,
+      target: candidate.targetName || candidate.name || candidate.targetId || candidate.action,
+      reason: `Anti-nuke policy refusal for ${candidate.action}`,
+      outcome: 'denied',
+      failureReason: antiNuke.reason,
+      executionId: recoveryExecutionId,
+      source: '/undo'
+    }).catch(() => {});
+
+    return await interaction.editReply({
+      content: antiNuke.reason
+    });
+  }
+
+  // 5. Check if confirmation required (e.g. deleting created channel or role)
+  const handler = RecoveryRegistry.getHandler(candidate.action || candidate.type);
+  if (handler?.requiresConfirmation && candidate.recoveryStatus !== 'succeeded') {
+    const inverseName = candidate.action === 'create_channel' ? 'delete_channel' : (candidate.action === 'create_role' ? 'delete_role' : `undo_${candidate.action}`);
+    const confirmed = await ConfirmationManager.requestConfirmation(interaction, {
+      thoughtProcess: `Reverse ${candidate.action} and remove created resource ${candidate.targetName || candidate.name || ''}`,
+      actions: [{
+        action: inverseName,
+        targetChannel: candidate.targetId,
+        targetRole: candidate.targetId
+      }]
+    });
+    if (!confirmed) return;
+
+    // Re-verify authorization upon confirmation
+    const reAuth = RecoveryEngine.checkAuthorization(member, guild, candidate);
+    if (!reAuth.authorized) {
+      return await interaction.editReply({
+        content: "I can't perform this recovery with the current permissions."
+      });
+    }
+  }
+
+  // 6. Execute Recovery
+  const result = await RecoveryEngine.executeRecovery(guild, candidate, interaction.user, recoveryExecutionId);
+  return await interaction.editReply({
+    content: result.message,
+    allowedMentions: ResponseService.getAllowedMentions()
+  });
 }
 
 /**
- * Handles the /audit and /diagnostics commands.
- * Runs comprehensive, read-only health checks across all subsystems.
+ * Handles the /help command.
  */
-async function handleAuditCommand(interaction) {
-  await interaction.deferReply({ ephemeral: true }).catch(() => {});
-  const executionId = Logger.generateExecutionId();
+async function handleHelpCommand(interaction) {
+  const prompt = interaction.options.getString('prompt');
 
-  const engine = new HealthCheckEngine({
-    client: interaction.client,
-    guild: interaction.guild
-  });
-
-  const report = await engine.runAllChecks();
-
-  const color = report.overallStatus === 'healthy' ? 0x2ECC71 : (report.overallStatus === 'degraded' ? 0xE67E22 : 0xED4245);
-
-  const embed = new EmbedBuilder()
-    .setTitle('System Health & Self-Audit Report')
-    .setColor(color)
-    .setDescription(
-      `Status: **${report.overallStatus.toUpperCase()}** (${report.durationMs}ms)\n` +
-      `Summary: ${report.summary.passed} passed, ${report.summary.failed} failed, ${report.summary.inconclusive + report.summary.skipped} skipped/inconclusive.`
-    )
-    .addFields(
-      {
-        name: 'Subsystem Checks',
-        value:
-          `• Application: ${report.categories.application.filter(c => c.status === 'passed').length}/${report.categories.application.length}\n` +
-          `• Code Health: ${report.categories.code.filter(c => c.status === 'passed').length}/${report.categories.code.length}\n` +
-          `• Dependencies: ${report.categories.dependency.filter(c => c.status === 'passed').length}/${report.categories.dependency.length}\n` +
-          `• Configuration: ${report.categories.configuration.filter(c => c.status === 'passed').length}/${report.categories.configuration.length}\n` +
-          `• Security Gate: ${report.categories.security.filter(c => c.status === 'passed').length}/${report.categories.security.length}\n` +
-          `• Discord Integration: ${report.categories.discord.filter(c => c.status === 'passed').length}/${report.categories.discord.length}`,
-        inline: false
-      }
-    )
-    .setFooter({ text: `Execution ID: ${executionId} • Read-only diagnostics` });
-
-  if (report.findings.length > 0) {
-    const findingsText = report.findings.slice(0, 5).map(f =>
-      `\`[${f.severity.toUpperCase()}]\` **${f.name}**: ${f.message}\nAction: ${f.remediation}`
-    ).join('\n\n');
-    embed.addFields({ name: 'Findings & Remediation', value: findingsText.slice(0, 1024), inline: false });
+  if (!prompt || !prompt.trim()) {
+    const embed = HelpManager.createHelpEmbed();
+    return await interaction.reply({
+      embeds: [embed],
+      allowedMentions: ResponseService.getAllowedMentions()
+    });
   }
 
-  await interaction.editReply({ embeds: [embed] });
+  await interaction.deferReply();
+  const answer = await HelpManager.answerQuestion(prompt);
+  await interaction.editReply({
+    content: answer,
+    allowedMentions: ResponseService.getAllowedMentions()
+  });
 }

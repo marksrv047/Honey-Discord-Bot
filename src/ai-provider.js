@@ -41,17 +41,17 @@ CRITICAL PLANNING RULES:
 {
   "thoughtProcess": "Brief explanation of how the user's intent is mapped to Discord infrastructure",
   "clarificationNeeded": null or "Question if user intent is dangerously ambiguous",
-  "conversationalResponse": null or "Friendly, witty, honeybee-themed response if user is greeting, saying hello/hi, chatting, or asking general server advice",
+  "conversationalResponse": null or "Concise, refined, professional advice or greeting. Strictly NO persona, NO bee/buzz puns, NO emojis. If suggesting items/roles, format strictly as clean sequential bullet points with one bullet per line: • **Name** – Purpose",
   "isHighImpact": boolean (true if deleting channels/roles, banning members, or modifying > 5 items),
   "actions": [ ... list of action objects ... ]
 }
 2. Order actions logically: create categories before channels that use them; create roles before setting channel permission overwrites.
 3. Check existing server state: Do not recreate channels or roles that already exist unless asked to reset them.
 4. If the user asks for a Ticket System, use the "setup_ticket_system" action.
-5. CONVERSATIONAL & CASUAL INTERACTION:
-   If the user is saying hello/hi ("hello", "hey", "hi honey", "how are you", "who are you?", "what can you do?", "tell me a joke", or general chatting):
+5. CONVERSATIONAL & ADVISORY REQUESTS:
+   If the user asks for suggestions, recommendations, advice, or general greetings (e.g. "suggest roles for this server", "recommend channels", "hello"):
    - Set "actions": []
-   - Set "conversationalResponse": A charming, helpful, honeybee-themed response (e.g. "Bzz! 🍯 Hey there! I'm Honey, your autonomous Discord server architect. You can tell me to create categories, configure roles, set up ticket systems, or audit permissions. What would you like to build today?")
+   - Set "conversationalResponse": A refined, calm, and concise response. No fluff, no "Buzz buzz!", no cheesy slogans. If listing items, format each on a new line: \`• **Name** – Concise description\`. Never squash bullet points into a single continuous paragraph.
 6. DISCORD MENTIONS & TARGET RESOLUTION:
    - Discord users frequently reference members and channels with mentions: '<@1234567890>' is a member, '<#1234567890>' is a channel, '<@&1234567890>' is a role.
    - ALWAYS extract the Snowflake ID or name from the mention to populate targetMember, targetChannel, or targetRole!
@@ -67,6 +67,211 @@ CRITICAL PLANNING RULES:
  * Multi-Provider Zero-Cost AI Planner
  */
 export class AIProvider {
+  static telemetry = {
+    lastInferenceTimestamp: null,
+    lastDurationMs: null,
+    lastProvider: null,
+    lastConfiguredModel: null,
+    lastServingModel: null,
+    lastError: null,
+    totalCalls: 0
+  };
+
+  static recordTelemetry(data) {
+    this.telemetry = {
+      ...this.telemetry,
+      ...data,
+      totalCalls: (this.telemetry.totalCalls || 0) + (data.success ? 1 : 0)
+    };
+  }
+
+  static getTelemetry() {
+    return { ...this.telemetry };
+  }
+
+  /**
+   * Bounded diagnostic reachability check for configured AI providers.
+   * Tests connectivity and authentication without spending inference tokens on completions.
+   */
+  static async checkConnectivity(targetProvider = null) {
+    const provider = (targetProvider || config.ai.provider || 'gemini').toLowerCase();
+    const startTime = Date.now();
+
+    if (provider === 'groq') {
+      if (!config.ai.groq.apiKey) {
+        return {
+          status: 'failed',
+          provider: 'groq',
+          configuredModel: config.ai.groq.model || 'openai/gpt-oss-120b',
+          runtimeModel: null,
+          endpoint: 'api.groq.com',
+          isRemote: true,
+          error: 'GROQ_API_KEY is missing in environment.'
+        };
+      }
+      try {
+        const res = await fetch('https://api.groq.com/openai/v1/models', {
+          headers: { Authorization: `Bearer ${config.ai.groq.apiKey.trim()}` },
+          signal: AbortSignal.timeout(5000)
+        });
+        const latencyMs = Date.now() - startTime;
+        if (res.ok) {
+          return {
+            status: 'healthy',
+            provider: 'groq',
+            configuredModel: config.ai.groq.model || 'openai/gpt-oss-120b',
+            runtimeModel: null, // Groq /models returns model list, not active serving model
+            endpoint: 'api.groq.com',
+            isRemote: true,
+            latencyMs
+          };
+        }
+        if (res.status === 401 || res.status === 403) {
+          return {
+            status: 'failed',
+            provider: 'groq',
+            configuredModel: config.ai.groq.model || 'openai/gpt-oss-120b',
+            runtimeModel: null,
+            endpoint: 'api.groq.com',
+            isRemote: true,
+            error: 'Authentication failed: Invalid GROQ_API_KEY.'
+          };
+        }
+        return {
+          status: 'degraded',
+          provider: 'groq',
+          configuredModel: config.ai.groq.model || 'openai/gpt-oss-120b',
+          runtimeModel: null,
+          endpoint: 'api.groq.com',
+          isRemote: true,
+          error: `HTTP ${res.status}`
+        };
+      } catch (err) {
+        return {
+          status: 'failed',
+          provider: 'groq',
+          configuredModel: config.ai.groq.model || 'openai/gpt-oss-120b',
+          runtimeModel: null,
+          endpoint: 'api.groq.com',
+          isRemote: true,
+          error: err.name === 'TimeoutError' ? 'Connection timed out' : err.message
+        };
+      }
+    }
+
+    if (provider === 'gemini') {
+      if (!config.ai.gemini.apiKey) {
+        return {
+          status: 'failed',
+          provider: 'gemini',
+          configuredModel: config.ai.gemini.model || 'gemini-3.8-flash',
+          runtimeModel: null,
+          endpoint: 'generativelanguage.googleapis.com',
+          isRemote: true,
+          error: 'GEMINI_API_KEY is missing in environment.'
+        };
+      }
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${config.ai.gemini.apiKey}`, {
+          signal: AbortSignal.timeout(5000)
+        });
+        const latencyMs = Date.now() - startTime;
+        if (res.ok) {
+          return {
+            status: 'healthy',
+            provider: 'gemini',
+            configuredModel: config.ai.gemini.model || 'gemini-3.8-flash',
+            runtimeModel: null,
+            endpoint: 'generativelanguage.googleapis.com',
+            isRemote: true,
+            latencyMs
+          };
+        }
+        if (res.status === 400 || res.status === 403) {
+          return {
+            status: 'failed',
+            provider: 'gemini',
+            configuredModel: config.ai.gemini.model || 'gemini-3.8-flash',
+            runtimeModel: null,
+            endpoint: 'generativelanguage.googleapis.com',
+            isRemote: true,
+            error: 'Authentication failed: Invalid GEMINI_API_KEY.'
+          };
+        }
+        return {
+          status: 'degraded',
+          provider: 'gemini',
+          configuredModel: config.ai.gemini.model || 'gemini-3.8-flash',
+          runtimeModel: null,
+          endpoint: 'generativelanguage.googleapis.com',
+          isRemote: true,
+          error: `HTTP ${res.status}`
+        };
+      } catch (err) {
+        return {
+          status: 'failed',
+          provider: 'gemini',
+          configuredModel: config.ai.gemini.model || 'gemini-3.8-flash',
+          runtimeModel: null,
+          endpoint: 'generativelanguage.googleapis.com',
+          isRemote: true,
+          error: err.name === 'TimeoutError' ? 'Connection timed out' : err.message
+        };
+      }
+    }
+
+    if (provider === 'ollama') {
+      try {
+        const res = await fetch(`${config.ai.ollama.baseUrl}/api/tags`, {
+          signal: AbortSignal.timeout(5000)
+        });
+        const latencyMs = Date.now() - startTime;
+        if (res.ok) {
+          return {
+            status: 'healthy',
+            provider: 'ollama',
+            configuredModel: config.ai.ollama.model || 'llama3.1:8b',
+            runtimeModel: null,
+            endpoint: config.ai.ollama.baseUrl,
+            isRemote: false,
+            isLocal: true,
+            latencyMs
+          };
+        }
+        return {
+          status: 'failed',
+          provider: 'ollama',
+          configuredModel: config.ai.ollama.model || 'llama3.1:8b',
+          runtimeModel: null,
+          endpoint: config.ai.ollama.baseUrl,
+          isRemote: false,
+          isLocal: true,
+          error: `HTTP ${res.status}`
+        };
+      } catch (err) {
+        return {
+          status: 'failed',
+          provider: 'ollama',
+          configuredModel: config.ai.ollama.model || 'llama3.1:8b',
+          runtimeModel: null,
+          endpoint: config.ai.ollama.baseUrl,
+          isRemote: false,
+          isLocal: true,
+          error: err.name === 'TimeoutError' ? 'Connection timed out' : err.message
+        };
+      }
+    }
+
+    return {
+      status: 'failed',
+      provider,
+      configuredModel: 'unknown',
+      runtimeModel: null,
+      endpoint: 'unknown',
+      error: `Unsupported provider "${provider}"`
+    };
+  }
+
   constructor() {
     this.provider = config.ai.provider;
   }
@@ -164,6 +369,7 @@ export class AIProvider {
     const modelsToTry = [...new Set(candidateModels)];
     let lastError = null;
 
+    const callStart = Date.now();
     for (const modelName of modelsToTry) {
       try {
         const model = genAI.getGenerativeModel({
@@ -177,6 +383,15 @@ export class AIProvider {
 
         const response = await model.generateContent(promptPayload);
         const text = response.response.text();
+        AIProvider.recordTelemetry({
+          lastInferenceTimestamp: new Date().toISOString(),
+          lastDurationMs: Date.now() - callStart,
+          lastProvider: 'gemini',
+          lastConfiguredModel: config.ai.gemini.model || 'gemini-3.8-flash',
+          lastServingModel: modelName,
+          lastError: null,
+          success: true
+        });
         return this.parseJsonResponse(text);
       } catch (err) {
         lastError = err;
@@ -191,6 +406,15 @@ export class AIProvider {
       }
     }
 
+    AIProvider.recordTelemetry({
+      lastInferenceTimestamp: new Date().toISOString(),
+      lastDurationMs: Date.now() - callStart,
+      lastProvider: 'gemini',
+      lastConfiguredModel: config.ai.gemini.model || 'gemini-3.8-flash',
+      lastServingModel: null,
+      lastError: lastError?.message || 'All Gemini models in fallback chain failed',
+      success: false
+    });
     logger.error('All Gemini models in fallback chain failed', { error: lastError?.message });
     throw lastError;
   }
@@ -212,6 +436,7 @@ export class AIProvider {
 
     const modelsToTry = [...new Set(candidateModels)];
     let lastError = null;
+    const callStart = Date.now();
 
     for (const modelName of modelsToTry) {
       try {
@@ -256,6 +481,15 @@ export class AIProvider {
 
         const data = await response.json();
         const content = data.choices[0].message.content;
+        AIProvider.recordTelemetry({
+          lastInferenceTimestamp: new Date().toISOString(),
+          lastDurationMs: Date.now() - callStart,
+          lastProvider: 'groq',
+          lastConfiguredModel: config.ai.groq.model || 'openai/gpt-oss-120b',
+          lastServingModel: data.model || modelName,
+          lastError: null,
+          success: true
+        });
         return this.parseJsonResponse(content);
       } catch (err) {
         lastError = err;
@@ -264,6 +498,15 @@ export class AIProvider {
       }
     }
 
+    AIProvider.recordTelemetry({
+      lastInferenceTimestamp: new Date().toISOString(),
+      lastDurationMs: Date.now() - callStart,
+      lastProvider: 'groq',
+      lastConfiguredModel: config.ai.groq.model || 'openai/gpt-oss-120b',
+      lastServingModel: null,
+      lastError: lastError?.message || 'All Groq models failed',
+      success: false
+    });
     logger.error('All Groq models failed', { error: lastError?.message });
     throw lastError;
   }

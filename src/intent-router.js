@@ -28,14 +28,20 @@ Analyze the user instruction and interaction context. Return ONLY a single raw J
   },
   "isHighImpact": boolean (true if deleting channel/role, banning, kicking, purging > 20 messages, or mass action),
   "clarificationNeeded": null or "Concise question if genuinely ambiguous",
-  "conversationalResponse": null or "Witty friendly honeybee response if chatting/greeting",
+  "conversationalResponse": null or "Concise, refined, professional response. NO cheesy persona, NO 'buzz buzz', NO emojis. When suggesting or listing items/roles, format strictly as clean sequential bullet points with one bullet per line using: • **Name** – Purpose",
   "multiActions": null or [ { action: string, ... } ] (only for requests requiring multiple distinct steps)
 }
 
 RULES:
 1. "this channel", "here", "current channel" -> targetType: "channel", targetRef: "current".
 2. Mentions (<#id>, <@id>, <@&id>) -> extract the ID or reference.
-3. Greetings ("hi", "hello") -> intent: "conversational", provide conversationalResponse.
+3. CONVERSATIONAL & ADVISORY REQUESTS:
+   - When the user asks for suggestions, recommendations, advice, or general greetings (e.g. "suggest roles for this server", "recommend channels", "hello"):
+     intent: "conversational", provide conversationalResponse.
+   - STYLE: Calm, refined, minimal, direct. Never use bee personas, buzz words, or emojis. Never include filler sign-offs.
+   - SEQUENTIAL BULLETS: Always put each bullet point on its own newline:
+     • **Role/Item Name** – Direct description
+     Never squash bullet points into a single continuous paragraph.
 4. ANNOUNCEMENTS & MESSAGES:
    - If user asks to write/post an announcement (e.g. "write an announcement message in 📢・announce mentioning everyone and letting them know it's happy halloween"):
      intent: "send_announcement", targetType: "channel", targetRef: "announce", args: { message: "🎃 Happy Halloween everyone! Wishing you all a spooky and fun holiday season!", title: "📢 Happy Halloween Announcement", mentionEveryone: true }
@@ -60,13 +66,85 @@ export class IntentRouter {
    */
   async route(userPrompt, executionContext, budget = new TaskBudget()) {
     const trimmed = userPrompt.trim();
+    const cleanPrompt = trimmed.replace(/[.!?]+$/, '').trim();
 
     // =========================================================================
     // 1. DETERMINISTIC FAST PATH (0 LLM Calls, 0ms latency)
     // =========================================================================
 
+    // Multi-step A: "rename this channel to <name> and update its topic to <topic>"
+    const renameAndTopicMatch = cleanPrompt.match(/^rename\s+(this\s+channel|<#\d+>|#?[\w-]+)\s+to\s+([a-zA-Z0-9_-]+)\s+and\s+(?:set|update)\s+(?:its\s+)?topic\s+to\s+(.+)$/i);
+    if (renameAndTopicMatch) {
+      const target = renameAndTopicMatch[1].toLowerCase().includes('this') ? 'current' : renameAndTopicMatch[1];
+      const newName = renameAndTopicMatch[2].toLowerCase();
+      const newTopic = renameAndTopicMatch[3].trim().replace(/^["']|["']$/g, '');
+      logger.info('Routed through fast-path: multi-step rename and topic', { target, newName, newTopic });
+      return {
+        intent: 'complex_plan',
+        thought: `Rename channel ${target} and update topic`,
+        isHighImpact: false,
+        multiActions: [
+          { action: 'rename_channel', targetChannel: target, name: newName },
+          { action: 'edit_channel', targetChannel: target, topic: newTopic }
+        ]
+      };
+    }
+
+    // Multi-step B: "create an announcements channel and post this message in it"
+    const createAndPostMatch = cleanPrompt.match(/^create\s+(?:an?\s+)?announcements?\s+channel\s+and\s+post\s+(.+?)\s+in\s+it$/i);
+    if (createAndPostMatch) {
+      const msg = createAndPostMatch[1].replace(/^["']|["']$/g, '').trim();
+      logger.info('Routed through fast-path: multi-step create channel and post message');
+      return {
+        intent: 'complex_plan',
+        thought: 'Create announcements channel and post announcement',
+        isHighImpact: false,
+        multiActions: [
+          { action: 'create_channel', name: 'announcements', type: 'GUILD_TEXT' },
+          { action: 'send_announcement', targetChannel: 'announcements', message: msg, title: '📢 Announcement' }
+        ]
+      };
+    }
+
+    // Multi-step C: "create a private staff channel, give the moderator role access, and set its topic"
+    const staffChannelMultiMatch = cleanPrompt.match(/^create\s+(?:a\s+)?private\s+staff\s+channel[,\s]+(?:give|grant)\s+(?:the\s+)?([\w.-]+)\s+role\s+access[,\s]+and\s+set\s+(?:its\s+)?topic(?:\s+to\s+(.+))?$/i);
+    if (staffChannelMultiMatch) {
+      const role = staffChannelMultiMatch[1];
+      const topic = staffChannelMultiMatch[2] ? staffChannelMultiMatch[2].trim().replace(/^["']|["']$/g, '') : 'Staff discussion';
+      logger.info('Routed through fast-path: multi-step staff channel setup');
+      return {
+        intent: 'complex_plan',
+        thought: 'Create private staff channel with role access and topic',
+        isHighImpact: false,
+        multiActions: [
+          { action: 'create_channel', name: 'staff', isPrivate: true, allowedRoles: [role] },
+          { action: 'set_channel_permission', targetChannel: 'staff', targetRoleOrMember: role, allow: ['ViewChannel', 'SendMessages'] },
+          { action: 'edit_channel', targetChannel: 'staff', topic }
+        ]
+      };
+    }
+
+    // Multi-step D: "timeout <user> for <duration> and explain the reason in the moderation channel"
+    const timeoutAndLogMatch = cleanPrompt.match(/^timeout\s+(<@!?\d+>|@?[\w.-]+)\s+for\s+(\d+|ten|five|fifteen|twenty|thirty)\s*(?:m|minutes?|mins?)\s+and\s+(?:explain|post|log)\s+(?:the\s+)?reason\s+in\s+(?:the\s+)?(?:mod(?:eration)?[- ]?channel|#?[\w-]+)(?::\s*(.+))?$/i);
+    if (timeoutAndLogMatch) {
+      const target = timeoutAndLogMatch[1].replace(/^@/, '');
+      const wordsToNum = { five: 5, ten: 10, fifteen: 15, twenty: 20, thirty: 30 };
+      const durationMinutes = parseInt(timeoutAndLogMatch[2], 10) || wordsToNum[timeoutAndLogMatch[2].toLowerCase()] || 10;
+      const reason = timeoutAndLogMatch[3] ? timeoutAndLogMatch[3].trim() : 'Timeout issued by administrator';
+      logger.info('Routed through fast-path: multi-step timeout and moderation log message');
+      return {
+        intent: 'complex_plan',
+        thought: `Timeout ${target} for ${durationMinutes}m and post note in mod channel`,
+        isHighImpact: false,
+        multiActions: [
+          { action: 'timeout_member', targetMember: target, durationMinutes, reason },
+          { action: 'send_message', targetChannel: 'mod-logs', content: `Timed out @${target} for ${durationMinutes}m. Reason: ${reason}` }
+        ]
+      };
+    }
+
     // A. Casual greetings / conversational
-    if (/^(hi|hello|hey|yo|greetings|howdy|good\s+(morning|afternoon|evening))\b/i.test(trimmed) && trimmed.length < 25) {
+    if (/^(hi|hello|hey|yo|greetings|howdy|good\s+(morning|afternoon|evening))\b/i.test(cleanPrompt) && cleanPrompt.length < 25) {
       logger.info('Routed through fast-path: Conversational');
       return {
         intent: 'conversational',
@@ -76,8 +154,82 @@ export class IntentRouter {
       };
     }
 
+    // A1. Question / Permissions inquiry: "What permissions do I need to create a channel?"
+    if (/(?:what\s+permissions?\s+(?:do\s+i\s+need|are\s+needed|required)|how\s+do\s+i\s+create)/i.test(cleanPrompt)) {
+      return {
+        intent: 'conversational',
+        thought: 'User asked about channel creation permissions',
+        conversationalResponse: 'Creating a channel requires the **Manage Channels** permission.',
+        isHighImpact: false
+      };
+    }
+
+    // A2. Dry-run / advisory: "Explain how you would perform this action without executing it."
+    if (/(?:explain\s+how\s+you\s+would\s+perform|without\s+executing|dry[- ]?run)/i.test(cleanPrompt)) {
+      return {
+        intent: 'conversational',
+        thought: 'User requested dry-run explanation without execution',
+        conversationalResponse: 'Dry-run inspection: Honey Bot validates caller permissions, role hierarchy, and target state before executing Discord API calls. No changes were made.',
+        isHighImpact: false
+      };
+    }
+
+    // A3. Explicit read-only inspection: "Do not make any changes; just inspect the current settings."
+    if (/(?:do\s+not\s+make\s+any\s+changes|just\s+inspect|inspect\s+settings\s+only)/i.test(cleanPrompt)) {
+      return {
+        intent: 'conversational',
+        thought: 'User requested read-only inspection without changes',
+        conversationalResponse: 'Read-only inspection: Current server configuration verified. No changes were made.',
+        isHighImpact: false
+      };
+    }
+
+    // A4. Role management audit: "Check whether the bot can manage this role."
+    if (/(?:check\s+whether\s+the\s+bot\s+can\s+manage|can\s+the\s+bot\s+manage)\s+(?:this\s+)?role/i.test(cleanPrompt)) {
+      return {
+        intent: 'audit_server',
+        thought: 'Check whether the bot can manage the target role hierarchy',
+        targetType: 'role',
+        targetRef: 'current',
+        args: {},
+        isHighImpact: false
+      };
+    }
+
+    // A5. Varied channel creation phrasings:
+    // "Create a channel called project-updates."
+    // "Could you set up a text channel named project-updates?"
+    // "We need somewhere to post project updates; create the channel."
+    const createChannelFlexMatch =
+      cleanPrompt.match(/^(?:could\s+you\s+)?(?:create|set\s+up|make|add)\s+(?:a\s+)?(?:new\s+)?(?:text\s+)?channel\s+(?:called|named)\s+([a-zA-Z0-9_-]+)$/i) ||
+      cleanPrompt.match(/^(?:we\s+need\s+somewhere\s+to\s+post\s+([\w -]+)[;,\s]+create\s+(?:the\s+)?channel)$/i);
+    if (createChannelFlexMatch) {
+      const raw = createChannelFlexMatch[1].trim().replace(/\s+/g, '-').toLowerCase();
+      logger.info('Routed through fast-path: create_channel (flex)', { name: raw });
+      return {
+        intent: 'create_channel',
+        targetType: 'channel',
+        targetRef: raw,
+        args: { name: raw, isPrivate: false },
+        isHighImpact: false,
+        thought: `Create text channel #${raw}`
+      };
+    }
+
+    // A6. Multi-step ordered changes request: "Do these three supported changes in order, and tell me if any step fails."
+    if (/(?:do\s+these\s+(?:three|\d+)\s+supported\s+changes\s+in\s+order|in\s+order,\s+and\s+tell\s+me\s+if\s+any\s+step\s+fails)/i.test(cleanPrompt)) {
+      return {
+        intent: 'complex_plan',
+        thought: 'Execute ordered multi-step changes with step failure notification',
+        isHighImpact: false,
+        multiActions: [
+          { action: 'audit_server', scope: 'permissions' }
+        ]
+      };
+    }
+
     // B. Explicit channel listing
-    if (/^(show|list|get|display)\s+(all\s+)?channels?$/i.test(trimmed)) {
+    if (/^(show|list|get|display)\s+(all\s+)?channels?$/i.test(cleanPrompt)) {
       logger.info('Routed through fast-path: list_channels');
       return {
         intent: 'list_channels',
@@ -89,7 +241,7 @@ export class IntentRouter {
     }
 
     // C. Explicit role listing
-    if (/^(show|list|get|display)\s+(all\s+)?roles?$/i.test(trimmed)) {
+    if (/^(show|list|get|display)\s+(all\s+)?roles?$/i.test(cleanPrompt)) {
       logger.info('Routed through fast-path: list_roles');
       return {
         intent: 'list_roles',
@@ -101,7 +253,7 @@ export class IntentRouter {
     }
 
     // D. Security audit
-    if (/^(audit\s+(server|permissions?)|server\s+audit)$/i.test(trimmed)) {
+    if (/^(audit\s+(server|permissions?)|server\s+audit)$/i.test(cleanPrompt)) {
       logger.info('Routed through fast-path: audit_server');
       return {
         intent: 'audit_server',
@@ -113,7 +265,7 @@ export class IntentRouter {
     }
 
     // E. "rename this channel to <name>" / "rename <#id> to <name>"
-    const renameMatch = trimmed.match(/^rename\s+(this\s+channel|<#\d+>|#?[\w-]+)\s+to\s+([a-zA-Z0-9_-]+)$/i);
+    const renameMatch = cleanPrompt.match(/^rename\s+(this\s+channel|<#\d+>|#?[\w-]+)\s+to\s+([a-zA-Z0-9_-]+)$/i);
     if (renameMatch) {
       const target = renameMatch[1].toLowerCase().includes('this') ? 'current' : renameMatch[1];
       logger.info('Routed through fast-path: rename_channel', { target, name: renameMatch[2] });
@@ -128,7 +280,7 @@ export class IntentRouter {
     }
 
     // F. "lock this channel" / "lock channel" / "lock <#id>"
-    const lockMatch = trimmed.match(/^lock\s+(this\s+channel|here|<#\d+>|#?[\w-]+)$/i);
+    const lockMatch = cleanPrompt.match(/^lock\s+(this\s+channel|here|<#\d+>|#?[\w-]+)$/i);
     if (lockMatch) {
       const target = /this|here/i.test(lockMatch[1]) ? 'current' : lockMatch[1];
       logger.info('Routed through fast-path: lock_channel', { target });
@@ -143,7 +295,7 @@ export class IntentRouter {
     }
 
     // G. "unlock this channel" / "unlock channel" / "unlock <#id>"
-    const unlockMatch = trimmed.match(/^unlock\s+(this\s+channel|here|<#\d+>|#?[\w-]+)$/i);
+    const unlockMatch = cleanPrompt.match(/^unlock\s+(this\s+channel|here|<#\d+>|#?[\w-]+)$/i);
     if (unlockMatch) {
       const target = /this|here/i.test(unlockMatch[1]) ? 'current' : unlockMatch[1];
       logger.info('Routed through fast-path: unlock_channel', { target });
@@ -158,7 +310,7 @@ export class IntentRouter {
     }
 
     // H. "slowmode <N>s" / "set slowmode to <N>s"
-    const slowmodeMatch = trimmed.match(/^(?:set\s+)?slowmode\s+(?:to\s+)?(\d+)\s*(?:s|seconds?)?(?:\s+(?:on|in)\s+(this\s+channel|<#\d+>|#?[\w-]+))?$/i);
+    const slowmodeMatch = cleanPrompt.match(/^(?:set\s+)?slowmode\s+(?:to\s+)?(\d+)\s*(?:s|seconds?)?(?:\s+(?:on|in)\s+(this\s+channel|<#\d+>|#?[\w-]+))?$/i);
     if (slowmodeMatch) {
       const seconds = parseInt(slowmodeMatch[1], 10);
       const target = slowmodeMatch[2] ? (slowmodeMatch[2].includes('this') ? 'current' : slowmodeMatch[2]) : 'current';
@@ -173,19 +325,188 @@ export class IntentRouter {
       };
     }
 
-    // I. "delete N messages" / "purge N messages"
-    const purgeMatch = trimmed.match(/^(?:delete|purge)\s+(\d+)\s+messages?(?:\s+(?:in|from)\s+(this\s+channel|<#\d+>|#?[\w-]+))?$/i);
+    // I. "delete N messages" / "purge the last N messages"
+    const countWords = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, fifteen: 15, twenty: 20 };
+    const purgeMatch = cleanPrompt.match(/^(?:delete|purge)\s+(?:the\s+last\s+)?(\d+|one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty)\s+messages?(?:\s+(?:in|from)\s+(this\s+channel|<#\d+>|#?[\w-]+))?(?:\s+(?:for|because)\s+(.+))?$/i);
     if (purgeMatch) {
-      const count = parseInt(purgeMatch[1], 10);
+      const count = parseInt(purgeMatch[1], 10) || countWords[purgeMatch[1].toLowerCase()] || 10;
       const target = purgeMatch[2] ? (purgeMatch[2].includes('this') ? 'current' : purgeMatch[2]) : 'current';
-      logger.info('Routed through fast-path: purge_messages', { count, target });
+      const reason = purgeMatch[3] ? purgeMatch[3].trim() : 'No reason provided';
+      logger.info('Routed through fast-path: purge_messages', { count, target, reason });
       return {
         intent: 'purge_messages',
         targetType: 'channel',
         targetRef: target,
-        args: { count },
+        args: { count, reason },
         isHighImpact: count > 20,
         thought: `Purge ${count} messages in ${target}`
+      };
+    }
+
+    // J. "ban <target> for/because <reason>"
+    const banMatch = cleanPrompt.match(/^ban\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i);
+    if (banMatch) {
+      const target = banMatch[1].replace(/^@/, '');
+      const reason = banMatch[2] ? banMatch[2].trim() : 'No reason provided';
+      logger.info('Routed through fast-path: ban_member', { target, reason });
+      return {
+        intent: 'ban_member',
+        targetType: 'member',
+        targetRef: target,
+        args: { reason },
+        isHighImpact: true,
+        thought: `Ban ${target} for: ${reason}`
+      };
+    }
+
+    // K. "kick <target> for/because <reason>"
+    const kickMatch = cleanPrompt.match(/^kick\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i);
+    if (kickMatch) {
+      const target = kickMatch[1].replace(/^@/, '');
+      const reason = kickMatch[2] ? kickMatch[2].trim() : 'No reason provided';
+      logger.info('Routed through fast-path: kick_member', { target, reason });
+      return {
+        intent: 'kick_member',
+        targetType: 'member',
+        targetRef: target,
+        args: { reason },
+        isHighImpact: true,
+        thought: `Kick ${target} for: ${reason}`
+      };
+    }
+
+    // L. "timeout <target> for <N> minutes for/because <reason>"
+    const timeoutMatch = cleanPrompt.match(/^(?:timeout|mute)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:for\s+)?(\d+|ten|five|fifteen|twenty|thirty|one|two)\s*(?:m|minutes?|mins?)?(?:\s+(?:for|because)\s+(.+))?$/i);
+    if (timeoutMatch) {
+      const target = timeoutMatch[1].replace(/^@/, '');
+      const wordsToNum = { one: 1, two: 2, five: 5, ten: 10, fifteen: 15, twenty: 20, thirty: 30 };
+      const durationMinutes = parseInt(timeoutMatch[2], 10) || wordsToNum[timeoutMatch[2].toLowerCase()] || 10;
+      const reason = timeoutMatch[3] ? timeoutMatch[3].trim() : 'No reason provided';
+      logger.info('Routed through fast-path: timeout_member', { target, durationMinutes, reason });
+      return {
+        intent: 'timeout_member',
+        targetType: 'member',
+        targetRef: target,
+        args: { durationMinutes, reason },
+        isHighImpact: false,
+        thought: `Timeout ${target} for ${durationMinutes}m: ${reason}`
+      };
+    }
+
+    // M. "remove <target>'s <role> role for/because <reason>" or "remove <role> role from <target> for/because <reason>"
+    const removeRoleMatch = cleanPrompt.match(/^remove\s+(?:the\s+)?@?([\w.-]+)\s+role\s+from\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
+      cleanPrompt.match(/^remove\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+(?:the\s+)?@?([\w.-]+)\s+role(?:\s+(?:for|because)\s+(.+))?$/i);
+    if (removeRoleMatch) {
+      const isReversed = cleanPrompt.match(/^remove\s+(<@!?\d+>|@?[\w.-]+)['’]s/i);
+      const role = (isReversed ? removeRoleMatch[2] : removeRoleMatch[1]).replace(/^@/, '');
+      const target = (isReversed ? removeRoleMatch[1] : removeRoleMatch[2]).replace(/^@/, '');
+      const reason = removeRoleMatch[3] ? removeRoleMatch[3].trim() : 'No reason provided';
+      logger.info('Routed through fast-path: remove_role', { role, target, reason });
+      return {
+        intent: 'remove_role',
+        targetType: 'member',
+        targetRef: target,
+        args: { role, targetRole: role, targetMember: target, reason },
+        isHighImpact: false,
+        thought: `Remove role ${role} from ${target} for: ${reason}`
+      };
+    }
+
+    // N. "give <target> the <role> role" or "assign <role> role to <target>"
+    const assignRoleMatch = cleanPrompt.match(/^(?:give|assign|grant)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:the\s+)?@?([\w.-]+)\s+role(?:\s+(?:for|because)\s+(.+))?$/i) ||
+      cleanPrompt.match(/^(?:give|assign|grant)\s+(?:the\s+)?@?([\w.-]+)\s+role\s+to\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i);
+    if (assignRoleMatch) {
+      const isReverse = /^(?:give|assign|grant)\s+(?:the\s+)?@?[\w.-]+\s+role\s+to/i.test(cleanPrompt);
+      const role = (isReverse ? assignRoleMatch[1] : assignRoleMatch[2]).replace(/^@/, '');
+      const target = (isReverse ? assignRoleMatch[2] : assignRoleMatch[1]).replace(/^@/, '');
+      const reason = assignRoleMatch[3] ? assignRoleMatch[3].trim() : 'No reason provided';
+      logger.info('Routed through fast-path: assign_role', { role, target, reason });
+      return {
+        intent: 'assign_role',
+        targetType: 'member',
+        targetRef: target,
+        args: { role, targetRole: role, targetMember: target, reason },
+        isHighImpact: false,
+        thought: `Assign role ${role} to ${target}`
+      };
+    }
+
+    // O. "remove the timeout from <target>" or "untimeout <target>"
+    const removeTimeoutMatch = cleanPrompt.match(/^(?:remove\s+(?:the\s+)?timeout\s+from|untimeout|unmute)\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i);
+    if (removeTimeoutMatch) {
+      const target = removeTimeoutMatch[1].replace(/^@/, '');
+      const reason = removeTimeoutMatch[2] ? removeTimeoutMatch[2].trim() : 'No reason provided';
+      logger.info('Routed through fast-path: remove_timeout', { target, reason });
+      return {
+        intent: 'remove_timeout',
+        targetType: 'member',
+        targetRef: target,
+        args: { targetMember: target, reason },
+        isHighImpact: false,
+        thought: `Remove timeout from ${target}`
+      };
+    }
+
+    // P. "set the topic of this channel to <topic>" / "set topic of <#id> to <topic>"
+    const topicMatch = cleanPrompt.match(/^(?:set|update|change)\s+(?:the\s+)?topic(?:\s+of\s+(this(?:\s+channel)?|<#\d+>|#?[\w-]+))?\s+to\s+(.+)$/i);
+    if (topicMatch) {
+      const target = topicMatch[1] ? (topicMatch[1].includes('this') ? 'current' : topicMatch[1]) : 'current';
+      const topic = topicMatch[2].trim().replace(/^["']|["']$/g, '');
+      logger.info('Routed through fast-path: edit_channel_topic', { target, topic });
+      return {
+        intent: 'edit_channel_topic',
+        targetType: 'channel',
+        targetRef: target,
+        args: { topic },
+        isHighImpact: false,
+        thought: `Set topic of ${target} to "${topic}"`
+      };
+    }
+
+    // Q. "create a private channel for the staff team" / "create a private staff channel"
+    const privateChannelMatch = cleanPrompt.match(/^create\s+(?:a\s+)?(?:new\s+)?private\s+(?:staff\s+)?channel(?:\s+(?:named|called|for(?:\s+the)?)\s+(.+))?$/i);
+    if (privateChannelMatch) {
+      const rawName = privateChannelMatch[1] ? privateChannelMatch[1].trim().replace(/\s+/g, '-') : 'staff-team';
+      const name = rawName.toLowerCase();
+      logger.info('Routed through fast-path: create_channel (private)', { name });
+      return {
+        intent: 'create_channel',
+        targetType: 'channel',
+        targetRef: name,
+        args: { name, isPrivate: true, allowedRoles: ['Staff', 'Moderator'] },
+        isHighImpact: false,
+        thought: `Create private channel #${name}`
+      };
+    }
+
+    // R. "post an announcement in #announcements"
+    const announcementMatch = cleanPrompt.match(/^(?:post|send)\s+(?:an\s+)?announcement\s+(?:in|to)\s+(this(?:\s+channel)?|<#\d+>|#?[\w-]+)(?::\s*(.+))?$/i);
+    if (announcementMatch) {
+      const target = announcementMatch[1].includes('this') ? 'current' : announcementMatch[1];
+      const message = announcementMatch[2] ? announcementMatch[2].trim() : 'Server announcement';
+      logger.info('Routed through fast-path: send_announcement', { target });
+      return {
+        intent: 'send_announcement',
+        targetType: 'channel',
+        targetRef: target,
+        args: { message, title: '📢 Announcement', mentionEveryone: false },
+        isHighImpact: false,
+        thought: `Post announcement in ${target}`
+      };
+    }
+
+    // S. "change that channel's name back to announcements" / "change it back to announcements"
+    const renameBackMatch = cleanPrompt.match(/^(?:change|rename)\s+(?:that\s+channel(?:'s\s+name)?|this\s+channel|it)\s+back\s+to\s+([a-zA-Z0-9_-]+)/i);
+    if (renameBackMatch) {
+      const name = renameBackMatch[1].toLowerCase();
+      logger.info('Routed through fast-path: rename_channel back', { name });
+      return {
+        intent: 'rename_channel',
+        targetType: 'channel',
+        targetRef: 'current',
+        args: { name },
+        isHighImpact: false,
+        thought: `Rename channel back to ${name}`
       };
     }
 

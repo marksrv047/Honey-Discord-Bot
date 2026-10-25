@@ -1,4 +1,5 @@
 import { ChannelType, PermissionFlagsBits } from 'discord.js';
+import { ActionLedger } from './recovery.js';
 import { Logger } from './logger.js';
 
 const logger = new Logger('ExecutionContext');
@@ -26,6 +27,17 @@ function findInCache(cache, predicate) {
     return Array.from(cache.values()).find(predicate);
   }
   return null;
+}
+
+function findMultipleInCache(cache, predicate) {
+  if (!cache) return [];
+  if (typeof cache.filter === 'function') {
+    return Array.from(cache.filter(predicate).values());
+  }
+  if (typeof cache.values === 'function') {
+    return Array.from(cache.values()).filter(predicate);
+  }
+  return [];
 }
 
 /**
@@ -72,10 +84,12 @@ export class ExecutionContext {
   /**
    * Resolves a target resource using the shortest reliable path:
    * 1. Relative keyword ('this', 'here', 'current') -> Current Channel
-   * 2. Discord Mention (<#id>, <@id>, <@&id>) -> Direct ID extraction
-   * 3. Direct Snowflake ID
-   * 4. Discord.js Cache lookup (O(1) without API calls)
-   * 5. Targeted API fetch (only if not found in cache)
+   * 2. Execution history ('the channel we just created', 'the role I mentioned', 'that user')
+   * 3. Discord Mention (<#id>, <@id>, <@&id>) -> Direct ID extraction
+   * 4. Direct Snowflake ID
+   * 5. Discord.js Cache lookup (O(1) without API calls)
+   * 6. Targeted API fetch (only if not found in cache)
+   * Detects and reports ambiguous matches (e.g. multiple members named Alex).
    * NEVER performs full-server enumeration unless resourceType is explicitly 'collection'.
    */
   async resolveTarget(reference, resourceType = 'channel') {
@@ -98,7 +112,35 @@ export class ExecutionContext {
       }
     }
 
-    // 2. Mention extraction
+    // 2. Contextual history resolution ("the channel we just created", "the role I mentioned", "that user")
+    if (resourceType === 'channel' && /(?:the\s+)?(?:channel\s+we\s+just\s+created|created\s+channel|that\s+channel)/i.test(refStr)) {
+      const lastCreated = ActionLedger.getLastCreatedChannel(this.guild.id);
+      if (lastCreated?.id) {
+        resolved = this.guild.channels.cache?.get(lastCreated.id) || await this.guild.channels?.fetch?.(lastCreated.id).catch(() => null);
+        if (resolved) {
+          this.targetCache.set(cacheKey, resolved);
+          return resolved;
+        }
+      }
+    }
+
+    if (resourceType === 'role' && /(?:the\s+)?(?:role\s+i\s+mentioned|created\s+role|that\s+role)/i.test(refStr)) {
+      const lastCreated = ActionLedger.getLastCreatedRole(this.guild.id);
+      if (lastCreated?.id) {
+        resolved = this.guild.roles.cache?.get(lastCreated.id) || await this.guild.roles?.fetch?.(lastCreated.id).catch(() => null);
+        if (resolved) {
+          this.targetCache.set(cacheKey, resolved);
+          return resolved;
+        }
+      }
+    }
+
+    if (resourceType === 'member' && /(?:that\s+user|that\s+member)/i.test(refStr)) {
+      const lastTargeted = this.targetCache.get('last_targeted_member');
+      if (lastTargeted) return lastTargeted;
+    }
+
+    // 3. Mention extraction
     let cleanId = refStr;
     const channelMention = refStr.match(/^<#(\d+)>$/);
     const userMention = refStr.match(/^<@!?(\d+)>$/);
@@ -212,22 +254,46 @@ export class ExecutionContext {
           }
         }
 
-        // Targeted Username lookup
+        // Targeted Username lookup with ambiguity detection
         if (!resolved && this.guild.members?.cache) {
           const cleanUsername = refStr.replace(/^@/, '').toLowerCase();
           const normRef = normalizeName(cleanUsername);
 
-          resolved = findInCache(this.guild.members.cache, m => 
+          const matches = findMultipleInCache(this.guild.members.cache, m => 
             m.user?.username?.toLowerCase() === cleanUsername || 
             m.displayName?.toLowerCase() === cleanUsername ||
             normalizeName(m.user?.username) === normRef ||
             normalizeName(m.displayName) === normRef
           );
 
+          if (matches.length > 1) {
+            // Ambiguity detected: do not arbitrarily pick one
+            return {
+              isAmbiguous: true,
+              candidateCount: matches.length,
+              name: refStr.replace(/^@/, ''),
+              clarificationQuestion: `I found ${matches.length} members named ${refStr.replace(/^@/, '')}. Which one did you mean?`
+            };
+          }
+
+          if (matches.length === 1) {
+            resolved = matches[0];
+          }
+
           if (!resolved && typeof this.guild.members?.fetch === 'function') {
             try {
               const fetched = await this.guild.members.fetch({ query: cleanUsername, limit: 5 });
               const members = getCacheValues(fetched);
+
+              if (members.length > 1) {
+                return {
+                  isAmbiguous: true,
+                  candidateCount: members.length,
+                  name: refStr.replace(/^@/, ''),
+                  clarificationQuestion: `I found ${members.length} members named ${refStr.replace(/^@/, '')}. Which one did you mean?`
+                };
+              }
+
               resolved = members[0] || null;
             } catch (err) {
               logger.debug(`Member query fetch failed: ${err.message}`);
@@ -238,8 +304,11 @@ export class ExecutionContext {
       }
     }
 
-    if (resolved) {
+    if (resolved && !resolved.isAmbiguous) {
       this.targetCache.set(cacheKey, resolved);
+      if (resourceType === 'member') {
+        this.targetCache.set('last_targeted_member', resolved);
+      }
     }
 
     return resolved;
