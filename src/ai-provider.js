@@ -144,39 +144,54 @@ USER INSTRUCTION:
       throw new Error('GROQ_API_KEY is missing. Get a free API key at https://console.groq.com/');
     }
 
-    try {
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${config.ai.groq.apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: config.ai.groq.model,
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: promptPayload }
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.2
-        })
-      });
+    const candidateModels = [
+      config.ai.groq.model || 'openai/gpt-oss-120b',
+      'openai/gpt-oss-120b',
+      'qwen/qwen3.8-27b',
+      'openai/gpt-oss-20b'
+    ];
 
-      if (!response.ok) {
-        const errorBody = await response.text();
-        if (response.status === 429) {
-          throw new Error('Groq free rate limit reached. Please wait a minute or use Gemini / Ollama.');
+    const modelsToTry = [...new Set(candidateModels)];
+    let lastError = null;
+
+    for (const modelName of modelsToTry) {
+      try {
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${config.ai.groq.apiKey.trim()}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: modelName,
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: promptPayload }
+            ],
+            response_format: { type: 'json_object' },
+            temperature: 0.2
+          })
+        });
+
+        if (!response.ok) {
+          const errorBody = await response.text();
+          if (response.status === 429) {
+            throw new Error('Groq free rate limit reached. Please wait a minute or use Gemini / Ollama.');
+          }
+          throw new Error(`Groq model ${modelName} returned status ${response.status}: ${errorBody}`);
         }
-        throw new Error(`Groq API Error (${response.status}): ${errorBody}`);
-      }
 
-      const data = await response.json();
-      const content = data.choices[0].message.content;
-      return this.parseJsonResponse(content);
-    } catch (err) {
-      logger.error('Groq call failed', { error: err.message });
-      throw err;
+        const data = await response.json();
+        const content = data.choices[0].message.content;
+        return this.parseJsonResponse(content);
+      } catch (err) {
+        lastError = err;
+        logger.warn(`Groq model ${modelName} failed: ${err.message}. Trying next candidate...`);
+      }
     }
+
+    logger.error('All Groq models failed', { error: lastError?.message });
+    throw lastError;
   }
 
   /**

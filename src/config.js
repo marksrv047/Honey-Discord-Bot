@@ -27,7 +27,7 @@ export const config = {
     // Groq Free Tier (from https://console.groq.com/ - Generous free RPM/RPD)
     groq: {
       apiKey: process.env.GROQ_API_KEY || '',
-      model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+      model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
     },
 
     // Ollama (100% Free, Local, Offline, Unlimited)
