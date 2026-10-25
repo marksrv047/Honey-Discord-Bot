@@ -2,6 +2,7 @@ import { ChannelType, PermissionFlagsBits, EmbedBuilder } from 'discord.js';
 import { checkRoleHierarchy, auditServerPermissions } from './permissions.js';
 import { ActionLedger } from './recovery.js';
 import { TicketManager } from './tickets.js';
+import { MusicService } from './music-service.js';
 import { Logger } from './logger.js';
 
 const logger = new Logger('Operations');
@@ -918,5 +919,45 @@ export class Operations {
         `3. To invite Honey Bot, run \`/go prompt: get bot invite link\`.`,
       verified: true
     };
+  }
+
+  // =========================================================================
+  // MUSIC & VOICE PLAYBACK OPERATIONS
+  // =========================================================================
+
+  static async playMusic(guild, query, context) {
+    return await MusicService.play(guild, context?.invokingMember, query);
+  }
+
+  static async pauseMusic(guild, context) {
+    return await MusicService.pause(guild);
+  }
+
+  static async resumeMusic(guild, context) {
+    return await MusicService.resume(guild);
+  }
+
+  static async skipMusic(guild, context) {
+    return await MusicService.skip(guild);
+  }
+
+  static async stopMusic(guild, context) {
+    return await MusicService.stop(guild);
+  }
+
+  static async getMusicQueue(guild, context) {
+    return await MusicService.getQueue(guild);
+  }
+
+  static async getNowPlaying(guild, context) {
+    return await MusicService.nowPlaying(guild);
+  }
+
+  static async setMusicVolume(guild, volume, context) {
+    return await MusicService.setVolume(guild, volume);
+  }
+
+  static async leaveVoice(guild, context) {
+    return await MusicService.leave(guild);
   }
 }

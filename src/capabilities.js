@@ -429,6 +429,109 @@ export const CAPABILITY_REGISTRY = {
     requiresConfirmation: false,
     isReversible: true,
     verificationMethod: 'EXPLANATION'
+  },
+
+  // =========================================================================
+  // G. MUSIC AND VOICE PLAYBACK
+  // =========================================================================
+  music_play: {
+    category: 'MUSIC',
+    description: 'Streams audio from YouTube, SoundCloud, or search into a voice channel.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.Connect, PermissionFlagsBits.Speak],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: false,
+    verificationMethod: 'API_RESPONSE'
+  },
+  music_pause: {
+    category: 'MUSIC',
+    description: 'Pauses active music playback in the voice channel.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: false,
+    verificationMethod: 'API_RESPONSE'
+  },
+  music_resume: {
+    category: 'MUSIC',
+    description: 'Resumes paused music playback in the voice channel.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: false,
+    verificationMethod: 'API_RESPONSE'
+  },
+  music_skip: {
+    category: 'MUSIC',
+    description: 'Skips the currently playing track in the queue.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: false,
+    verificationMethod: 'API_RESPONSE'
+  },
+  music_stop: {
+    category: 'MUSIC',
+    description: 'Stops music playback, clears the queue, and disconnects from the voice channel.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: false,
+    verificationMethod: 'API_RESPONSE'
+  },
+  music_queue: {
+    category: 'MUSIC',
+    description: 'Displays the active voice playback queue and upcoming tracks.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: false,
+    verificationMethod: 'API_RESPONSE'
+  },
+  music_nowplaying: {
+    category: 'MUSIC',
+    description: 'Displays currently playing song with progress bar and details.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: false,
+    verificationMethod: 'API_RESPONSE'
+  },
+  music_volume: {
+    category: 'MUSIC',
+    description: 'Adjusts playback volume level.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: false,
+    verificationMethod: 'API_RESPONSE'
+  },
+  music_leave: {
+    category: 'MUSIC',
+    description: 'Disconnects bot from voice channel.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: false,
+    verificationMethod: 'API_RESPONSE'
   }
 };
 

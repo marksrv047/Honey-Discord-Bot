@@ -71,9 +71,9 @@ test('HelpManager: Clarifies ambiguous questions instead of guessing', async () 
   assert.ok(ambigAnswer.includes('/help prompt: How do I delete a channel?'));
 });
 
-test('HelpManager: Truthfully declines unsupported features without fabrication', async () => {
+test('HelpManager: Truthfully explains music capabilities and declines unsupported features without fabrication', async () => {
   const musicAnswer = await HelpManager.answerQuestion('Can you play music in voice channels?');
-  assert.ok(musicAnswer.toLowerCase().includes('does not support music'));
+  assert.ok(musicAnswer.includes('voice music system') || musicAnswer.includes('/go prompt: play'));
 
   const economyAnswer = await HelpManager.answerQuestion('How do I get coins and gamble?');
   assert.ok(economyAnswer.toLowerCase().includes('does not support'));

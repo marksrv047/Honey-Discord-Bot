@@ -380,9 +380,10 @@ async function handleGoCommand(interaction) {
       name: interpreted.args?.name
     });
 
+    const resultEmbeds = opResult.embeds || (opResult.embed ? [opResult.embed] : []);
     const replyMsg = await interaction.editReply({
       content: outcomeMessage,
-      embeds: [],
+      embeds: resultEmbeds,
       components: [],
       allowedMentions: ResponseService.getAllowedMentions()
     }).catch(async (editErr) => {

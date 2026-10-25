@@ -706,6 +706,33 @@ export class Executor {
       case 'audit_server':
         return await Operations.auditServer(guild, executionContext);
 
+      case 'music_play':
+        return await Operations.playMusic(guild, intentObj.args.query || intentObj.targetRef, executionContext);
+
+      case 'music_pause':
+        return await Operations.pauseMusic(guild, executionContext);
+
+      case 'music_resume':
+        return await Operations.resumeMusic(guild, executionContext);
+
+      case 'music_skip':
+        return await Operations.skipMusic(guild, executionContext);
+
+      case 'music_stop':
+        return await Operations.stopMusic(guild, executionContext);
+
+      case 'music_queue':
+        return await Operations.getMusicQueue(guild, executionContext);
+
+      case 'music_nowplaying':
+        return await Operations.getNowPlaying(guild, executionContext);
+
+      case 'music_volume':
+        return await Operations.setMusicVolume(guild, intentObj.args.volume, executionContext);
+
+      case 'music_leave':
+        return await Operations.leaveVoice(guild, executionContext);
+
       case 'unsupported':
         return {
           success: false,

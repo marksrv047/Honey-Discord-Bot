@@ -15,11 +15,13 @@ You are the Discord Administration Intent Interpreter.
 Analyze the user instruction and interaction context. Return ONLY a single raw JSON object matching this schema:
 {
   "thought": "Brief interpretation of intent",
-  "intent": "rename_channel" | "edit_channel_topic" | "set_channel_slowmode" | "lock_channel" | "unlock_channel" | "create_channel" | "delete_channel" | "create_role" | "edit_role" | "delete_role" | "assign_role" | "remove_role" | "change_nickname" | "timeout_member" | "remove_timeout" | "kick_member" | "ban_member" | "unban_member" | "setup_ticket_system" | "audit_server" | "list_channels" | "list_roles" | "send_announcement" | "send_message" | "purge_messages" | "conversational" | "unsupported" | "complex_plan",
+  "intent": "rename_channel" | "edit_channel_topic" | "set_channel_slowmode" | "lock_channel" | "unlock_channel" | "create_channel" | "delete_channel" | "create_role" | "edit_role" | "delete_role" | "assign_role" | "remove_role" | "change_nickname" | "timeout_member" | "remove_timeout" | "kick_member" | "ban_member" | "unban_member" | "setup_ticket_system" | "audit_server" | "list_channels" | "list_roles" | "send_announcement" | "send_message" | "purge_messages" | "music_play" | "music_pause" | "music_resume" | "music_skip" | "music_stop" | "music_queue" | "music_nowplaying" | "music_volume" | "music_leave" | "conversational" | "unsupported" | "complex_plan",
   "targetType": "channel" | "role" | "member" | "server" | null,
   "targetRef": "current" | string (ID, name, or mention, e.g. "current", "<#123>", "<@123>", "VIP", "announce"),
   "args": {
     ... any arguments such as name, topic, seconds, durationMinutes, color, etc. ...
+    "query": string (for music_play, e.g. "lofi beats" or "https://youtube.com/..."),
+    "volume": number (for music_volume, 0 to 150),
     "message": string (for send_announcement, e.g. "Happy Halloween! @everyone"),
     "title": string (optional title for send_announcement),
     "mentionEveryone": boolean (true if user requested mentioning everyone),
@@ -48,7 +50,10 @@ RULES:
    - If user asks to send a message in a channel: intent: "send_message", targetType: "channel", args: { content: "...", mentionEveryone: boolean }
 5. BULK DELETE / PURGE:
    - If user asks to delete N messages (e.g. "delete 5 messages in #general"): intent: "purge_messages", targetType: "channel", args: { count: 5 }
-6. Output raw JSON only. No markdown formatting.
+6. MUSIC & VOICE PLAYBACK:
+   - If user asks to play a song/artist/URL: intent: "music_play", args: { query: "..." }
+   - If user asks to pause/resume/skip/stop/queue/now playing/volume/leave voice: route to appropriate music_* intent.
+7. Output raw JSON only. No markdown formatting.
 `;
 
 /**
@@ -507,6 +512,123 @@ export class IntentRouter {
         args: { name },
         isHighImpact: false,
         thought: `Rename channel back to ${name}`
+      };
+    }
+
+    // =========================================================================
+    // MUSIC & VOICE PLAYBACK FAST-PATH INTENTS
+    // =========================================================================
+
+    // M1. "play <query / URL>" / "play song <query>"
+    const musicPlayMatch = cleanPrompt.match(/^(?:play(?:\s+(?:song|music|track))?|stream(?:\s+music)?)\s+(.+)$/i);
+    if (musicPlayMatch) {
+      const query = musicPlayMatch[1].trim();
+      logger.info('Routed through fast-path: music_play', { query });
+      return {
+        intent: 'music_play',
+        targetType: null,
+        targetRef: query,
+        args: { query },
+        isHighImpact: false,
+        thought: `Play music track "${query}"`
+      };
+    }
+
+    // M2. "pause" / "pause music"
+    if (/^(?:pause|pause\s+music|pause\s+the\s+song|pause\s+playback)$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: music_pause');
+      return {
+        intent: 'music_pause',
+        targetType: null,
+        args: {},
+        isHighImpact: false,
+        thought: 'Pause music playback'
+      };
+    }
+
+    // M3. "resume" / "resume music" / "unpause"
+    if (/^(?:resume|resume\s+music|unpause|unpause\s+music|continue\s+playing)$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: music_resume');
+      return {
+        intent: 'music_resume',
+        targetType: null,
+        args: {},
+        isHighImpact: false,
+        thought: 'Resume music playback'
+      };
+    }
+
+    // M4. "skip" / "skip song" / "next song"
+    if (/^(?:skip|skip\s+song|skip\s+track|next\s+song|next\s+track)$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: music_skip');
+      return {
+        intent: 'music_skip',
+        targetType: null,
+        args: {},
+        isHighImpact: false,
+        thought: 'Skip current music track'
+      };
+    }
+
+    // M5. "stop music" / "stop playback"
+    if (/^(?:stop\s+music|stop\s+playback|stop\s+playing|halt\s+music)$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: music_stop');
+      return {
+        intent: 'music_stop',
+        targetType: null,
+        args: {},
+        isHighImpact: false,
+        thought: 'Stop music playback and clear queue'
+      };
+    }
+
+    // M6. "queue" / "show queue"
+    if (/^(?:queue|show\s+queue|display\s+queue|view\s+queue|music\s+queue|list\s+queue|whats?\s+in\s+the\s+queue)$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: music_queue');
+      return {
+        intent: 'music_queue',
+        targetType: null,
+        args: {},
+        isHighImpact: false,
+        thought: 'Display music queue'
+      };
+    }
+
+    // M7. "np" / "now playing" / "current song"
+    if (/^(?:np|now\s*playing|current\s+song|current\s+track|whats?\s+playing)$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: music_nowplaying');
+      return {
+        intent: 'music_nowplaying',
+        targetType: null,
+        args: {},
+        isHighImpact: false,
+        thought: 'Show currently playing music'
+      };
+    }
+
+    // M8. "volume 80%" / "set volume to 50"
+    const musicVolumeMatch = cleanPrompt.match(/^(?:(?:set|change)\s+)?volume(?:\s+to)?\s+(\d+)%?$/i);
+    if (musicVolumeMatch) {
+      const vol = parseInt(musicVolumeMatch[1], 10);
+      logger.info('Routed through fast-path: music_volume', { volume: vol });
+      return {
+        intent: 'music_volume',
+        targetType: null,
+        args: { volume: vol },
+        isHighImpact: false,
+        thought: `Set volume to ${vol}%`
+      };
+    }
+
+    // M9. "leave voice" / "disconnect"
+    if (/^(?:leave(?:\s+voice(?:\s+channel)?)?|disconnect(?:\s+voice)?)$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: music_leave');
+      return {
+        intent: 'music_leave',
+        targetType: null,
+        args: {},
+        isHighImpact: false,
+        thought: 'Disconnect from voice channel'
       };
     }
 

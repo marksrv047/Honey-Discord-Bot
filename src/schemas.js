@@ -289,6 +289,45 @@ export const ExplainBotInstallationSchema = z.object({
   action: z.literal('explain_bot_installation')
 });
 
+export const MusicPlaySchema = z.object({
+  action: z.literal('music_play'),
+  query: z.string().min(1).optional(),
+  targetRef: z.string().optional()
+});
+
+export const MusicPauseSchema = z.object({
+  action: z.literal('music_pause')
+});
+
+export const MusicResumeSchema = z.object({
+  action: z.literal('music_resume')
+});
+
+export const MusicSkipSchema = z.object({
+  action: z.literal('music_skip')
+});
+
+export const MusicStopSchema = z.object({
+  action: z.literal('music_stop')
+});
+
+export const MusicQueueSchema = z.object({
+  action: z.literal('music_queue')
+});
+
+export const MusicNowPlayingSchema = z.object({
+  action: z.literal('music_nowplaying')
+});
+
+export const MusicVolumeSchema = z.object({
+  action: z.literal('music_volume'),
+  volume: z.number().min(0).max(150).optional()
+});
+
+export const MusicLeaveSchema = z.object({
+  action: z.literal('music_leave')
+});
+
 /**
  * Discriminated union of all supported actions
  */
@@ -327,7 +366,16 @@ export const ActionSchema = z.discriminatedUnion('action', [
   MoveChannelSchema,
   LookupMemberSchema,
   GetBotInviteSchema,
-  ExplainBotInstallationSchema
+  ExplainBotInstallationSchema,
+  MusicPlaySchema,
+  MusicPauseSchema,
+  MusicResumeSchema,
+  MusicSkipSchema,
+  MusicStopSchema,
+  MusicQueueSchema,
+  MusicNowPlayingSchema,
+  MusicVolumeSchema,
+  MusicLeaveSchema
 ]);
 
 /**

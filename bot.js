@@ -25,6 +25,7 @@ import { TicketManager } from './src/tickets.js';
 import { RoleMenuManager } from './src/role-menu.js';
 import { registerGatewayEventListeners } from './src/gateway-events.js';
 import { ActionLedger } from './src/recovery.js';
+import { MusicService } from './src/music-service.js';
 import { Logger } from './src/logger.js';
 
 const logger = new Logger('Bot');
@@ -119,8 +120,34 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.GuildModeration
+    GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildVoiceStates
   ]
+});
+
+// Voice state update listener for automatic music cleanup and idle disconnect
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  const guildId = oldState.guild?.id || newState.guild?.id;
+  const sub = MusicService.getSubscription(guildId);
+  if (!sub) return;
+
+  const botId = client.user?.id;
+  // If bot itself was disconnected from voice
+  if (oldState.member?.id === botId && !newState.channelId) {
+    logger.info('Bot was disconnected from voice channel', { guildId });
+    sub.destroy();
+    return;
+  }
+
+  // If bot is in a voice channel, check if all other users left
+  const voiceChannel = oldState.channel || newState.channel;
+  if (voiceChannel && botId && voiceChannel.members.has(botId)) {
+    const nonBots = voiceChannel.members.filter(m => !m.user.bot);
+    if (nonBots.size === 0) {
+      logger.info('All users left voice channel, scheduling idle disconnect', { guildId });
+      sub.resetIdleTimer();
+    }
+  }
 });
 
 // Register external gateway moderation event listeners

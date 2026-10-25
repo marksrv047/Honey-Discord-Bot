@@ -42,6 +42,7 @@ Honey Bot is a secure, natural-language Discord administration and moderation bo
      • Roles: Create, edit, delete, assign, remove, and self-assignable role menus.
      • Moderation: Timeout, remove timeout, kick, ban, unban, change nickname, purge messages (1-100 limit, 14-day Discord restriction).
      • Community: Announcements, messages, pins, ticket systems, AutoMod rules, and security audits.
+     • Music & Audio: Stream tracks and search YouTube/SoundCloud in voice channels (/go prompt: play <song>, pause, resume, skip, queue, np, volume, stop).
 2. /modlog: Free-form moderation log management.
    - Configure log channel, inspect status, test delivery, enable/disable, and troubleshoot permissions.
 3. /diagnose: Subsystem health checks, permission audits, and safe self-repairs.
@@ -55,11 +56,12 @@ CRITICAL IMPLEMENTATION GROUNDING RULES:
    - Setting Discord channel 'AttachFiles' permissions for roles or members via /go.
    - Internal bot health checks (detecting empty files or lockfiles) and safe self-repairs during /diagnose.
    Never claim Honey Bot can upload, download, store, browse, or host files.
-2. UNSUPPORTED FEATURES: Honey Bot does NOT support music playback, economy, leveling, gambling, or arbitrary shell commands. If asked, politely clarify that Honey Bot is strictly an administration and moderation bot.
-3. AMBIGUOUS QUESTIONS: If a question is ambiguous (e.g. "How do I delete?"), ask one concise clarification question.
-4. PERMISSIONS: Remind the user that administrative operations require relevant Discord permissions (Administrator, Manage Channels, Manage Roles, Ban Members, etc.).
-5. NO EMOJIS OR FLUFF: Calm, minimal, professional tone. Format bullet points on separate lines.
-6. JSON FORMAT: Return output strictly as a JSON object: {"answer": "your answer here"}.
+2. MUSIC: Honey Bot supports voice channel audio playback and queue management using /go (e.g. /go prompt: play <song>, pause, resume, skip, stop, queue, volume).
+3. UNSUPPORTED FEATURES: Honey Bot does NOT support economy, leveling, gambling, or arbitrary shell commands. If asked, politely clarify that Honey Bot is strictly an administration, moderation, and music bot.
+4. AMBIGUOUS QUESTIONS: If a question is ambiguous (e.g. "How do I delete?"), ask one concise clarification question.
+5. PERMISSIONS: Remind the user that administrative operations require relevant Discord permissions (Administrator, Manage Channels, Manage Roles, Ban Members, etc.).
+6. NO EMOJIS OR FLUFF: Calm, minimal, professional tone. Format bullet points on separate lines.
+7. JSON FORMAT: Return output strictly as a JSON object: {"answer": "your answer here"}.
 `;
 
 export class HelpManager {
@@ -174,9 +176,14 @@ export class HelpManager {
       return 'What would you like to delete or remove? You can ask:\n• `/help prompt: How do I purge messages?`\n• `/help prompt: How do I delete a channel?`\n• `/help prompt: How do I delete a role?`\n• `/help prompt: How do I remove a member\'s role?`';
     }
 
-    // 8. Unsupported features (music, economy, leveling, hacking)
-    if (/\b(?:music|play\s+song|spotify|economy|coins?|leveling|xp|ranks?|gamble|hack|exploit|bypass)\b/i.test(qLower)) {
-      return 'Honey Bot does not support music playback, audio streaming, economy systems, leveling, or gambling. Honey Bot strictly adheres to security boundaries and cannot perform hacking or unauthorized exploits. It is designed for Discord server administration, moderation, and diagnostics.';
+    // 8. Music playback features
+    if (/\b(?:music|play\s+song|songs?|audio\s+stream(?:ing)?|voice\s+playback)\b/i.test(qLower)) {
+      return 'Honey Bot includes a built-in voice music system. You can stream tracks and control playback using `/go`:\n• `/go prompt: play <song or URL>` — Play a song or search query in your voice channel\n• `/go prompt: pause` / `resume` — Pause or resume playback\n• `/go prompt: skip` — Skip to the next track in queue\n• `/go prompt: queue` — View the current song queue\n• `/go prompt: np` — Show currently playing track\n• `/go prompt: volume <0-150>` — Adjust playback volume\n• `/go prompt: stop` — Stop music and disconnect from voice';
+    }
+
+    // 9. Unsupported features (economy, leveling, gambling, hacking)
+    if (/\b(?:economy|coins?|leveling|xp|ranks?|gamble|hack|exploit|bypass)\b/i.test(qLower)) {
+      return 'Honey Bot does not support economy systems, leveling, or gambling. Honey Bot strictly adheres to security boundaries and cannot perform hacking or unauthorized exploits. It is designed for Discord server administration, moderation, music playback, and diagnostics.';
     }
 
     try {
