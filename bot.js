@@ -9,6 +9,7 @@ const logger = new Logger('Bot');
 
 let botLoginStatus = 'initializing';
 let lastLoginError = null;
+let lastDebugInfo = 'No gateway packet received yet';
 
 // Built-in 24/7 Cloud Web Health-Check Server (Required for Koyeb, Render, etc.)
 const port = process.env.PORT || 3000;
@@ -20,6 +21,7 @@ const server = http.createServer((req, res) => {
     discordTokenConfigured: Boolean(config.discord.token),
     geminiKeyConfigured: Boolean(config.ai.gemini.apiKey),
     loginError: lastLoginError,
+    gatewayDebug: lastDebugInfo,
     uptime: Math.floor(process.uptime()),
     zeroCostAI: config.ai.provider
   }, null, 2));
@@ -35,18 +37,37 @@ if (!validation.valid) {
   logger.warn('Configuration issues detected:', { issues: validation.issues });
 }
 
-// Initialize Discord Client with necessary administrative intents
+// Initialize Discord Client with essential intents
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers, // Required for moderation and role assignment
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.GuildMembers
   ]
+});
+
+// Debug and Gateway status listeners
+client.on('debug', (info) => {
+  lastDebugInfo = info;
+  logger.info(`[Discord Debug] ${info}`);
+});
+
+client.on('warn', (warning) => {
+  logger.warn(`[Discord Warning] ${warning}`);
+});
+
+client.on('error', (err) => {
+  lastLoginError = err.message;
+  logger.error('Discord Client Error:', { error: err.message });
+});
+
+client.on('shardError', (err, shardId) => {
+  lastLoginError = `Shard ${shardId} Error: ${err.message}`;
+  logger.error(`Discord Shard ${shardId} Error:`, { error: err.message });
 });
 
 // Event: Client Ready
 client.once(Events.ClientReady, (readyClient) => {
+  botLoginStatus = 'connected';
   logger.info(`✅ Agent online as ${readyClient.user.tag}`);
   logger.info(`🤖 Zero-Cost AI Provider: ${config.ai.provider.toUpperCase()} (${config.ai[config.ai.provider]?.model || 'default'})`);
   
