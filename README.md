@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.png" alt="Honey Bot Banner" width="100%" />
+  <img src="assets/honey_banner.png" alt="Honey Bot Banner" width="100%" />
 </p>
 
 # 🍯 Honey — Autonomous AI Discord Administration Agent
