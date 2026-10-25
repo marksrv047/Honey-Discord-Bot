@@ -9,4 +9,4 @@ RUN npm install --omit=dev
 COPY . .
 
 EXPOSE 3000
-CMD ["node", "bot.js"]
+CMD ["node", "--dns-result-order=ipv4first", "bot.js"]

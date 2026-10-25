@@ -1,8 +1,12 @@
+import dns from 'node:dns';
+dns.setDefaultResultOrder('ipv4first');
+
 import http from 'node:http';
 import { Client, GatewayIntentBits, Events, ActivityType } from 'discord.js';
 import { config, validateConfig } from './src/config.js';
 import { handleCommandInteraction } from './src/commands.js';
 import { TicketManager } from './src/tickets.js';
+import { RoleMenuManager } from './src/role-menu.js';
 import { Logger } from './src/logger.js';
 
 const logger = new Logger('Bot');
@@ -90,6 +94,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
     // 2. Handle Persistent Ticket Buttons (Open Ticket / Close Ticket)
     if (interaction.isButton()) {
       const handled = await TicketManager.handleButtonInteraction(interaction);
+      if (handled) return;
+    }
+
+    // 3. Handle Self-Assignable Role Dropdowns
+    if (interaction.isStringSelectMenu()) {
+      const handled = await RoleMenuManager.handleSelectMenuInteraction(interaction);
       if (handled) return;
     }
   } catch (err) {
