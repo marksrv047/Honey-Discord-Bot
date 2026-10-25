@@ -75,13 +75,15 @@ export class AIProvider {
    * Plans actions using the configured zero-cost provider with automatic multi-provider fallback.
    */
   async planActions(userPrompt, serverState) {
-    const promptPayload = `
-CURRENT SERVER STATE:
-${JSON.stringify(serverState, null, 2)}
+    // If the prompt is conversational or asking general questions, minimize context tokens to avoid rate limits
+    const isInformational = /^(what|who|how|why|tell|explain|hi|hello|hey|help)\b/i.test(userPrompt.trim()) &&
+      !/(create|delete|edit|rename|ban|kick|timeout|role|channel|category|ticket|audit|purge)/i.test(userPrompt);
 
-USER INSTRUCTION:
-"${userPrompt}"
-`;
+    const statePayload = isInformational
+      ? { server: serverState.guild?.name || 'Discord Server', currentChannel: serverState.currentChannel }
+      : serverState;
+
+    const promptPayload = `CURRENT SERVER STATE:\n${JSON.stringify(statePayload)}\n\nUSER INSTRUCTION:\n"${userPrompt}"`;
 
     switch (this.provider) {
       case 'gemini':
@@ -121,14 +123,7 @@ USER INSTRUCTION:
 
     const genAI = new GoogleGenerativeAI(config.ai.gemini.apiKey);
 
-    // Dynamic model candidate chain: Try primary model first, then auto-fallback if 404 or 503
-    const preferredModel = config.ai.gemini.model && !config.ai.gemini.model.includes('2.0')
-      ? config.ai.gemini.model
-      : 'gemini-3.8-flash';
-
     const candidateModels = [
-      preferredModel,
-      'gemini-3.8-flash',
       'gemini-3.5-flash',
       'gemini-3.7-flash',
       'gemini-3.1-flash-lite'
@@ -175,7 +170,8 @@ USER INSTRUCTION:
     const candidateModels = [
       config.ai.groq.model || 'openai/gpt-oss-120b',
       'openai/gpt-oss-120b',
-      'qwen/qwen3.8-27b'
+      'qwen/qwen3.8-27b',
+      'allam-2-7b'
     ];
 
     const modelsToTry = [...new Set(candidateModels)];

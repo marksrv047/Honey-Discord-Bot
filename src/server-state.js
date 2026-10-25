@@ -27,14 +27,9 @@ export async function getGuildStateSnapshot(guild) {
     .sort((a, b) => b.position - a.position)
     .map(r => ({
       id: r.id,
-      name: sanitizeServerText(r.name),
-      color: r.hexColor,
-      position: r.position,
-      hoist: r.hoist,
-      isAdmin: r.permissions.has('Administrator'),
-      managed: r.managed
+      name: sanitizeServerText(r.name)
     }))
-    .slice(0, 35); // Keep top 35 roles to stay token efficient
+    .slice(0, 25); // Top 25 roles
 
   // 2. Categories & Channels
   const categories = guild.channels.cache
@@ -42,9 +37,9 @@ export async function getGuildStateSnapshot(guild) {
     .sort((a, b) => a.position - b.position)
     .map(cat => ({
       id: cat.id,
-      name: sanitizeServerText(cat.name),
-      position: cat.position
-    }));
+      name: sanitizeServerText(cat.name)
+    }))
+    .slice(0, 15);
 
   const channels = guild.channels.cache
     .filter(c => c.type !== ChannelType.GuildCategory)
@@ -53,20 +48,17 @@ export async function getGuildStateSnapshot(guild) {
       let typeStr = 'TEXT';
       if (c.type === ChannelType.GuildVoice) typeStr = 'VOICE';
       if (c.type === ChannelType.GuildAnnouncement) typeStr = 'ANNOUNCEMENT';
-      if (c.type === ChannelType.GuildStageVoice) typeStr = 'STAGE';
 
       return {
         id: c.id,
         name: sanitizeServerText(c.name),
         type: typeStr,
-        category: c.parent ? sanitizeServerText(c.parent.name) : null,
-        isPrivate: !c.permissionsFor(guild.roles.everyone)?.has('ViewChannel')
+        category: c.parent ? sanitizeServerText(c.parent.name) : undefined
       };
     })
-    .slice(0, 50); // Keep top 50 channels
+    .slice(0, 30); // Top 30 channels
 
   // 3. Guild Boost Tier
-  // 0 = None, 1 = Tier 1 (2 boosts), 2 = Tier 2 (7 boosts), 3 = Tier 3 (14 boosts)
   const boostTier = guild.premiumTier;
 
   return {
