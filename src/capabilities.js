@@ -1,227 +1,464 @@
 import { PermissionFlagsBits } from 'discord.js';
 
+export const CapabilityStatus = {
+  IMPLEMENTED: 'IMPLEMENTED',
+  PARTIALLY_TESTED: 'PARTIALLY_TESTED',
+  DISCORD_RESTRICTED: 'DISCORD_RESTRICTED',
+  BLOCKED_BY_POLICY: 'BLOCKED_BY_POLICY'
+};
+
 /**
- * Registry of all real Discord API capabilities supported by the agent.
- * Maps actions to required permissions, boost requirements, and impact level.
+ * Central Registry & Capability Matrix of Discord Administration Operations.
  */
 export const CAPABILITY_REGISTRY = {
-  update_server_name: {
-    description: 'Updates the guild name (2-100 characters).',
-    requiredBotPermissions: [PermissionFlagsBits.ManageGuild],
-    requiredUserPermissions: [PermissionFlagsBits.ManageGuild],
+  // =========================================================================
+  // A. MESSAGING AND ANNOUNCEMENTS
+  // =========================================================================
+  send_message: {
+    category: 'MESSAGING',
+    description: 'Sends a direct message or alert to a specified channel.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ViewChannel],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
     isDestructive: false,
-    boostRequirement: 0,
-  },
-  update_server_description: {
-    description: 'Updates guild description (requires Community enabled).',
-    requiredBotPermissions: [PermissionFlagsBits.ManageGuild],
-    requiredUserPermissions: [PermissionFlagsBits.ManageGuild],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  update_server_icon: {
-    description: 'Updates guild profile picture/icon from an image URL.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageGuild],
-    requiredUserPermissions: [PermissionFlagsBits.ManageGuild],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  update_server_banner: {
-    description: 'Updates guild background banner (Requires Nitro Boost Tier 2).',
-    requiredBotPermissions: [PermissionFlagsBits.ManageGuild],
-    requiredUserPermissions: [PermissionFlagsBits.ManageGuild],
-    isDestructive: false,
-    boostRequirement: 2, // Boost Tier 2 (7+ boosts)
-  },
-  update_server_settings: {
-    description: 'Configures system channel, rules channel, and verification level.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageGuild],
-    requiredUserPermissions: [PermissionFlagsBits.ManageGuild],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  create_role: {
-    description: 'Creates a new role with custom color, hoist, and permissions.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageRoles],
-    requiredUserPermissions: [PermissionFlagsBits.ManageRoles],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  edit_role: {
-    description: 'Edits an existing role name, color, hoist, or permissions.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageRoles],
-    requiredUserPermissions: [PermissionFlagsBits.ManageRoles],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  delete_role: {
-    description: 'Deletes a role from the server.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageRoles],
-    requiredUserPermissions: [PermissionFlagsBits.ManageRoles],
-    isDestructive: true,
-    boostRequirement: 0,
-  },
-  assign_role: {
-    description: 'Assigns a role to a member.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageRoles],
-    requiredUserPermissions: [PermissionFlagsBits.ManageRoles],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  remove_role: {
-    description: 'Removes a role from a member.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageRoles],
-    requiredUserPermissions: [PermissionFlagsBits.ManageRoles],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  create_channel: {
-    description: 'Creates text, voice, announcement, or category channels with permission overwrites.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageChannels],
-    requiredUserPermissions: [PermissionFlagsBits.ManageChannels],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  edit_channel: {
-    description: 'Edits channel name, topic, slowmode, or category.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageChannels],
-    requiredUserPermissions: [PermissionFlagsBits.ManageChannels],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  delete_channel: {
-    description: 'Permanently deletes a channel or category.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageChannels],
-    requiredUserPermissions: [PermissionFlagsBits.ManageChannels],
-    isDestructive: true,
-    boostRequirement: 0,
-  },
-  set_channel_permission: {
-    description: 'Configures permission overwrites for roles/members on a channel.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles],
-    requiredUserPermissions: [PermissionFlagsBits.ManageChannels],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  timeout_member: {
-    description: 'Applies Discord communication disable timeout to a member.',
-    requiredBotPermissions: [PermissionFlagsBits.ModerateMembers],
-    requiredUserPermissions: [PermissionFlagsBits.ModerateMembers],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  remove_timeout: {
-    description: 'Removes an active timeout from a member.',
-    requiredBotPermissions: [PermissionFlagsBits.ModerateMembers],
-    requiredUserPermissions: [PermissionFlagsBits.ModerateMembers],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  kick_member: {
-    description: 'Kicks a member from the server.',
-    requiredBotPermissions: [PermissionFlagsBits.KickMembers],
-    requiredUserPermissions: [PermissionFlagsBits.KickMembers],
-    isDestructive: true,
-    boostRequirement: 0,
-  },
-  ban_member: {
-    description: 'Bans a member from the server with optional message deletion.',
-    requiredBotPermissions: [PermissionFlagsBits.BanMembers],
-    requiredUserPermissions: [PermissionFlagsBits.BanMembers],
-    isDestructive: true,
-    boostRequirement: 0,
-  },
-  unban_member: {
-    description: 'Removes a ban for a specified user ID.',
-    requiredBotPermissions: [PermissionFlagsBits.BanMembers],
-    requiredUserPermissions: [PermissionFlagsBits.BanMembers],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  change_nickname: {
-    description: 'Changes a member nickname.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageNicknames],
-    requiredUserPermissions: [PermissionFlagsBits.ManageNicknames],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  setup_ticket_system: {
-    description: 'Deploys an interactive Ticket System panel with durable buttons.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles, PermissionFlagsBits.SendMessages],
-    requiredUserPermissions: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  audit_server: {
-    description: 'Read-only audit of server permissions, roles, and channel security risks.',
-    requiredBotPermissions: [],
-    requiredUserPermissions: [PermissionFlagsBits.ManageGuild],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  setup_role_menu: {
-    description: 'Creates a self-assignable role selection dropdown in a designated channel.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageRoles, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.SendMessages],
-    requiredUserPermissions: [PermissionFlagsBits.ManageRoles, PermissionFlagsBits.ManageChannels],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  setup_automod_rule: {
-    description: 'Configures native Discord AutoMod rules for spam, invite blocking, and keywords.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageGuild],
-    requiredUserPermissions: [PermissionFlagsBits.ManageGuild],
-    isDestructive: false,
-    boostRequirement: 0,
-  },
-  setup_mod_logs: {
-    description: 'Creates a private moderation logging channel for staff.',
-    requiredBotPermissions: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.SendMessages],
-    requiredUserPermissions: [PermissionFlagsBits.ManageChannels],
-    isDestructive: false,
-    boostRequirement: 0,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'MESSAGE_ID_CHECK'
   },
   send_announcement: {
-    description: 'Broadcasts a formatted rich announcement into a specified channel with optional @everyone ping.',
+    category: 'MESSAGING',
+    description: 'Broadcasts a rich embed announcement with optional @everyone or @here pings.',
+    status: CapabilityStatus.IMPLEMENTED,
     requiredBotPermissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ViewChannel],
     requiredUserPermissions: [PermissionFlagsBits.Administrator],
     isDestructive: false,
-    boostRequirement: 0,
+    requiresConfirmation: false, // If @everyone, user intent must be explicit
+    isReversible: true,
+    verificationMethod: 'MESSAGE_ID_CHECK'
   },
-  send_message: {
-    description: 'Sends a direct message or notification to a specific channel.',
-    requiredBotPermissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ViewChannel],
+  pin_message: {
+    category: 'MESSAGING',
+    description: 'Pins an important message in a channel.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ViewChannel],
     requiredUserPermissions: [PermissionFlagsBits.Administrator],
     isDestructive: false,
-    boostRequirement: 0,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'MESSAGE_PIN_CHECK'
+  },
+  unpin_message: {
+    category: 'MESSAGING',
+    description: 'Unpins a message from a channel.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ViewChannel],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'MESSAGE_PIN_CHECK'
+  },
+  add_reaction: {
+    category: 'MESSAGING',
+    description: 'Adds an emoji reaction to a message.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.AddReactions, PermissionFlagsBits.ReadMessageHistory],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'API_RESPONSE'
   },
   purge_messages: {
+    category: 'MESSAGING',
     description: 'Bulk deletes up to 100 recent messages from a channel.',
+    status: CapabilityStatus.IMPLEMENTED,
     requiredBotPermissions: [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ViewChannel],
     requiredUserPermissions: [PermissionFlagsBits.Administrator],
     isDestructive: true,
-    boostRequirement: 0,
+    requiresConfirmation: true, // If count > 20
+    isReversible: false,
+    verificationMethod: 'DELETED_COUNT_CHECK'
+  },
+
+  // =========================================================================
+  // B. CHANNEL MANAGEMENT
+  // =========================================================================
+  create_channel: {
+    category: 'CHANNELS',
+    description: 'Creates text, voice, announcement, or category channels.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageChannels],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'CHANNEL_CACHE_CHECK'
+  },
+  edit_channel: {
+    category: 'CHANNELS',
+    description: 'Edits channel name, topic, slowmode, or category.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageChannels],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'CHANNEL_FETCH_CHECK'
+  },
+  rename_channel: {
+    category: 'CHANNELS',
+    description: 'Renames a channel directly.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageChannels],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'CHANNEL_NAME_CHECK'
+  },
+  move_channel: {
+    category: 'CHANNELS',
+    description: 'Moves a channel under a specific category.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageChannels],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'CHANNEL_PARENT_CHECK'
+  },
+  lock_channel: {
+    category: 'CHANNELS',
+    description: 'Locks a channel to prevent standard members from sending messages.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'OVERWRITE_CHECK'
+  },
+  unlock_channel: {
+    category: 'CHANNELS',
+    description: 'Unlocks a channel, restoring standard messaging permissions.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'OVERWRITE_CHECK'
+  },
+  set_channel_slowmode: {
+    category: 'CHANNELS',
+    description: 'Sets rate-limit per user in seconds (slowmode).',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageChannels],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'CHANNEL_RATE_LIMIT_CHECK'
+  },
+  set_channel_permission: {
+    category: 'CHANNELS',
+    description: 'Configures specific allow/deny permission overwrites for a role or member.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'OVERWRITE_CHECK'
+  },
+  delete_channel: {
+    category: 'CHANNELS',
+    description: 'Permanently deletes an individual channel (subject to Anti-Nuke aggregate limits).',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageChannels],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: true,
+    requiresConfirmation: true,
+    isReversible: false,
+    verificationMethod: 'CHANNEL_NONEXISTENCE_CHECK'
+  },
+
+  // =========================================================================
+  // C. ROLE MANAGEMENT
+  // =========================================================================
+  create_role: {
+    category: 'ROLES',
+    description: 'Creates a new role with custom color, hoist, and permissions.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageRoles],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'ROLE_CACHE_CHECK'
+  },
+  edit_role: {
+    category: 'ROLES',
+    description: 'Edits an existing role name, color, hoist, or non-admin permissions.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageRoles],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'ROLE_FETCH_CHECK'
+  },
+  delete_role: {
+    category: 'ROLES',
+    description: 'Permanently deletes a role (subject to Anti-Nuke aggregate limits).',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageRoles],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: true,
+    requiresConfirmation: true,
+    isReversible: false,
+    verificationMethod: 'ROLE_NONEXISTENCE_CHECK'
+  },
+  assign_role: {
+    category: 'ROLES',
+    description: 'Assigns a role to a member.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageRoles],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'MEMBER_ROLE_CHECK'
+  },
+  remove_role: {
+    category: 'ROLES',
+    description: 'Removes a role from a member.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageRoles],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'MEMBER_ROLE_CHECK'
+  },
+
+  // =========================================================================
+  // D. MEMBER MANAGEMENT
+  // =========================================================================
+  lookup_member: {
+    category: 'MEMBERS',
+    description: 'Looks up a member and displays essential roles and profile details.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'API_RESPONSE'
+  },
+  change_nickname: {
+    category: 'MEMBERS',
+    description: 'Changes a member nickname.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageNicknames],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'MEMBER_NICKNAME_CHECK'
+  },
+  timeout_member: {
+    category: 'MEMBERS',
+    description: 'Applies communication disable timeout to a member.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ModerateMembers],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'MEMBER_TIMEOUT_CHECK'
+  },
+  remove_timeout: {
+    category: 'MEMBERS',
+    description: 'Removes active timeout from a member.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ModerateMembers],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'MEMBER_TIMEOUT_CHECK'
+  },
+  kick_member: {
+    category: 'MEMBERS',
+    description: 'Kicks a member from the server.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.KickMembers],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: true,
+    requiresConfirmation: true,
+    isReversible: false,
+    verificationMethod: 'MEMBER_NONEXISTENCE_CHECK'
+  },
+  ban_member: {
+    category: 'MEMBERS',
+    description: 'Bans a user from the server with message deletion option.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.BanMembers],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: true,
+    requiresConfirmation: true,
+    isReversible: true,
+    verificationMethod: 'BAN_FETCH_CHECK'
+  },
+  unban_member: {
+    category: 'MEMBERS',
+    description: 'Removes a ban for a specified user Snowflake ID.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.BanMembers],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'API_RESPONSE'
+  },
+
+  // =========================================================================
+  // E. SERVER ADMINISTRATION
+  // =========================================================================
+  update_server_name: {
+    category: 'SERVER',
+    description: 'Updates guild name (2-100 characters).',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageGuild],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'GUILD_NAME_CHECK'
+  },
+  update_server_description: {
+    category: 'SERVER',
+    description: 'Updates guild description (requires Community enabled).',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageGuild],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'API_RESPONSE'
+  },
+  update_server_icon: {
+    category: 'SERVER',
+    description: 'Updates guild profile icon from image URL.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageGuild],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'API_RESPONSE'
+  },
+  update_server_banner: {
+    category: 'SERVER',
+    description: 'Updates guild banner (Requires Server Boost Tier 2).',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageGuild],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'API_RESPONSE'
+  },
+  audit_server: {
+    category: 'SERVER',
+    description: 'Read-only security audit of permissions and roles.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'AUDIT_RESULT'
+  },
+  setup_ticket_system: {
+    category: 'SERVER',
+    description: 'Deploys an interactive Ticket System panel with durable buttons.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles, PermissionFlagsBits.SendMessages],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'CHANNEL_CACHE_CHECK'
+  },
+  setup_role_menu: {
+    category: 'SERVER',
+    description: 'Creates a self-assignable role selection dropdown.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageRoles, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.SendMessages],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'MESSAGE_ID_CHECK'
+  },
+
+  // =========================================================================
+  // F. BOT AND INTEGRATION MANAGEMENT
+  // =========================================================================
+  get_bot_invite: {
+    category: 'INTEGRATIONS',
+    description: 'Generates official OAuth2 installation link for authorized bot installation.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'API_RESPONSE'
+  },
+  explain_bot_installation: {
+    category: 'INTEGRATIONS',
+    description: 'Explains the Discord OAuth2 authorization flow for installing external bots.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'EXPLANATION'
   }
 };
 
 /**
- * Explicit list of actions that Discord DOES NOT permit bots to do.
- * When the AI detects these requests, it must explain the exact limitation.
+ * Operations explicitly prohibited or restricted by Discord API or Honey Bot security policy.
  */
-export const UNSUPPORTED_DISCORD_OPERATIONS = [
+export const RESTRICTED_OPERATIONS = [
   {
-    pattern: /transfer\s+ownership/i,
-    reason: 'Discord API strictly prohibits bots from transferring server ownership. The server owner must do this manually in Server Settings > Members.'
+    operation: 'transfer_server_ownership',
+    reason: 'Discord API strictly prohibits bots from transferring server ownership. Only the server owner can transfer ownership manually via Server Settings.',
+    status: CapabilityStatus.DISCORD_RESTRICTED
   },
   {
-    pattern: /vanity\s+url/i,
-    reason: 'Setting a custom vanity URL requires Server Boost Level 3 (14 boosts) and is managed in Server Settings > Vanity URL.'
+    operation: 'delete_server',
+    reason: 'Bots cannot delete a Discord server. Only the server owner with password/2FA can delete a server in Server Settings.',
+    status: CapabilityStatus.DISCORD_RESTRICTED
   },
   {
-    pattern: /delete\s+server/i,
-    reason: 'Bots cannot delete a Discord server. Only the server owner can delete the server with 2FA/Password.'
+    operation: 'direct_install_arbitrary_bot',
+    reason: 'Discord API requires human OAuth2 authorization to add bots. Bots cannot directly install other bots into a server without an administrator completing the OAuth2 flow.',
+    status: CapabilityStatus.DISCORD_RESTRICTED
   },
   {
-    pattern: /read\s+audit\s+log\s+without\s+permission/i,
-    reason: 'Viewing audit logs requires the View Audit Log permission.'
+    operation: 'server_nuke',
+    reason: 'Wiping, mass deleting channels or roles, and mass banning are strictly prohibited by Honey Bot Anti-Nuke security policy.',
+    status: CapabilityStatus.BLOCKED_BY_POLICY
+  },
+  {
+    operation: 'grant_administrator_permission',
+    reason: 'Granting Administrator permissions via the automated agent is blocked to prevent privilege escalation.',
+    status: CapabilityStatus.BLOCKED_BY_POLICY
   }
 ];

@@ -10,6 +10,7 @@ import { ExecutionContext } from './execution-context.js';
 import { IntentRouter } from './intent-router.js';
 import { TaskWorkflow } from './task-workflow.js';
 import { validateConfig, config } from './config.js';
+import { SecurityGate, SecurityPolicyViolationError } from './security-gate.js';
 import { Logger } from './logger.js';
 
 const logger = new Logger('Commands');
@@ -87,6 +88,16 @@ async function handleGoCommand(interaction) {
 
   logger.info(`Received /go command [${executionId}]`, { user: interaction.user.tag, prompt: userPrompt });
 
+  // Immutable Security Policy Gate: Pre-flight prompt inspection
+  try {
+    SecurityGate.evaluatePromptSecurity(userPrompt, interaction.user.id, guild);
+  } catch (secErr) {
+    logger.warn('Prompt rejected by Security Gate', { error: secErr.message });
+    return await interaction.editReply({
+      content: `🛑 **Security Refusal:** ${secErr.message}`
+    });
+  }
+
   // Hard safety timeout guard so interaction is never left stranded
   let isDone = false;
   const timeoutGuard = setTimeout(async () => {
@@ -157,6 +168,15 @@ async function handleGoCommand(interaction) {
         return await interaction.editReply({ content: `⚠️ **Bot Permission Error:** ${botAuth.reason}` });
       }
 
+      // Immutable Security Gate check on entire planned action sequence
+      try {
+        SecurityGate.evaluateActionSequence(plan.actions, member, guild);
+      } catch (secErr) {
+        isDone = true;
+        clearTimeout(timeoutGuard);
+        return await interaction.editReply({ content: `🛑 **Security Refusal:** ${secErr.message}` });
+      }
+
       if (plan.isHighImpact) {
         clearTimeout(timeoutGuard);
         const confirmed = await ConfirmationManager.requestConfirmation(interaction, plan);
@@ -195,6 +215,15 @@ async function handleGoCommand(interaction) {
       isDone = true;
       clearTimeout(timeoutGuard);
       return await interaction.editReply({ content: `⚠️ **Bot Permission Error:** ${botAuth.reason}` });
+    }
+
+    // Immutable Security Gate check on targeted action
+    try {
+      SecurityGate.evaluateActionSequence([actionObj], member, guild);
+    } catch (secErr) {
+      isDone = true;
+      clearTimeout(timeoutGuard);
+      return await interaction.editReply({ content: `🛑 **Security Refusal:** ${secErr.message}` });
     }
 
     // High-impact confirmation check

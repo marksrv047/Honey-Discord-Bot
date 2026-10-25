@@ -1,4 +1,5 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, ComponentType } from 'discord.js';
+import { SecurityGate } from './security-gate.js';
 
 /**
  * Handles confirmation workflow for high-impact or destructive operations.
@@ -33,14 +34,16 @@ export class ConfirmationManager {
       .setColor(0xE67E22)
       .setFooter({ text: `Requester: ${interaction.user.tag || interaction.user.username} • Expires in ${timeoutMs / 1000}s` });
 
+    const token = SecurityGate.generateConfirmationToken(interaction.user.id, interaction.guild?.id || 'guild', plan.actions);
+
     const confirmBtn = new ButtonBuilder()
-      .setCustomId(`confirm_${interaction.id}`)
+      .setCustomId(`confirm_${interaction.id}_${token}`)
       .setLabel('Confirm & Execute')
       .setStyle(ButtonStyle.Danger)
       .setEmoji('⚠️');
 
     const cancelBtn = new ButtonBuilder()
-      .setCustomId(`cancel_${interaction.id}`)
+      .setCustomId(`cancel_${interaction.id}_${token}`)
       .setLabel('Cancel')
       .setStyle(ButtonStyle.Secondary);
 
@@ -55,12 +58,23 @@ export class ConfirmationManager {
 
     try {
       const response = await reply.awaitMessageComponent({
-        filter: i => i.user.id === interaction.user.id && (i.customId === `confirm_${interaction.id}` || i.customId === `cancel_${interaction.id}`),
+        filter: i => i.user.id === interaction.user.id && (i.customId === `confirm_${interaction.id}_${token}` || i.customId === `cancel_${interaction.id}_${token}`),
         time: timeoutMs,
         componentType: ComponentType.Button
       });
 
-      if (response.customId === `confirm_${interaction.id}`) {
+      if (response.customId === `confirm_${interaction.id}_${token}`) {
+        // Cryptographically re-verify token before proceeding
+        const isValid = SecurityGate.verifyConfirmationToken(token, interaction.user.id, interaction.guild?.id || 'guild', plan.actions);
+        if (!isValid) {
+          await response.update({
+            content: '🛑 **Security Refusal:** Confirmation token verification failed. Action parameters were altered or token was reused.',
+            embeds: [],
+            components: []
+          });
+          return false;
+        }
+
         await response.update({
           content: '⏳ **Confirmation received. Proceeding with execution...**',
           embeds: [],

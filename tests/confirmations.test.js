@@ -44,10 +44,11 @@ test('Confirmations: requestConfirmation safely prepares truncated description w
     user: { id: 'user_1', username: 'TestUser' },
     editReply: async (payload) => {
       capturedEmbed = payload.embeds[0];
+      const confirmCustomId = payload.components[0].components[0].data.custom_id;
       return {
         awaitMessageComponent: async () => {
           return {
-            customId: 'confirm_int_123456789',
+            customId: confirmCustomId,
             update: async () => {}
           };
         }

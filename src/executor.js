@@ -5,6 +5,7 @@ import { Verifier } from './verification.js';
 import { TicketManager } from './tickets.js';
 import { Operations } from './operations.js';
 import { ExecutionContext } from './execution-context.js';
+import { SecurityGate } from './security-gate.js';
 import { config } from './config.js';
 import { Logger } from './logger.js';
 
@@ -131,6 +132,9 @@ export class Executor {
    * Core dispatcher for individual Discord actions.
    */
   static async executeSingleAction(guild, action, executionId, invokingMember) {
+    // Immutable Security Gate check on every single mutation pathway
+    SecurityGate.evaluateActionSequence([action], invokingMember, guild);
+
     switch (action.action) {
       case 'update_server_name': {
         await guild.setName(action.name, `Updated via /go agent by ${invokingMember.user.tag}`);
@@ -472,6 +476,54 @@ export class Executor {
         return await Operations.purgeMessages(guild, action.targetChannel || action.targetRef || 'current', action.count || 5, ctx);
       }
 
+      case 'pin_message': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).toLowerCase())
+        };
+        return await Operations.pinMessage(guild, action.targetChannel || action.targetRef || 'current', action.messageId, ctx);
+      }
+
+      case 'unpin_message': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).toLowerCase())
+        };
+        return await Operations.unpinMessage(guild, action.targetChannel || action.targetRef || 'current', action.messageId, ctx);
+      }
+
+      case 'add_reaction': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).toLowerCase())
+        };
+        return await Operations.addReaction(guild, action.targetChannel || action.targetRef || 'current', action.messageId, action.emoji, ctx);
+      }
+
+      case 'move_channel': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).toLowerCase())
+        };
+        return await Operations.moveChannel(guild, action.targetChannel || action.targetRef || 'current', action.category, ctx);
+      }
+
+      case 'lookup_member': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => guild.members?.cache?.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase())
+        };
+        return await Operations.lookupMember(guild, action.targetMember || action.targetRef, ctx);
+      }
+
+      case 'get_bot_invite': {
+        return await Operations.getBotInvite(guild, invokingMember);
+      }
+
+      case 'explain_bot_installation': {
+        return await Operations.explainBotInstallation(guild, invokingMember);
+      }
+
       case 'unsupported': {
         return {
           success: false,
@@ -543,6 +595,27 @@ export class Executor {
 
       case 'purge_messages':
         return await Operations.purgeMessages(guild, intentObj.targetRef, intentObj.args.count || 5, executionContext);
+
+      case 'pin_message':
+        return await Operations.pinMessage(guild, intentObj.targetRef, intentObj.args.messageId, executionContext);
+
+      case 'unpin_message':
+        return await Operations.unpinMessage(guild, intentObj.targetRef, intentObj.args.messageId, executionContext);
+
+      case 'add_reaction':
+        return await Operations.addReaction(guild, intentObj.targetRef, intentObj.args.messageId, intentObj.args.emoji, executionContext);
+
+      case 'move_channel':
+        return await Operations.moveChannel(guild, intentObj.targetRef, intentObj.args.category, executionContext);
+
+      case 'lookup_member':
+        return await Operations.lookupMember(guild, intentObj.targetRef, executionContext);
+
+      case 'get_bot_invite':
+        return await Operations.getBotInvite(guild, executionContext);
+
+      case 'explain_bot_installation':
+        return await Operations.explainBotInstallation(guild, executionContext);
 
       case 'list_channels':
         return await Operations.listChannels(guild, executionContext);

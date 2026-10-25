@@ -251,6 +251,44 @@ export const PurgeMessagesSchema = z.object({
   count: z.number().int().min(1).max(100).default(5)
 });
 
+export const PinMessageSchema = z.object({
+  action: z.literal('pin_message'),
+  targetChannel: z.string().default('current'),
+  messageId: z.string().min(1)
+});
+
+export const UnpinMessageSchema = z.object({
+  action: z.literal('unpin_message'),
+  targetChannel: z.string().default('current'),
+  messageId: z.string().min(1)
+});
+
+export const AddReactionSchema = z.object({
+  action: z.literal('add_reaction'),
+  targetChannel: z.string().default('current'),
+  messageId: z.string().min(1),
+  emoji: z.string().min(1)
+});
+
+export const MoveChannelSchema = z.object({
+  action: z.literal('move_channel'),
+  targetChannel: z.string().default('current'),
+  category: z.string().min(1)
+});
+
+export const LookupMemberSchema = z.object({
+  action: z.literal('lookup_member'),
+  targetMember: z.string().min(1)
+});
+
+export const GetBotInviteSchema = z.object({
+  action: z.literal('get_bot_invite')
+});
+
+export const ExplainBotInstallationSchema = z.object({
+  action: z.literal('explain_bot_installation')
+});
+
 /**
  * Discriminated union of all supported actions
  */
@@ -282,7 +320,14 @@ export const ActionSchema = z.discriminatedUnion('action', [
   SetupModLogsSchema,
   SendAnnouncementSchema,
   SendMessageSchema,
-  PurgeMessagesSchema
+  PurgeMessagesSchema,
+  PinMessageSchema,
+  UnpinMessageSchema,
+  AddReactionSchema,
+  MoveChannelSchema,
+  LookupMemberSchema,
+  GetBotInviteSchema,
+  ExplainBotInstallationSchema
 ]);
 
 /**

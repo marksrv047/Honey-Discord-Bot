@@ -558,4 +558,120 @@ export class Operations {
       verified: true
     };
   }
+
+  /**
+   * Pins a message in a channel.
+   */
+  static async pinMessage(guild, channelRef, messageId, context) {
+    const channel = await context.resolveTarget(channelRef, 'channel');
+    if (!channel) return { success: false, error: `Channel "${channelRef}" not found`, action: 'pin_message' };
+    const msg = await channel.messages.fetch(messageId);
+    if (!msg) return { success: false, error: `Message "${messageId}" not found in #${channel.name}`, action: 'pin_message' };
+    await msg.pin();
+    return {
+      success: true,
+      action: 'pin_message',
+      details: `Pinned message (${messageId}) in #${channel.name}`,
+      verified: true
+    };
+  }
+
+  /**
+   * Unpins a message in a channel.
+   */
+  static async unpinMessage(guild, channelRef, messageId, context) {
+    const channel = await context.resolveTarget(channelRef, 'channel');
+    if (!channel) return { success: false, error: `Channel "${channelRef}" not found`, action: 'unpin_message' };
+    const msg = await channel.messages.fetch(messageId);
+    if (!msg) return { success: false, error: `Message "${messageId}" not found in #${channel.name}`, action: 'unpin_message' };
+    await msg.unpin();
+    return {
+      success: true,
+      action: 'unpin_message',
+      details: `Unpinned message (${messageId}) in #${channel.name}`,
+      verified: true
+    };
+  }
+
+  /**
+   * Adds an emoji reaction to a message.
+   */
+  static async addReaction(guild, channelRef, messageId, emoji, context) {
+    const channel = await context.resolveTarget(channelRef, 'channel');
+    if (!channel) return { success: false, error: `Channel "${channelRef}" not found`, action: 'add_reaction' };
+    const msg = await channel.messages.fetch(messageId);
+    if (!msg) return { success: false, error: `Message "${messageId}" not found in #${channel.name}`, action: 'add_reaction' };
+    await msg.react(emoji);
+    return {
+      success: true,
+      action: 'add_reaction',
+      details: `Added reaction ${emoji} to message ${messageId}`,
+      verified: true
+    };
+  }
+
+  /**
+   * Moves a channel to a specific category.
+   */
+  static async moveChannel(guild, channelRef, categoryRef, context) {
+    const channel = await context.resolveTarget(channelRef, 'channel');
+    if (!channel) return { success: false, error: `Channel "${channelRef}" not found`, action: 'move_channel' };
+    const category = await context.resolveTarget(categoryRef, 'channel');
+    if (!category || category.type !== ChannelType.GuildCategory) {
+      return { success: false, error: `Category "${categoryRef}" not found or is not a category`, action: 'move_channel' };
+    }
+    await channel.setParent(category.id, { lockPermissions: false });
+    return {
+      success: true,
+      action: 'move_channel',
+      details: `Moved #${channel.name} under category "${category.name}"`,
+      verified: true
+    };
+  }
+
+  /**
+   * Looks up a member and returns profile summary.
+   */
+  static async lookupMember(guild, memberRef, context) {
+    const member = await context.resolveTarget(memberRef, 'member');
+    if (!member) return { success: false, error: `Member "${memberRef}" not found in server`, action: 'lookup_member' };
+    const roles = member.roles.cache.filter(r => r.id !== guild.id).map(r => `@${r.name}`);
+    return {
+      success: true,
+      action: 'lookup_member',
+      details: `**User:** ${member.user.tag} (ID: ${member.id})\n` +
+        `**Joined Server:** ${member.joinedAt ? member.joinedAt.toLocaleDateString() : 'Unknown'}\n` +
+        `**Roles (${roles.length}):** ${roles.slice(0, 15).join(', ') || 'None'}`,
+      verified: true
+    };
+  }
+
+  /**
+   * Generates official OAuth2 installation link for Honey Bot.
+   */
+  static async getBotInvite(guild, context) {
+    const clientId = guild?.client?.user?.id || '1563781678063689749';
+    const inviteUrl = `https://discord.com/api/oauth2/authorize?client_id=${clientId}&permissions=8&scope=bot%20applications.commands`;
+    return {
+      success: true,
+      action: 'get_bot_invite',
+      details: `🔗 **Official Bot Installation Link:**\n[Click here to invite Honey Bot](${inviteUrl})\n\n*(Note: Per Discord security rules, adding bots requires an administrator to complete the OAuth2 browser flow).*`,
+      verified: true
+    };
+  }
+
+  /**
+   * Explains Discord bot installation requirements.
+   */
+  static async explainBotInstallation(guild, context) {
+    return {
+      success: true,
+      action: 'explain_bot_installation',
+      details: `ℹ️ **How to Add Bots to Discord:**\n` +
+        `1. Discord API strictly prohibits any bot from directly installing another bot into a server without human authorization.\n` +
+        `2. An administrator with the "Manage Server" permission must visit the bot's official OAuth2 URL and authorize it.\n` +
+        `3. To invite Honey Bot, run \`/go prompt: get bot invite link\`.`,
+      verified: true
+    };
+  }
 }
