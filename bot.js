@@ -67,8 +67,39 @@ server.on('error', (err) => {
   logger.warn(`Health check server port ${port} busy or error: ${err.message}`);
 });
 
+// Keep-Alive Self-Pinger: Prevents free cloud hosts (Render, Koyeb, Railway) from idling after 15 minutes
+function setupKeepAlive() {
+  const url = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL;
+  if (!url) {
+    logger.info('Keep-alive: No external URL detected. Set APP_URL or RENDER_EXTERNAL_URL in environment to enable auto-ping, or use an external pinger like UptimeRobot.');
+    return;
+  }
+
+  const pingIntervalMs = 10 * 60 * 1000; // Ping every 10 minutes (well before Render's 15-minute idle spin-down)
+  logger.info(`Keep-alive self-pinger initialized for ${url} (interval: 10m)`);
+
+  setTimeout(async () => {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      logger.info(`Keep-alive initial self-ping to ${url} status: ${res.status}`);
+    } catch (err) {
+      logger.warn(`Keep-alive initial ping warning: ${err.message}`);
+    }
+  }, 60000);
+
+  setInterval(async () => {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      logger.info(`Keep-alive self-ping sent to ${url} (status: ${res.status})`);
+    } catch (err) {
+      logger.warn(`Keep-alive ping warning: ${err.message}`);
+    }
+  }, pingIntervalMs);
+}
+
 server.listen(port, () => {
   logger.info(`🌐 24/7 Cloud health-check endpoint listening on port ${port}`);
+  setupKeepAlive();
 });
 
 // Validate configuration before starting
