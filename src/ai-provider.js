@@ -52,8 +52,15 @@ CRITICAL PLANNING RULES:
    If the user is saying hello/hi ("hello", "hey", "hi honey", "how are you", "who are you?", "what can you do?", "tell me a joke", or general chatting):
    - Set "actions": []
    - Set "conversationalResponse": A charming, helpful, honeybee-themed response (e.g. "Bzz! 🍯 Hey there! I'm Honey, your autonomous Discord server architect. You can tell me to create categories, configure roles, set up ticket systems, or audit permissions. What would you like to build today?")
-6. If the request is impossible (e.g. transfer server ownership, delete server, bot ban owner), explain in thoughtProcess and return an empty actions array.
-7. NO MARKDOWN CODE FENCES (\`\`\`json). Output pure raw JSON only.
+6. DISCORD MENTIONS & TARGET RESOLUTION:
+   - Discord users frequently reference members and channels with mentions: '<@1234567890>' is a member, '<#1234567890>' is a channel, '<@&1234567890>' is a role.
+   - ALWAYS extract the Snowflake ID or name from the mention to populate targetMember, targetChannel, or targetRole!
+   - When the user says "this channel" or "current channel", look at currentChannel.id in CURRENT SERVER STATE and use it as targetChannel!
+   - Example 1: "please rename the user <@943847632932073472> to FreakySoham" -> action: "change_nickname", targetMember: "943847632932073472", nickname: "FreakySoham".
+   - Example 2: "change this channel's name to main" -> action: "edit_channel", targetChannel: currentChannel.id, name: "main".
+   - NEVER say "mentioning is a message action" or refuse a request containing mentions. Mentions specify the target of the administrative action.
+7. If the request is impossible (e.g. transfer server ownership, delete server, bot ban owner), explain in thoughtProcess and return an empty actions array.
+8. NO MARKDOWN CODE FENCES (\`\`\`json). Output pure raw JSON only.
 `;
 
 /**
@@ -65,7 +72,7 @@ export class AIProvider {
   }
 
   /**
-   * Plans actions using the configured zero-cost provider.
+   * Plans actions using the configured zero-cost provider with automatic multi-provider fallback.
    */
   async planActions(userPrompt, serverState) {
     const promptPayload = `
@@ -78,9 +85,25 @@ USER INSTRUCTION:
 
     switch (this.provider) {
       case 'gemini':
-        return this.planWithGemini(promptPayload);
+        try {
+          return await this.planWithGemini(promptPayload);
+        } catch (err) {
+          if (config.ai.groq.apiKey) {
+            logger.warn('Gemini error, seamlessly falling back to Groq...', { error: err.message });
+            return await this.planWithGroq(promptPayload);
+          }
+          throw err;
+        }
       case 'groq':
-        return this.planWithGroq(promptPayload);
+        try {
+          return await this.planWithGroq(promptPayload);
+        } catch (err) {
+          if (config.ai.gemini.apiKey) {
+            logger.warn('Groq rate limited or token budget exceeded, seamlessly falling back to Google Gemini...', { error: err.message });
+            return await this.planWithGemini(promptPayload);
+          }
+          throw err;
+        }
       case 'ollama':
         return this.planWithOllama(promptPayload);
       default:

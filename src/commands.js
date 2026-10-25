@@ -95,6 +95,12 @@ async function handleGoCommand(interaction) {
   try {
     // Phase 1: Pre-check & Server Snapshot
     const serverState = await getGuildStateSnapshot(guild);
+    if (interaction.channel) {
+      serverState.currentChannel = {
+        id: interaction.channel.id,
+        name: interaction.channel.name
+      };
+    }
 
     // Phase 2: AI Intent Understanding & Planning
     const plan = await planner.createPlan(userPrompt, serverState);
