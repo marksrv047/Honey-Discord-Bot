@@ -24,7 +24,7 @@ export const slashCommands = [
   new SlashCommandBuilder()
     .setName('go')
     .setDescription('Autonomous AI Discord Administration Agent')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption(option =>
       option
         .setName('prompt')
@@ -36,13 +36,13 @@ export const slashCommands = [
   new SlashCommandBuilder()
     .setName('undo')
     .setDescription('Reverts the most recent administrative plan executed by the bot')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   // Diagnostics command
   new SlashCommandBuilder()
     .setName('diagnostics')
     .setDescription('Inspects AI provider status, zero-cost guarantee, and Discord permissions')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 ];
 
 /**

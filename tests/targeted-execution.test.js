@@ -141,3 +141,54 @@ test('Targeted Execution: Role assignment checks idempotency before calling Disc
   assert.strictEqual(roleAddCalls, 0, 'No Discord API call should be made if member already has role');
   assert.ok(result.details.includes('already has role'));
 });
+
+test('Targeted Execution: Send announcement broadcasts rich embed with @everyone', async () => {
+  let sentPayload = null;
+  const mockChannel = {
+    id: 'ch_ann',
+    name: 'announce',
+    send: async (payload) => {
+      sentPayload = payload;
+      return { id: 'msg_123' };
+    }
+  };
+
+  const mockContext = {
+    invokingUser: { tag: 'Admin#0001' },
+    resolveTarget: async () => mockChannel
+  };
+
+  const result = await Operations.sendAnnouncement({}, 'announce', {
+    message: 'Happy Halloween!',
+    mentionEveryone: true,
+    title: '🎃 Halloween Event'
+  }, mockContext);
+
+  assert.strictEqual(result.success, true);
+  assert.strictEqual(sentPayload.content, '@everyone');
+  assert.strictEqual(sentPayload.embeds.length, 1);
+  assert.strictEqual(sentPayload.embeds[0].data.title, '🎃 Halloween Event');
+  assert.ok(result.details.includes('Announcement posted to #announce with @everyone'));
+});
+
+test('Targeted Execution: Purge messages invokes bulkDelete within Discord bounds', async () => {
+  let bulkDeletedCount = 0;
+  const mockChannel = {
+    name: 'general',
+    bulkDelete: async (count) => {
+      bulkDeletedCount = count;
+      return new Map([['m1', {}], ['m2', {}], ['m3', {}], ['m4', {}], ['m5', {}]]);
+    }
+  };
+
+  const mockContext = {
+    invokingUser: { tag: 'Admin#0001' },
+    resolveTarget: async () => mockChannel
+  };
+
+  const result = await Operations.purgeMessages({}, 'general', 5, mockContext);
+  assert.strictEqual(result.success, true);
+  assert.strictEqual(bulkDeletedCount, 5);
+  assert.ok(result.details.includes('Purged 5 messages from #general'));
+});
+

@@ -4,35 +4,40 @@ import { CAPABILITY_REGISTRY } from './capabilities.js';
 /**
  * Checks if the invoking member has authority to perform the planned actions.
  */
-export function checkUserAuthorization(member, actions) {
-  // Server owner always has full authorization
+/**
+ * Checks if the invoking member has authority to perform the planned actions.
+ * Enforces:
+ * 1. Administrator only (or Guild Owner)
+ * 2. User's highest role MUST be positioned above the bot's role
+ */
+export function checkUserAuthorization(member, actions = []) {
+  // 1. Server owner always has unconditional full authorization
   if (member.guild.ownerId === member.id) {
     return { authorized: true };
   }
 
-  // Guild Administrators have full authorization
-  if (member.permissions.has(PermissionFlagsBits.Administrator)) {
-    return { authorized: true };
-  }
-
-  const missingPermissions = new Set();
-
-  for (const actionObj of actions) {
-    const capability = CAPABILITY_REGISTRY[actionObj.action];
-    if (!capability) continue;
-
-    for (const reqPerm of capability.requiredUserPermissions) {
-      if (!member.permissions.has(reqPerm)) {
-        missingPermissions.add(new PermissionsBitField(reqPerm).toArray().join(', '));
-      }
-    }
-  }
-
-  if (missingPermissions.size > 0) {
+  // 2. Strict Administrator-only requirement
+  if (!member.permissions.has(PermissionFlagsBits.Administrator)) {
     return {
       authorized: false,
-      reason: `You are missing the following Discord permissions: ${Array.from(missingPermissions).join(', ')}`
+      reason: 'Access Denied: Honey Bot administration is restricted strictly to Server Administrators (missing the following Discord permissions: Administrator).'
     };
+  }
+
+  // 3. Strict Role Hierarchy: Invoking user's highest role MUST be above the bot's highest role
+  const botMember = member.guild.members.me;
+  if (botMember) {
+    const userRolePos = member.roles?.highest?.position ?? 0;
+    const botRolePos = botMember.roles?.highest?.position ?? 0;
+
+    if (userRolePos <= botRolePos) {
+      const userRoleName = member.roles?.highest?.name || 'your role';
+      const botRoleName = botMember.roles?.highest?.name || 'Honey Bot';
+      return {
+        authorized: false,
+        reason: `Role Hierarchy Restriction: Your highest role (@${userRoleName}) is at or below Honey Bot's role (@${botRoleName}). Only administrators with a role positioned higher than the bot can execute administrative commands.`
+      };
+    }
   }
 
   return { authorized: true };

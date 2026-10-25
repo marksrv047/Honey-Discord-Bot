@@ -179,6 +179,27 @@ export const CAPABILITY_REGISTRY = {
     requiredUserPermissions: [PermissionFlagsBits.ManageChannels],
     isDestructive: false,
     boostRequirement: 0,
+  },
+  send_announcement: {
+    description: 'Broadcasts a formatted rich announcement into a specified channel with optional @everyone ping.',
+    requiredBotPermissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ViewChannel],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    boostRequirement: 0,
+  },
+  send_message: {
+    description: 'Sends a direct message or notification to a specific channel.',
+    requiredBotPermissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ViewChannel],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    boostRequirement: 0,
+  },
+  purge_messages: {
+    description: 'Bulk deletes up to 100 recent messages from a channel.',
+    requiredBotPermissions: [PermissionFlagsBits.ManageMessages, PermissionFlagsBits.ViewChannel],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: true,
+    boostRequirement: 0,
   }
 };
 

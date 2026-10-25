@@ -15,11 +15,18 @@ You are the Discord Administration Intent Interpreter.
 Analyze the user instruction and interaction context. Return ONLY a single raw JSON object matching this schema:
 {
   "thought": "Brief interpretation of intent",
-  "intent": "rename_channel" | "edit_channel_topic" | "set_channel_slowmode" | "lock_channel" | "unlock_channel" | "create_channel" | "delete_channel" | "create_role" | "edit_role" | "delete_role" | "assign_role" | "remove_role" | "change_nickname" | "timeout_member" | "remove_timeout" | "kick_member" | "ban_member" | "unban_member" | "setup_ticket_system" | "audit_server" | "list_channels" | "list_roles" | "conversational" | "unsupported" | "complex_plan",
+  "intent": "rename_channel" | "edit_channel_topic" | "set_channel_slowmode" | "lock_channel" | "unlock_channel" | "create_channel" | "delete_channel" | "create_role" | "edit_role" | "delete_role" | "assign_role" | "remove_role" | "change_nickname" | "timeout_member" | "remove_timeout" | "kick_member" | "ban_member" | "unban_member" | "setup_ticket_system" | "audit_server" | "list_channels" | "list_roles" | "send_announcement" | "send_message" | "purge_messages" | "conversational" | "unsupported" | "complex_plan",
   "targetType": "channel" | "role" | "member" | "server" | null,
-  "targetRef": "current" | string (ID, name, or mention, e.g. "current", "<#123>", "<@123>", "VIP"),
-  "args": { ... any arguments such as name, topic, seconds, durationMinutes, color, etc. ... },
-  "isHighImpact": boolean (true if deleting channel/role, banning, kicking, or mass action),
+  "targetRef": "current" | string (ID, name, or mention, e.g. "current", "<#123>", "<@123>", "VIP", "announce"),
+  "args": {
+    ... any arguments such as name, topic, seconds, durationMinutes, color, etc. ...
+    "message": string (for send_announcement, e.g. "Happy Halloween! @everyone"),
+    "title": string (optional title for send_announcement),
+    "mentionEveryone": boolean (true if user requested mentioning everyone),
+    "content": string (for send_message),
+    "count": number (for purge_messages)
+  },
+  "isHighImpact": boolean (true if deleting channel/role, banning, kicking, purging > 20 messages, or mass action),
   "clarificationNeeded": null or "Concise question if genuinely ambiguous",
   "conversationalResponse": null or "Witty friendly honeybee response if chatting/greeting",
   "multiActions": null or [ { action: string, ... } ] (only for requests requiring multiple distinct steps)
@@ -29,7 +36,13 @@ RULES:
 1. "this channel", "here", "current channel" -> targetType: "channel", targetRef: "current".
 2. Mentions (<#id>, <@id>, <@&id>) -> extract the ID or reference.
 3. Greetings ("hi", "hello") -> intent: "conversational", provide conversationalResponse.
-4. Output raw JSON only. No markdown formatting.
+4. ANNOUNCEMENTS & MESSAGES:
+   - If user asks to write/post an announcement (e.g. "write an announcement message in 📢・announce mentioning everyone and letting them know it's happy halloween"):
+     intent: "send_announcement", targetType: "channel", targetRef: "announce", args: { message: "🎃 Happy Halloween everyone! Wishing you all a spooky and fun holiday season!", title: "📢 Happy Halloween Announcement", mentionEveryone: true }
+   - If user asks to send a message in a channel: intent: "send_message", targetType: "channel", args: { content: "...", mentionEveryone: boolean }
+5. BULK DELETE / PURGE:
+   - If user asks to delete N messages (e.g. "delete 5 messages in #general"): intent: "purge_messages", targetType: "channel", args: { count: 5 }
+6. Output raw JSON only. No markdown formatting.
 `;
 
 /**
@@ -157,6 +170,22 @@ export class IntentRouter {
         args: { seconds },
         isHighImpact: false,
         thought: `Set slowmode to ${seconds}s on ${target}`
+      };
+    }
+
+    // I. "delete N messages" / "purge N messages"
+    const purgeMatch = trimmed.match(/^(?:delete|purge)\s+(\d+)\s+messages?(?:\s+(?:in|from)\s+(this\s+channel|<#\d+>|#?[\w-]+))?$/i);
+    if (purgeMatch) {
+      const count = parseInt(purgeMatch[1], 10);
+      const target = purgeMatch[2] ? (purgeMatch[2].includes('this') ? 'current' : purgeMatch[2]) : 'current';
+      logger.info('Routed through fast-path: purge_messages', { count, target });
+      return {
+        intent: 'purge_messages',
+        targetType: 'channel',
+        targetRef: target,
+        args: { count },
+        isHighImpact: count > 20,
+        thought: `Purge ${count} messages in ${target}`
       };
     }
 

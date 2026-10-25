@@ -1,4 +1,4 @@
-import { ChannelType, PermissionFlagsBits } from 'discord.js';
+import { ChannelType, PermissionFlagsBits, EmbedBuilder } from 'discord.js';
 import { checkRoleHierarchy, auditServerPermissions } from './permissions.js';
 import { ActionLedger } from './recovery.js';
 import { TicketManager } from './tickets.js';
@@ -485,6 +485,76 @@ export class Operations {
       details: issues.length > 0 
         ? issues.join(' | ') 
         : 'Security audit passed: No excessive @everyone permissions found.',
+      verified: true
+    };
+  }
+
+  /**
+   * Broadcasts a rich announcement to a channel with optional @everyone ping.
+   */
+  static async sendAnnouncement(guild, channelRef, options, context) {
+    const channel = await context.resolveTarget(channelRef, 'channel');
+    if (!channel) {
+      return { success: false, error: `Announcement channel "${channelRef}" not found`, action: 'send_announcement' };
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle(options.title || '📢 Server Announcement')
+      .setDescription(options.message || 'Announcement')
+      .setColor(0xE67E22)
+      .setTimestamp()
+      .setFooter({ text: `Announced by ${context.invokingUser.tag}` });
+
+    const payload = { embeds: [embed] };
+    if (options.mentionEveryone) {
+      payload.content = '@everyone';
+    }
+
+    const sent = await channel.send(payload);
+    return {
+      success: true,
+      action: 'send_announcement',
+      details: `Announcement posted to #${channel.name}${options.mentionEveryone ? ' with @everyone' : ''}`,
+      verified: Boolean(sent?.id),
+      resourceId: sent.id
+    };
+  }
+
+  /**
+   * Sends a standard message to a channel.
+   */
+  static async sendMessage(guild, channelRef, content, context) {
+    const channel = await context.resolveTarget(channelRef, 'channel');
+    if (!channel) {
+      return { success: false, error: `Channel "${channelRef}" not found`, action: 'send_message' };
+    }
+
+    const text = typeof content === 'object' ? (content.content || content.message) : content;
+    const sent = await channel.send(text);
+    return {
+      success: true,
+      action: 'send_message',
+      details: `Message sent to #${channel.name}`,
+      verified: Boolean(sent?.id),
+      resourceId: sent.id
+    };
+  }
+
+  /**
+   * Purges / bulk deletes up to 100 messages from a channel.
+   */
+  static async purgeMessages(guild, channelRef, count = 5, context) {
+    const channel = await context.resolveTarget(channelRef, 'channel');
+    if (!channel) {
+      return { success: false, error: `Channel "${channelRef}" not found`, action: 'purge_messages' };
+    }
+
+    const deleteCount = Math.min(Math.max(parseInt(count, 10) || 1, 1), 100);
+    const deleted = await channel.bulkDelete(deleteCount, true);
+    return {
+      success: true,
+      action: 'purge_messages',
+      details: `Purged ${deleted.size} messages from #${channel.name}`,
       verified: true
     };
   }

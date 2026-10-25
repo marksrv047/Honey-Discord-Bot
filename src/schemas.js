@@ -230,6 +230,27 @@ export const SetupModLogsSchema = z.object({
   staffRoleName: z.string().default('Staff')
 });
 
+export const SendAnnouncementSchema = z.object({
+  action: z.literal('send_announcement'),
+  targetChannel: z.string().default('current'),
+  message: z.string().min(1).max(2000),
+  title: z.string().optional(),
+  mentionEveryone: z.boolean().default(false)
+});
+
+export const SendMessageSchema = z.object({
+  action: z.literal('send_message'),
+  targetChannel: z.string().default('current'),
+  content: z.string().min(1).max(2000),
+  mentionEveryone: z.boolean().default(false)
+});
+
+export const PurgeMessagesSchema = z.object({
+  action: z.literal('purge_messages'),
+  targetChannel: z.string().default('current'),
+  count: z.number().int().min(1).max(100).default(5)
+});
+
 /**
  * Discriminated union of all supported actions
  */
@@ -258,7 +279,10 @@ export const ActionSchema = z.discriminatedUnion('action', [
   AuditServerSchema,
   SetupRoleMenuSchema,
   SetupAutoModRuleSchema,
-  SetupModLogsSchema
+  SetupModLogsSchema,
+  SendAnnouncementSchema,
+  SendMessageSchema,
+  PurgeMessagesSchema
 ]);
 
 /**

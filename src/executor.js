@@ -448,6 +448,37 @@ export class Executor {
         return await Operations.listRoles(guild, invokingMember);
       }
 
+      case 'send_announcement': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).replace(/^#/, '').toLowerCase())
+        };
+        return await Operations.sendAnnouncement(guild, action.targetChannel || action.targetRef || 'current', action, ctx);
+      }
+
+      case 'send_message': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).replace(/^#/, '').toLowerCase())
+        };
+        return await Operations.sendMessage(guild, action.targetChannel || action.targetRef || 'current', action.content || action.message, ctx);
+      }
+
+      case 'purge_messages': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).replace(/^#/, '').toLowerCase())
+        };
+        return await Operations.purgeMessages(guild, action.targetChannel || action.targetRef || 'current', action.count || 5, ctx);
+      }
+
+      case 'unsupported': {
+        return {
+          success: false,
+          error: action.thought || 'This action is unsupported or not permitted by Discord API.'
+        };
+      }
+
       default:
         return { success: false, error: `Unknown action: ${action.action}` };
     }
@@ -500,6 +531,19 @@ export class Executor {
       case 'change_nickname':
         return await Operations.changeNickname(guild, intentObj.targetRef, intentObj.args.nickname, executionContext);
 
+      case 'send_announcement':
+        return await Operations.sendAnnouncement(guild, intentObj.targetRef, {
+          message: intentObj.args.message,
+          title: intentObj.args.title,
+          mentionEveryone: Boolean(intentObj.args.mentionEveryone)
+        }, executionContext);
+
+      case 'send_message':
+        return await Operations.sendMessage(guild, intentObj.targetRef, intentObj.args.content || intentObj.args.message, executionContext);
+
+      case 'purge_messages':
+        return await Operations.purgeMessages(guild, intentObj.targetRef, intentObj.args.count || 5, executionContext);
+
       case 'list_channels':
         return await Operations.listChannels(guild, executionContext);
 
@@ -508,6 +552,12 @@ export class Executor {
 
       case 'audit_server':
         return await Operations.auditServer(guild, executionContext);
+
+      case 'unsupported':
+        return {
+          success: false,
+          error: intentObj.thought || 'This operation is not currently supported by Honey Bot or Discord API rules.'
+        };
 
       default:
         // Convert intent to single action for standard execution

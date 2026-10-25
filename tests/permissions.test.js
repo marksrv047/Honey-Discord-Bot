@@ -30,6 +30,41 @@ test('Permissions: checkUserAuthorization blocks user missing required permissio
   assert.match(auth.reason, /missing the following Discord permissions/);
 });
 
+test('Permissions: checkUserAuthorization blocks administrator whose role is below the bot', () => {
+  const mockMember = {
+    id: 'admin_user',
+    guild: {
+      ownerId: 'owner_123',
+      members: {
+        me: { id: 'bot_id', roles: { highest: { name: 'Honey Bot', position: 20 } } }
+      }
+    },
+    permissions: { has: (perm) => perm === PermissionFlagsBits.Administrator },
+    roles: { highest: { name: 'Junior Admin', position: 10 } }
+  };
+
+  const auth = checkUserAuthorization(mockMember, []);
+  assert.equal(auth.authorized, false);
+  assert.match(auth.reason, /Role Hierarchy Restriction/);
+});
+
+test('Permissions: checkUserAuthorization allows administrator whose role is above the bot', () => {
+  const mockMember = {
+    id: 'admin_user',
+    guild: {
+      ownerId: 'owner_123',
+      members: {
+        me: { id: 'bot_id', roles: { highest: { name: 'Honey Bot', position: 20 } } }
+      }
+    },
+    permissions: { has: (perm) => perm === PermissionFlagsBits.Administrator },
+    roles: { highest: { name: 'Senior Admin', position: 30 } }
+  };
+
+  const auth = checkUserAuthorization(mockMember, []);
+  assert.equal(auth.authorized, true);
+});
+
 test('Permissions: checkRoleHierarchy blocks mutating a role higher than the bot', () => {
   const mockGuild = {
     members: {
