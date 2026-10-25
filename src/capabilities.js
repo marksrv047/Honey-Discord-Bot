@@ -462,3 +462,21 @@ export const RESTRICTED_OPERATIONS = [
     status: CapabilityStatus.BLOCKED_BY_POLICY
   }
 ];
+
+/**
+ * Regex-based unsupported Discord operations used by the Planner pre-filter.
+ */
+export const UNSUPPORTED_DISCORD_OPERATIONS = [
+  {
+    pattern: /transfer\s+(server\s+)?ownership/i,
+    reason: 'Discord API strictly prohibits bots from transferring server ownership. Only the server owner can do this manually in Discord Server Settings.'
+  },
+  {
+    pattern: /delete\s+(this\s+|the\s+)?server/i,
+    reason: 'Discord API strictly prohibits bots from deleting servers. Only the server owner with 2FA can delete a server in Server Settings.'
+  },
+  {
+    pattern: /(install|add)\s+((an|another|external)\s+)?bot/i,
+    reason: 'Discord API requires human OAuth2 authorization to add bots. Bots cannot directly install other bots without an administrator visiting the bot\'s official OAuth2 URL.'
+  }
+];
