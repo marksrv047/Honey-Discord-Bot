@@ -3,6 +3,8 @@ import { checkRoleHierarchy, auditServerPermissions } from './permissions.js';
 import { classifyDiscordError, ActionLedger } from './recovery.js';
 import { Verifier } from './verification.js';
 import { TicketManager } from './tickets.js';
+import { Operations } from './operations.js';
+import { ExecutionContext } from './execution-context.js';
 import { config } from './config.js';
 import { Logger } from './logger.js';
 
@@ -27,6 +29,10 @@ export class Executor {
       create_channel: 4,
       edit_role: 5,
       edit_channel: 5,
+      rename_channel: 5,
+      set_channel_slowmode: 5,
+      lock_channel: 6,
+      unlock_channel: 6,
       set_channel_permission: 6,
       assign_role: 7,
       remove_role: 7,
@@ -39,7 +45,9 @@ export class Executor {
       delete_channel: 10,
       delete_role: 10,
       setup_ticket_system: 11,
-      audit_server: 12
+      audit_server: 12,
+      list_channels: 13,
+      list_roles: 13
     };
 
     return [...actions].sort((a, b) => {
@@ -397,8 +405,121 @@ export class Executor {
         };
       }
 
+      case 'rename_channel': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref, type) => {
+            if (/current|this/i.test(ref)) return invokingMember.guild?.channels?.cache?.first();
+            return guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).replace(/^#/, '').toLowerCase());
+          }
+        };
+        return await Operations.renameChannel(guild, action.targetChannel || action.targetRef || 'current', action.name, ctx);
+      }
+
+      case 'lock_channel': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).toLowerCase())
+        };
+        return await Operations.lockChannel(guild, action.targetChannel || action.targetRef || 'current', ctx);
+      }
+
+      case 'unlock_channel': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).toLowerCase())
+        };
+        return await Operations.unlockChannel(guild, action.targetChannel || action.targetRef || 'current', ctx);
+      }
+
+      case 'set_channel_slowmode': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).toLowerCase())
+        };
+        return await Operations.setChannelSlowmode(guild, action.targetChannel || action.targetRef || 'current', action.seconds || 0, ctx);
+      }
+
+      case 'list_channels': {
+        return await Operations.listChannels(guild, invokingMember);
+      }
+
+      case 'list_roles': {
+        return await Operations.listRoles(guild, invokingMember);
+      }
+
       default:
         return { success: false, error: `Unknown action: ${action.action}` };
     }
   }
+
+  /**
+   * Minimal execution path for a single interpreted intent.
+   * Understands once, executes directly on the targeted resource without full-server discovery.
+   */
+  static async executeIntent(guild, intentObj, executionContext, executionId) {
+    logger.info(`Executing single intent directly: ${intentObj.intent}`, {
+      targetRef: intentObj.targetRef,
+      executionId
+    });
+
+    switch (intentObj.intent) {
+      case 'rename_channel':
+        return await Operations.renameChannel(guild, intentObj.targetRef, intentObj.args.name, executionContext);
+
+      case 'edit_channel_topic':
+        return await Operations.editChannelTopic(guild, intentObj.targetRef, intentObj.args.topic, executionContext);
+
+      case 'set_channel_slowmode':
+        return await Operations.setChannelSlowmode(guild, intentObj.targetRef, intentObj.args.seconds, executionContext);
+
+      case 'lock_channel':
+        return await Operations.lockChannel(guild, intentObj.targetRef, executionContext);
+
+      case 'unlock_channel':
+        return await Operations.unlockChannel(guild, intentObj.targetRef, executionContext);
+
+      case 'assign_role':
+        return await Operations.assignRole(guild, intentObj.targetRef || intentObj.args.targetMember, intentObj.args.targetRole || intentObj.args.role, executionContext);
+
+      case 'remove_role':
+        return await Operations.removeRole(guild, intentObj.targetRef || intentObj.args.targetMember, intentObj.args.targetRole || intentObj.args.role, executionContext);
+
+      case 'create_channel':
+        return await Operations.createChannel(guild, { name: intentObj.args.name, ...intentObj.args }, executionContext);
+
+      case 'create_role':
+        return await Operations.createRole(guild, { name: intentObj.args.name, ...intentObj.args }, executionContext);
+
+      case 'delete_channel':
+        return await Operations.deleteChannel(guild, intentObj.targetRef, executionContext);
+
+      case 'delete_role':
+        return await Operations.deleteRole(guild, intentObj.targetRef, executionContext);
+
+      case 'change_nickname':
+        return await Operations.changeNickname(guild, intentObj.targetRef, intentObj.args.nickname, executionContext);
+
+      case 'list_channels':
+        return await Operations.listChannels(guild, executionContext);
+
+      case 'list_roles':
+        return await Operations.listRoles(guild, executionContext);
+
+      case 'audit_server':
+        return await Operations.auditServer(guild, executionContext);
+
+      default:
+        // Convert intent to single action for standard execution
+        const actionObj = {
+          action: intentObj.intent,
+          targetChannel: intentObj.targetRef,
+          targetRole: intentObj.targetRef,
+          targetMember: intentObj.targetRef,
+          ...intentObj.args
+        };
+        return await Executor.executeSingleAction(guild, actionObj, executionId, executionContext.invokingMember);
+    }
+  }
 }
+

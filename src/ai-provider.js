@@ -114,9 +114,41 @@ export class AIProvider {
   }
 
   /**
+   * Universal entry point for custom system prompts (such as lightweight intent routing).
+   */
+  async planWithCustomPrompt(customSystemPrompt, promptPayload) {
+    switch (this.provider) {
+      case 'gemini':
+        try {
+          return await this.planWithGemini(promptPayload, customSystemPrompt);
+        } catch (err) {
+          if (config.ai.groq.apiKey) {
+            logger.warn('Gemini error, seamlessly falling back to Groq...', { error: err.message });
+            return await this.planWithGroq(promptPayload, customSystemPrompt);
+          }
+          throw err;
+        }
+      case 'groq':
+        try {
+          return await this.planWithGroq(promptPayload, customSystemPrompt);
+        } catch (err) {
+          if (config.ai.gemini.apiKey) {
+            logger.warn('Groq rate limited, seamlessly falling back to Google Gemini...', { error: err.message });
+            return await this.planWithGemini(promptPayload, customSystemPrompt);
+          }
+          throw err;
+        }
+      case 'ollama':
+        return this.planWithOllama(promptPayload, customSystemPrompt);
+      default:
+        throw new Error(`Unsupported AI provider: ${this.provider}. Choose 'gemini', 'groq', or 'ollama'.`);
+    }
+  }
+
+  /**
    * Google Gemini (Free Tier from https://aistudio.google.com/)
    */
-  async planWithGemini(promptPayload) {
+  async planWithGemini(promptPayload, systemPrompt = SYSTEM_PROMPT) {
     if (!config.ai.gemini.apiKey) {
       throw new Error('GEMINI_API_KEY is missing. Get a 100% free key at https://aistudio.google.com/');
     }
@@ -140,7 +172,7 @@ export class AIProvider {
             responseMimeType: 'application/json',
             temperature: 0.2
           },
-          systemInstruction: SYSTEM_PROMPT
+          systemInstruction: systemPrompt
         });
 
         const response = await model.generateContent(promptPayload);
@@ -148,8 +180,12 @@ export class AIProvider {
         return this.parseJsonResponse(text);
       } catch (err) {
         lastError = err;
-        logger.warn(`Gemini model ${modelName} returned: ${err.message}. Trying next available model...`);
-        if (err.message.includes('429') || err.message.includes('RESOURCE_EXHAUSTED')) {
+        const msg = err.message || '';
+        logger.warn(`Gemini model ${modelName} returned: ${msg}. Trying next available model...`);
+        if (msg.includes('401') || msg.includes('API_KEY_INVALID')) {
+          throw new Error('Invalid Gemini API Key provided. Check your GEMINI_API_KEY in .env.');
+        }
+        if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
           throw new Error('Google Gemini free quota reached. Please wait a minute, or switch to Groq or local Ollama in .env.');
         }
       }
@@ -162,7 +198,7 @@ export class AIProvider {
   /**
    * Groq (Free Tier from https://console.groq.com/)
    */
-  async planWithGroq(promptPayload) {
+  async planWithGroq(promptPayload, systemPrompt = SYSTEM_PROMPT) {
     if (!config.ai.groq.apiKey) {
       throw new Error('GROQ_API_KEY is missing. Get a free API key at https://console.groq.com/');
     }
@@ -188,7 +224,7 @@ export class AIProvider {
           body: JSON.stringify({
             model: modelName,
             messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'system', content: systemPrompt },
               { role: 'user', content: promptPayload }
             ],
             response_format: { type: 'json_object' },
@@ -198,8 +234,22 @@ export class AIProvider {
 
         if (!response.ok) {
           const errorBody = await response.text();
+          if (response.status === 401 || response.status === 403) {
+            throw new Error(`Invalid Groq API Key provided. Check your GROQ_API_KEY in .env.`);
+          }
           if (response.status === 429) {
+            // Check for retry-after header
+            const retryAfter = response.headers.get('retry-after');
+            if (retryAfter && parseInt(retryAfter, 10) <= 5) {
+              const waitSec = parseInt(retryAfter, 10);
+              logger.info(`Groq returned 429 with retry-after: ${waitSec}s. Backing off...`);
+              await new Promise(r => setTimeout(r, waitSec * 1000));
+              continue; // Retry this model after waiting
+            }
             throw new Error('Groq free rate limit reached. Please wait a minute or use Gemini / Ollama.');
+          }
+          if (response.status === 413) {
+            throw new Error('Groq request too large: Input token limit exceeded.');
           }
           throw new Error(`Groq model ${modelName} returned status ${response.status}: ${errorBody}`);
         }
@@ -210,6 +260,7 @@ export class AIProvider {
       } catch (err) {
         lastError = err;
         logger.warn(`Groq model ${modelName} failed: ${err.message}. Trying next candidate...`);
+        if (err.message.includes('Invalid Groq API Key')) throw err;
       }
     }
 
@@ -220,7 +271,7 @@ export class AIProvider {
   /**
    * Ollama (Local model, 100% Free, Offline, Infinite)
    */
-  async planWithOllama(promptPayload) {
+  async planWithOllama(promptPayload, systemPrompt = SYSTEM_PROMPT) {
     const url = `${config.ai.ollama.baseUrl}/api/chat`;
 
     try {
@@ -230,7 +281,7 @@ export class AIProvider {
         body: JSON.stringify({
           model: config.ai.ollama.model,
           messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'system', content: systemPrompt },
             { role: 'user', content: promptPayload }
           ],
           format: 'json',

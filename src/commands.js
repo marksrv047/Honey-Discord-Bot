@@ -6,11 +6,15 @@ import { ConfirmationManager } from './confirmations.js';
 import { checkUserAuthorization, checkBotPermissions } from './permissions.js';
 import { getGuildStateSnapshot } from './server-state.js';
 import { ActionLedger, createErrorEmbed } from './recovery.js';
+import { ExecutionContext } from './execution-context.js';
+import { IntentRouter } from './intent-router.js';
+import { TaskWorkflow } from './task-workflow.js';
 import { validateConfig, config } from './config.js';
 import { Logger } from './logger.js';
 
 const logger = new Logger('Commands');
 const planner = new Planner();
+const intentRouter = new IntentRouter();
 
 /**
  * Slash command definitions for Discord registration.
@@ -66,7 +70,7 @@ export async function handleCommandInteraction(interaction) {
 }
 
 /**
- * Handles the primary /go command.
+ * Handles the primary /go command via the lightweight intent-driven path.
  */
 async function handleGoCommand(interaction) {
   // Always defer reply immediately to prevent 3000ms Discord interaction timeout
@@ -77,9 +81,13 @@ async function handleGoCommand(interaction) {
   const member = interaction.member;
   const executionId = Logger.generateExecutionId();
 
+  // Create lightweight execution context and workflow tracker
+  const executionContext = new ExecutionContext(interaction, executionId);
+  const workflow = new TaskWorkflow(executionId, userPrompt, executionContext);
+
   logger.info(`Received /go command [${executionId}]`, { user: interaction.user.tag, prompt: userPrompt });
 
-  // Hard safety timeout guard so the message is never left stranded
+  // Hard safety timeout guard so interaction is never left stranded
   let isDone = false;
   const timeoutGuard = setTimeout(async () => {
     if (isDone) return;
@@ -93,38 +101,29 @@ async function handleGoCommand(interaction) {
   }, 25000);
 
   try {
-    // Phase 1: Pre-check & Server Snapshot
-    const serverState = await getGuildStateSnapshot(guild);
-    if (interaction.channel) {
-      serverState.currentChannel = {
-        id: interaction.channel.id,
-        name: interaction.channel.name
-      };
-    }
-
-    // Phase 2: AI Intent Understanding & Planning
-    const plan = await planner.createPlan(userPrompt, serverState);
+    // Phase 1: Intent Routing (Fast-path deterministic or single compact model call)
+    const interpreted = await intentRouter.route(userPrompt, executionContext, workflow.budget);
 
     // Check if clarification is needed
-    if (plan.clarificationNeeded) {
+    if (interpreted.clarificationNeeded) {
       isDone = true;
       clearTimeout(timeoutGuard);
       return await interaction.editReply({
-        content: `❓ **Clarification Needed:**\n${plan.clarificationNeeded}\n\n*Please run \`/go\` again with more details.*`
+        content: `❓ **Clarification Needed:**\n${interpreted.clarificationNeeded}\n\n*Please run \`/go\` again with more details.*`
       });
     }
 
-    // Check if this is a conversational chat, greeting, or friendly question
-    if (plan.conversationalResponse) {
+    // Check if conversational / greeting
+    if (interpreted.conversationalResponse) {
       isDone = true;
       clearTimeout(timeoutGuard);
       const chatEmbed = new EmbedBuilder()
         .setTitle('🍯 Honey Administrative Assistant')
         .setColor(0xF39C12)
-        .setDescription(plan.conversationalResponse)
+        .setDescription(interpreted.conversationalResponse)
         .addFields({
           name: '🐝 Try running instructions like:',
-          value: '• `/go prompt: create a gaming category with voice channels and a role`\n• `/go prompt: setup ticket system for support`\n• `/go prompt: audit server permissions`\n• `/undo` to revert any recent changes'
+          value: '• `/go prompt: rename this channel to general`\n• `/go prompt: lock this channel`\n• `/go prompt: setup ticket system for support`\n• `/go prompt: audit server permissions`\n• `/undo` to revert any recent changes'
         })
         .setFooter({ text: 'Operated by Zero-Cost AI • /go <instruction>' });
 
@@ -134,54 +133,105 @@ async function handleGoCommand(interaction) {
       });
     }
 
-    // Check if plan has 0 actions (e.g. impossible request or purely explanatory)
-    if (!plan.actions || plan.actions.length === 0) {
+    // Phase 2: Check if multi-step complex plan or single-step direct operation
+    if (interpreted.multiActions && interpreted.multiActions.length > 0) {
+      // Multi-step path: create plan and execute
+      const plan = {
+        thoughtProcess: interpreted.thought,
+        clarificationNeeded: null,
+        isHighImpact: interpreted.isHighImpact,
+        actions: interpreted.multiActions
+      };
+
+      const userAuth = checkUserAuthorization(member, plan.actions);
+      if (!userAuth.authorized) {
+        isDone = true;
+        clearTimeout(timeoutGuard);
+        return await interaction.editReply({ content: `🛑 **Unauthorized:** ${userAuth.reason}` });
+      }
+
+      const botAuth = checkBotPermissions(guild, plan.actions);
+      if (!botAuth.capable) {
+        isDone = true;
+        clearTimeout(timeoutGuard);
+        return await interaction.editReply({ content: `⚠️ **Bot Permission Error:** ${botAuth.reason}` });
+      }
+
+      if (plan.isHighImpact) {
+        clearTimeout(timeoutGuard);
+        const confirmed = await ConfirmationManager.requestConfirmation(interaction, plan);
+        if (!confirmed) {
+          isDone = true;
+          return;
+        }
+      }
+
+      const results = await Executor.executePlan(guild, plan, executionId, member);
       isDone = true;
       clearTimeout(timeoutGuard);
-      return await interaction.editReply({
-        content: `ℹ️ **Assessment Result:**\n${plan.thoughtProcess}`
-      });
+      const reportEmbed = Verifier.generateReportEmbed(plan, results, executionId);
+      return await interaction.editReply({ content: '', embeds: [reportEmbed], components: [] });
     }
 
-    // Phase 3: Authorization Check
-    const userAuth = checkUserAuthorization(member, plan.actions);
+    // Phase 3: Minimal Execution Path (Single-Resource Targeted Operation)
+    const actionObj = {
+      action: interpreted.intent,
+      targetChannel: interpreted.targetRef,
+      targetRole: interpreted.targetRef,
+      targetMember: interpreted.targetRef,
+      ...interpreted.args
+    };
+
+    // Pre-execution authorization check
+    const userAuth = checkUserAuthorization(member, [actionObj]);
     if (!userAuth.authorized) {
       isDone = true;
       clearTimeout(timeoutGuard);
-      return await interaction.editReply({
-        content: `🛑 **Unauthorized:** ${userAuth.reason}`
-      });
+      return await interaction.editReply({ content: `🛑 **Unauthorized:** ${userAuth.reason}` });
     }
 
-    const botAuth = checkBotPermissions(guild, plan.actions);
+    const botAuth = checkBotPermissions(guild, [actionObj]);
     if (!botAuth.capable) {
       isDone = true;
       clearTimeout(timeoutGuard);
-      return await interaction.editReply({
-        content: `⚠️ **Bot Permission Error:** ${botAuth.reason}`
-      });
+      return await interaction.editReply({ content: `⚠️ **Bot Permission Error:** ${botAuth.reason}` });
     }
 
-    // Phase 4: High-Impact Confirmation Check
-    if (plan.isHighImpact) {
+    // High-impact confirmation check
+    if (interpreted.isHighImpact) {
       clearTimeout(timeoutGuard);
-      const confirmed = await ConfirmationManager.requestConfirmation(interaction, plan);
+      const confirmed = await ConfirmationManager.requestConfirmation(interaction, {
+        thoughtProcess: interpreted.thought,
+        actions: [actionObj]
+      });
       if (!confirmed) {
         isDone = true;
-        return; // User cancelled or timed out
+        return;
       }
     }
 
-    // Phase 5: Validated Execution & Post-Verification
-    const results = await Executor.executePlan(guild, plan, executionId, member);
+    // Execute directly without full-server discovery
+    const opResult = await Executor.executeIntent(guild, interpreted, executionContext, executionId);
 
-    // Phase 6: Rich Report
     isDone = true;
     clearTimeout(timeoutGuard);
-    const reportEmbed = Verifier.generateReportEmbed(plan, results, executionId);
+
+    if (!opResult.success) {
+      const errorEmbed = createErrorEmbed(new Error(opResult.error || 'Operation failed'), executionId);
+      return await interaction.editReply({ content: '', embeds: [errorEmbed], components: [] });
+    }
+
+    // Format concise result embed
+    const singleReportEmbed = new EmbedBuilder()
+      .setTitle('✅ Action Completed & Verified')
+      .setColor(0x2ECC71)
+      .setDescription(`**${opResult.details}**\n\n*Targeted execution • 0 unneeded discovery calls*`)
+      .setFooter({ text: `Execution ID: ${executionId} • Honey Admin Bot` })
+      .setTimestamp();
+
     await interaction.editReply({
       content: '',
-      embeds: [reportEmbed],
+      embeds: [singleReportEmbed],
       components: []
     });
 
@@ -244,11 +294,13 @@ async function handleDiagnosticsCommand(interaction) {
     .addFields(
       { name: 'Discord Gateway Ping', value: `${ping}ms`, inline: true },
       { name: 'Active AI Provider', value: `\`${config.ai.provider.toUpperCase()}\``, inline: true },
-      { name: 'Zero-Cost Guarantee', value: '🔒 **ACTIVE (No paid fallbacks)**', inline: true },
+      { name: 'Execution Engine', value: '⚡ **Intent-Driven / Targeted**', inline: true },
       { name: 'Model In Use', value: `\`${config.ai[config.ai.provider]?.model || 'default'}\``, inline: true },
+      { name: 'Task Budgets', value: '📊 `Max 3 Calls • 6k Tokens • 30s Deadline`', inline: true },
+      { name: 'Zero-Cost Guarantee', value: '🔒 **ACTIVE (No paid fallbacks)**', inline: true },
       { name: 'Configuration Status', value: configStatus.valid ? '✅ Valid' : `⚠️ ${configStatus.issues.join('\n')}`, inline: false }
     )
-    .setFooter({ text: 'Discord Admin Agent v1.0.0 • Node.js v24' });
+    .setFooter({ text: 'Honey Admin Bot v1.2.0 • Lightweight Intent Engine' });
 
   await interaction.editReply({ embeds: [embed] });
 }

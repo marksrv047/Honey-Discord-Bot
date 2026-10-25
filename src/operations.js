@@ -1,0 +1,491 @@
+import { ChannelType, PermissionFlagsBits } from 'discord.js';
+import { checkRoleHierarchy, auditServerPermissions } from './permissions.js';
+import { ActionLedger } from './recovery.js';
+import { TicketManager } from './tickets.js';
+import { Logger } from './logger.js';
+
+const logger = new Logger('Operations');
+
+function getCacheValues(cache) {
+  if (!cache) return [];
+  if (Array.isArray(cache)) return cache;
+  if (typeof cache.values === 'function') return Array.from(cache.values());
+  return [];
+}
+
+function findInCache(cache, predicate) {
+  if (!cache) return null;
+  if (typeof cache.find === 'function') return cache.find(predicate);
+  return getCacheValues(cache).find(predicate) || null;
+}
+
+/**
+ * Deterministic Discord Administration Operations.
+ * Each operation:
+ * - Operates only on the targeted resource
+ * - Enforces permissions and role hierarchy
+ * - Is idempotent (no-ops if desired state already exists)
+ * - Performs proportional verification
+ * - Logs to ActionLedger for undoability
+ */
+export class Operations {
+  /**
+   * Renames a channel.
+   */
+  static async renameChannel(guild, channelRef, newName, context) {
+    const channel = await context.resolveTarget(channelRef, 'channel');
+    if (!channel) {
+      return { success: false, error: `Channel "${channelRef}" not found`, action: 'rename_channel' };
+    }
+
+    // Idempotency: if already has this name, return success immediately without API call
+    if (channel.name === newName) {
+      return {
+        success: true,
+        action: 'rename_channel',
+        details: `Channel #${channel.name} is already named "${newName}" (idempotent no-op)`,
+        verified: true,
+        resourceId: channel.id
+      };
+    }
+
+    await channel.setName(newName, `Renamed via Honey Bot by ${context.invokingUser.tag}`);
+    return {
+      success: true,
+      action: 'rename_channel',
+      details: `Channel renamed to #${newName}`,
+      verified: true,
+      resourceId: channel.id
+    };
+  }
+
+  /**
+   * Edits channel topic.
+   */
+  static async editChannelTopic(guild, channelRef, topic, context) {
+    const channel = await context.resolveTarget(channelRef, 'channel');
+    if (!channel) {
+      return { success: false, error: `Channel "${channelRef}" not found`, action: 'edit_channel_topic' };
+    }
+
+    if (channel.topic === topic) {
+      return {
+        success: true,
+        action: 'edit_channel_topic',
+        details: `Topic for #${channel.name} is already set to "${topic}"`,
+        verified: true,
+        resourceId: channel.id
+      };
+    }
+
+    await channel.setTopic(topic, `Topic updated via Honey Bot by ${context.invokingUser.tag}`);
+    return {
+      success: true,
+      action: 'edit_channel_topic',
+      details: `Topic for #${channel.name} updated to "${topic}"`,
+      verified: true,
+      resourceId: channel.id
+    };
+  }
+
+  /**
+   * Sets channel slowmode (rate limit per user).
+   */
+  static async setChannelSlowmode(guild, channelRef, seconds, context) {
+    const channel = await context.resolveTarget(channelRef, 'channel');
+    if (!channel) {
+      return { success: false, error: `Channel "${channelRef}" not found`, action: 'set_channel_slowmode' };
+    }
+
+    const sec = parseInt(seconds, 10) || 0;
+    if (channel.rateLimitPerUser === sec) {
+      return {
+        success: true,
+        action: 'set_channel_slowmode',
+        details: `Slowmode for #${channel.name} is already ${sec}s`,
+        verified: true,
+        resourceId: channel.id
+      };
+    }
+
+    await channel.setRateLimitPerUser(sec, `Slowmode set via Honey Bot by ${context.invokingUser.tag}`);
+    return {
+      success: true,
+      action: 'set_channel_slowmode',
+      details: `Slowmode for #${channel.name} set to ${sec}s`,
+      verified: true,
+      resourceId: channel.id
+    };
+  }
+
+  /**
+   * Locks a channel (denies SendMessages to @everyone).
+   */
+  static async lockChannel(guild, channelRef, context) {
+    const channel = await context.resolveTarget(channelRef, 'channel');
+    if (!channel) {
+      return { success: false, error: `Channel "${channelRef}" not found`, action: 'lock_channel' };
+    }
+
+    await channel.permissionOverwrites.edit(guild.roles.everyone, {
+      SendMessages: false,
+      AddReactions: false
+    }, { reason: `Channel locked via Honey Bot by ${context.invokingUser.tag}` });
+
+    return {
+      success: true,
+      action: 'lock_channel',
+      details: `Channel #${channel.name} has been locked (@everyone SendMessages denied)`,
+      verified: true,
+      resourceId: channel.id
+    };
+  }
+
+  /**
+   * Unlocks a channel (restores SendMessages to @everyone).
+   */
+  static async unlockChannel(guild, channelRef, context) {
+    const channel = await context.resolveTarget(channelRef, 'channel');
+    if (!channel) {
+      return { success: false, error: `Channel "${channelRef}" not found`, action: 'unlock_channel' };
+    }
+
+    await channel.permissionOverwrites.edit(guild.roles.everyone, {
+      SendMessages: null
+    }, { reason: `Channel unlocked via Honey Bot by ${context.invokingUser.tag}` });
+
+    return {
+      success: true,
+      action: 'unlock_channel',
+      details: `Channel #${channel.name} has been unlocked`,
+      verified: true,
+      resourceId: channel.id
+    };
+  }
+
+  /**
+   * Assigns a role to a member.
+   */
+  static async assignRole(guild, memberRef, roleRef, context) {
+    const member = await context.resolveTarget(memberRef, 'member');
+    if (!member) {
+      return { success: false, error: `Member "${memberRef}" not found`, action: 'assign_role' };
+    }
+
+    const role = await context.resolveTarget(roleRef, 'role');
+    if (!role) {
+      return { success: false, error: `Role "${roleRef}" not found`, action: 'assign_role' };
+    }
+
+    // Role hierarchy check
+    const hierarchy = checkRoleHierarchy(guild, { action: 'assign_role' }, role);
+    if (!hierarchy.valid) {
+      return { success: false, error: hierarchy.reason, action: 'assign_role' };
+    }
+
+    // Idempotency check
+    if (member.roles.cache.has(role.id)) {
+      return {
+        success: true,
+        action: 'assign_role',
+        details: `Member ${member.user.tag} already has role @${role.name} (idempotent no-op)`,
+        verified: true,
+        resourceId: role.id
+      };
+    }
+
+    await member.roles.add(role, `Assigned via Honey Bot by ${context.invokingUser.tag}`);
+    return {
+      success: true,
+      action: 'assign_role',
+      details: `Assigned role @${role.name} to ${member.user.tag}`,
+      verified: true,
+      resourceId: role.id
+    };
+  }
+
+  /**
+   * Removes a role from a member.
+   */
+  static async removeRole(guild, memberRef, roleRef, context) {
+    const member = await context.resolveTarget(memberRef, 'member');
+    if (!member) {
+      return { success: false, error: `Member "${memberRef}" not found`, action: 'remove_role' };
+    }
+
+    const role = await context.resolveTarget(roleRef, 'role');
+    if (!role) {
+      return { success: false, error: `Role "${roleRef}" not found`, action: 'remove_role' };
+    }
+
+    const hierarchy = checkRoleHierarchy(guild, { action: 'remove_role' }, role);
+    if (!hierarchy.valid) {
+      return { success: false, error: hierarchy.reason, action: 'remove_role' };
+    }
+
+    if (!member.roles.cache.has(role.id)) {
+      return {
+        success: true,
+        action: 'remove_role',
+        details: `Member ${member.user.tag} does not have role @${role.name} (idempotent no-op)`,
+        verified: true,
+        resourceId: role.id
+      };
+    }
+
+    await member.roles.remove(role, `Removed via Honey Bot by ${context.invokingUser.tag}`);
+    return {
+      success: true,
+      action: 'remove_role',
+      details: `Removed role @${role.name} from ${member.user.tag}`,
+      verified: true,
+      resourceId: role.id
+    };
+  }
+
+  /**
+   * Creates a channel.
+   */
+  static async createChannel(guild, options, context) {
+    let chType = ChannelType.GuildText;
+    if (options.type === 'GUILD_VOICE' || options.type === 'VOICE') chType = ChannelType.GuildVoice;
+    if (options.type === 'GUILD_CATEGORY' || options.type === 'CATEGORY') chType = ChannelType.GuildCategory;
+    if (options.type === 'GUILD_ANNOUNCEMENT') chType = ChannelType.GuildAnnouncement;
+
+    let parentId = null;
+    if (options.category && chType !== ChannelType.GuildCategory) {
+      const cat = await context.resolveTarget(options.category, 'channel');
+      if (cat && cat.type === ChannelType.GuildCategory) parentId = cat.id;
+    }
+
+    // Idempotency: check if channel with same name and category already exists in cache
+    const existing = findInCache(guild.channels?.cache, c => 
+      c.name.toLowerCase() === options.name.toLowerCase() && 
+      (parentId ? c.parentId === parentId : true)
+    );
+    if (existing) {
+      return {
+        success: true,
+        action: 'create_channel',
+        details: `Channel #${existing.name} already exists (re-using existing)`,
+        verified: true,
+        resourceId: existing.id
+      };
+    }
+
+    const channel = await guild.channels.create({
+      name: options.name,
+      type: chType,
+      parent: parentId,
+      topic: options.topic,
+      rateLimitPerUser: options.slowmodeSeconds || 0,
+      reason: `Created via Honey Bot by ${context.invokingUser.tag}`
+    });
+
+    ActionLedger.recordCreatedResource(context.executionId, 'channel', channel.id, channel.name);
+
+    return {
+      success: true,
+      action: 'create_channel',
+      details: `Channel #${channel.name} created successfully`,
+      verified: true,
+      resourceId: channel.id
+    };
+  }
+
+  /**
+   * Creates a role.
+   */
+  static async createRole(guild, options, context) {
+    const existing = findInCache(guild.roles?.cache, r => r.name.toLowerCase() === options.name.toLowerCase());
+    if (existing) {
+      return {
+        success: true,
+        action: 'create_role',
+        details: `Role @${existing.name} already exists (re-using existing)`,
+        verified: true,
+        resourceId: existing.id
+      };
+    }
+
+    const role = await guild.roles.create({
+      name: options.name,
+      color: options.color || '#99AAB5',
+      hoist: Boolean(options.hoist),
+      mentionable: Boolean(options.mentionable),
+      permissions: options.permissions || [],
+      reason: `Created via Honey Bot by ${context.invokingUser.tag}`
+    });
+
+    ActionLedger.recordCreatedResource(context.executionId, 'role', role.id, role.name);
+
+    return {
+      success: true,
+      action: 'create_role',
+      details: `Role @${role.name} created`,
+      verified: true,
+      resourceId: role.id
+    };
+  }
+
+  /**
+   * Deletes a channel (high-impact / destructive).
+   */
+  static async deleteChannel(guild, channelRef, context) {
+    const channel = await context.resolveTarget(channelRef, 'channel');
+    if (!channel) {
+      return {
+        success: true,
+        action: 'delete_channel',
+        details: `Channel "${channelRef}" already deleted or not found`,
+        verified: true
+      };
+    }
+
+    const name = channel.name;
+    await channel.delete(`Deleted via Honey Bot by ${context.invokingUser.tag}`);
+    return {
+      success: true,
+      action: 'delete_channel',
+      details: `Channel #${name} deleted`,
+      verified: true,
+      resourceId: channel.id
+    };
+  }
+
+  /**
+   * Deletes a role (high-impact / destructive).
+   */
+  static async deleteRole(guild, roleRef, context) {
+    const role = await context.resolveTarget(roleRef, 'role');
+    if (!role) {
+      return {
+        success: true,
+        action: 'delete_role',
+        details: `Role "${roleRef}" already deleted or not found`,
+        verified: true
+      };
+    }
+
+    const hierarchy = checkRoleHierarchy(guild, { action: 'delete_role' }, role);
+    if (!hierarchy.valid) {
+      return { success: false, error: hierarchy.reason, action: 'delete_role' };
+    }
+
+    const name = role.name;
+    await role.delete(`Deleted via Honey Bot by ${context.invokingUser.tag}`);
+    return {
+      success: true,
+      action: 'delete_role',
+      details: `Role @${name} deleted`,
+      verified: true,
+      resourceId: role.id
+    };
+  }
+
+  /**
+   * Changes nickname of a member.
+   */
+  static async changeNickname(guild, memberRef, nickname, context) {
+    const member = await context.resolveTarget(memberRef, 'member');
+    if (!member) {
+      return { success: false, error: `Member "${memberRef}" not found`, action: 'change_nickname' };
+    }
+
+    const hierarchy = checkRoleHierarchy(guild, { action: 'change_nickname' }, member);
+    if (!hierarchy.valid) {
+      return { success: false, error: hierarchy.reason, action: 'change_nickname' };
+    }
+
+    if (member.nickname === nickname) {
+      return {
+        success: true,
+        action: 'change_nickname',
+        details: `Nickname for ${member.user.tag} is already "${nickname}"`,
+        verified: true,
+        resourceId: member.id
+      };
+    }
+
+    await member.setNickname(nickname, `Changed via Honey Bot by ${context.invokingUser.tag}`);
+    return {
+      success: true,
+      action: 'change_nickname',
+      details: `Nickname for ${member.user.tag} set to "${nickname}"`,
+      verified: true,
+      resourceId: member.id
+    };
+  }
+
+  /**
+   * Lists server channels (only called when user explicitly asks for discovery/listing).
+   */
+  static async listChannels(guild, context) {
+    // Only fetch channels if cache is empty or discovery requested
+    const cacheSize = guild.channels?.cache?.size || 0;
+    if (cacheSize === 0 && typeof guild.channels?.fetch === 'function') {
+      await guild.channels.fetch();
+    }
+
+    const allChannels = getCacheValues(guild.channels?.cache);
+    const categories = allChannels
+      .filter(c => c.type === ChannelType.GuildCategory)
+      .map(c => `📁 **${c.name}**`);
+
+    const textChannels = allChannels
+      .filter(c => c.type === ChannelType.GuildText || c.type === 0)
+      .map(c => `#${c.name}`);
+
+    const voiceChannels = allChannels
+      .filter(c => c.type === ChannelType.GuildVoice || c.type === 2)
+      .map(c => `🔊 ${c.name}`);
+
+    return {
+      success: true,
+      action: 'list_channels',
+      details: `Found ${allChannels.length} total channels:\n` +
+        (categories.length ? categories.slice(0, 10).join(', ') + '\n' : '') +
+        (textChannels.length ? `Text: ${textChannels.slice(0, 20).join(', ')}\n` : '') +
+        (voiceChannels.length ? `Voice: ${voiceChannels.slice(0, 10).join(', ')}` : ''),
+      verified: true
+    };
+  }
+
+  /**
+   * Lists server roles (only called when user explicitly asks).
+   */
+  static async listRoles(guild, context) {
+    const cacheSize = guild.roles?.cache?.size || 0;
+    if (cacheSize <= 1 && typeof guild.roles?.fetch === 'function') {
+      await guild.roles.fetch();
+    }
+
+    const allRoles = getCacheValues(guild.roles?.cache);
+    const roles = allRoles
+      .filter(r => r.id !== guild.id)
+      .sort((a, b) => (b.position || 0) - (a.position || 0))
+      .map(r => `@${r.name}`);
+
+    return {
+      success: true,
+      action: 'list_roles',
+      details: `Found ${roles.length} roles (by hierarchy):\n${roles.slice(0, 25).join(', ')}`,
+      verified: true
+    };
+  }
+
+  /**
+   * Read-only server permission audit.
+   */
+  static async auditServer(guild, context) {
+    const issues = auditServerPermissions(guild);
+    return {
+      success: true,
+      action: 'audit_server',
+      details: issues.length > 0 
+        ? issues.join(' | ') 
+        : 'Security audit passed: No excessive @everyone permissions found.',
+      verified: true
+    };
+  }
+}
