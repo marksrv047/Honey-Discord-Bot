@@ -106,16 +106,38 @@ export async function handleCommandInteraction(interaction) {
 
   const { commandName } = interaction;
 
-  if (commandName === 'go') {
-    await handleGoCommand(interaction);
-  } else if (commandName === 'modlog') {
-    await handleModlogCommand(interaction);
-  } else if (commandName === 'diagnose' || commandName === 'diagnostics' || commandName === 'audit') {
-    await handleDiagnoseCommand(interaction);
-  } else if (commandName === 'undo') {
-    await handleUndoCommand(interaction);
-  } else if (commandName === 'help') {
-    await handleHelpCommand(interaction);
+  try {
+    if (commandName === 'go') {
+      await handleGoCommand(interaction);
+    } else if (commandName === 'modlog') {
+      await handleModlogCommand(interaction);
+    } else if (commandName === 'diagnose' || commandName === 'diagnostics' || commandName === 'audit') {
+      await handleDiagnoseCommand(interaction);
+    } else if (commandName === 'undo') {
+      await handleUndoCommand(interaction);
+    } else if (commandName === 'help') {
+      await handleHelpCommand(interaction);
+    } else {
+      logger.warn(`Unknown command received: ${commandName}`);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          content: `❌ Unknown command \`/${commandName}\`. Use \`/help\` or \`/go\` to interact with Honey Bot.`,
+          ephemeral: true
+        }).catch(() => {});
+      }
+    }
+  } catch (err) {
+    logger.error(`Error in handleCommandInteraction for /${commandName}`, { error: err.message, stack: err.stack });
+    const content = `❌ **Error:** An error occurred while executing \`/${commandName}\`: ${err.message}`;
+    if (interaction.deferred && typeof interaction.editReply === 'function') {
+      await interaction.editReply({ content, embeds: [], components: [] }).catch(async () => {
+        if (typeof interaction.followUp === 'function') {
+          await interaction.followUp({ content, ephemeral: true }).catch(() => {});
+        }
+      });
+    } else if (!interaction.replied && typeof interaction.reply === 'function') {
+      await interaction.reply({ content, ephemeral: true }).catch(() => {});
+    }
   }
 }
 
@@ -123,44 +145,56 @@ export async function handleCommandInteraction(interaction) {
  * Handles the primary /go command via the lightweight intent-driven path.
  */
 async function handleGoCommand(interaction) {
-  // Always defer reply immediately to prevent 3000ms Discord interaction timeout
-  await interaction.deferReply();
-
-  const userPrompt = interaction.options.getString('prompt');
-  const guild = interaction.guild;
-  const member = interaction.member;
   const executionId = Logger.generateExecutionId();
-
-  // Create lightweight execution context and workflow tracker
-  const executionContext = new ExecutionContext(interaction, executionId);
-  const workflow = new TaskWorkflow(executionId, userPrompt, executionContext);
-
-  logger.info(`Received /go command [${executionId}]`, { user: interaction.user.tag, prompt: userPrompt });
-
-  // Immutable Security Policy Gate: Pre-flight prompt inspection
-  try {
-    SecurityGate.evaluatePromptSecurity(userPrompt, interaction.user.id, guild);
-  } catch (secErr) {
-    logger.warn('Prompt rejected by Security Gate', { error: secErr.message });
-    return await interaction.editReply({
-      content: `🛑 **Security Refusal:** ${secErr.message}`
-    });
-  }
-
-  // Hard safety timeout guard so interaction is never left stranded
   let isDone = false;
-  const timeoutGuard = setTimeout(async () => {
-    if (isDone) return;
-    try {
-      await interaction.editReply({
-        content: '⏳ **Operation Timed Out:** The request took longer than expected to process. Please try again.',
-        embeds: [],
-        components: []
-      });
-    } catch {}
-  }, 25000);
+  let timeoutGuard = null;
 
   try {
+    // Always defer reply immediately to prevent 3000ms Discord interaction timeout
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply();
+    }
+
+    const userPrompt = interaction.options?.getString ? interaction.options.getString('prompt') : '';
+    if (!userPrompt || !userPrompt.trim()) {
+      isDone = true;
+      return await interaction.editReply({
+        content: '⚠️ Please provide an instruction for `/go` (e.g. `/go prompt: create #general`).'
+      });
+    }
+
+    const guild = interaction.guild;
+    const member = interaction.member;
+
+    // Create lightweight execution context and workflow tracker
+    const executionContext = new ExecutionContext(interaction, executionId);
+    const workflow = new TaskWorkflow(executionId, userPrompt, executionContext);
+
+    logger.info(`Received /go command [${executionId}]`, { user: interaction.user?.tag, prompt: userPrompt });
+
+    // Immutable Security Policy Gate: Pre-flight prompt inspection
+    try {
+      SecurityGate.evaluatePromptSecurity(userPrompt, interaction.user.id, guild);
+    } catch (secErr) {
+      isDone = true;
+      logger.warn('Prompt rejected by Security Gate', { error: secErr.message });
+      return await interaction.editReply({
+        content: `🛑 **Security Refusal:** ${secErr.message}`
+      });
+    }
+
+    // Hard safety timeout guard so interaction is never left stranded
+    timeoutGuard = setTimeout(async () => {
+      if (isDone) return;
+      try {
+        await interaction.editReply({
+          content: '⏳ **Operation Timed Out:** The request took longer than expected to process. Please try again.',
+          embeds: [],
+          components: []
+        });
+      } catch {}
+    }, 25000);
+
     // Phase 1: Intent Routing (Fast-path deterministic or single compact model call)
     const interpreted = await intentRouter.route(userPrompt, executionContext, workflow.budget);
 
@@ -446,16 +480,22 @@ async function handleGoCommand(interaction) {
 
   } catch (err) {
     isDone = true;
-    clearTimeout(timeoutGuard);
+    if (timeoutGuard) clearTimeout(timeoutGuard);
     logger.error(`Error in /go command [${executionId}]`, { error: err.message, stack: err.stack });
     const errorEmbed = createErrorEmbed(err, executionId);
-    await interaction.editReply({
-      content: '',
-      embeds: [errorEmbed],
-      components: []
-    }).catch(async () => {
-      await interaction.followUp({ embeds: [errorEmbed], ephemeral: true }).catch(() => {});
-    });
+    if (interaction.deferred) {
+      await interaction.editReply({
+        content: '',
+        embeds: [errorEmbed],
+        components: []
+      }).catch(async () => {
+        await interaction.followUp({ embeds: [errorEmbed], ephemeral: true }).catch(() => {});
+      });
+    } else if (!interaction.replied) {
+      await interaction.reply({ embeds: [errorEmbed], ephemeral: true }).catch(() => {});
+    }
+  } finally {
+    if (isDone && timeoutGuard) clearTimeout(timeoutGuard);
   }
 }
 
@@ -463,21 +503,24 @@ async function handleGoCommand(interaction) {
  * Handles the /modlog command for natural-language moderation log management.
  */
 async function handleModlogCommand(interaction) {
-  await interaction.deferReply();
-  const guild = interaction.guild;
-  const member = interaction.member;
-  const prompt = interaction.options.getString('prompt');
+  try {
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply();
+    }
+    const guild = interaction.guild;
+    const member = interaction.member;
+    const prompt = interaction.options?.getString ? interaction.options.getString('prompt') : '';
 
-  // 1. Authorization check: Administrator or ManageGuild or Guild Owner
-  const isAuthorized = member.permissions.has(PermissionFlagsBits.Administrator) ||
-    member.permissions.has(PermissionFlagsBits.ManageGuild) ||
-    member.id === guild.ownerId;
+    // 1. Authorization check: Administrator or ManageGuild or Guild Owner
+    const isAuthorized = member.permissions.has(PermissionFlagsBits.Administrator) ||
+      member.permissions.has(PermissionFlagsBits.ManageGuild) ||
+      member.id === guild.ownerId;
 
-  if (!isAuthorized) {
-    return await interaction.editReply({
-      content: 'Unauthorized: Moderation log configuration requires Administrator or Manage Server permissions.'
-    });
-  }
+    if (!isAuthorized) {
+      return await interaction.editReply({
+        content: 'Unauthorized: Moderation log configuration requires Administrator or Manage Server permissions.'
+      });
+    }
 
   // 2. Natural language interpretation
   const interpreted = await modlogInterpreter.interpret(prompt);
@@ -633,11 +676,20 @@ async function handleModlogCommand(interaction) {
       });
     }
 
-    default: {
-      return await interaction.editReply({
-        content: 'Could not resolve the mod-log request. You can say "set #channel as log channel", "which channel is configured", "test logging", or "disable logging".',
-        allowedMentions: ResponseService.getAllowedMentions()
-      });
+      default: {
+        return await interaction.editReply({
+          content: 'Could not resolve the mod-log request. You can say "set #channel as log channel", "which channel is configured", "test logging", or "disable logging".',
+          allowedMentions: ResponseService.getAllowedMentions()
+        });
+      }
+    }
+  } catch (err) {
+    logger.error('Error in /modlog command', { error: err.message, stack: err.stack });
+    const msg = `❌ **Modlog Error:** ${err.message}`;
+    if (interaction.deferred) {
+      await interaction.editReply({ content: msg, embeds: [], components: [] }).catch(() => {});
+    } else if (!interaction.replied) {
+      await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
     }
   }
 }
@@ -647,41 +699,56 @@ async function handleModlogCommand(interaction) {
  * Flexible, natural-language-driven system diagnostics, model discovery, and safe repairs.
  */
 async function handleDiagnoseCommand(interaction) {
-  await interaction.deferReply({ ephemeral: true }).catch(() => {});
-  const prompt = interaction.options.getString('prompt');
+  try {
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ ephemeral: true }).catch(() => {});
+    }
+    const prompt = interaction.options?.getString ? interaction.options.getString('prompt') : null;
 
-  const result = await DiagnosticService.diagnose(prompt, {
-    client: interaction.client,
-    guild: interaction.guild,
-    member: interaction.member,
-    user: interaction.user
-  });
+    const result = await DiagnosticService.diagnose(prompt, {
+      client: interaction.client,
+      guild: interaction.guild,
+      member: interaction.member,
+      user: interaction.user
+    });
 
-  if (result.checks && Object.keys(result.checks).length > 1) {
-    const embed = ResponseService.buildDiagnosticEmbed(result, result.correlationId);
-    return await interaction.editReply({
-      content: '',
-      embeds: [embed],
+    if (result.checks && Object.keys(result.checks).length > 1) {
+      const embed = ResponseService.buildDiagnosticEmbed(result, result.correlationId);
+      return await interaction.editReply({
+        content: '',
+        embeds: [embed],
+        allowedMentions: ResponseService.getAllowedMentions()
+      });
+    }
+
+    await interaction.editReply({
+      content: result.response,
       allowedMentions: ResponseService.getAllowedMentions()
     });
+  } catch (err) {
+    logger.error('Error in /diagnose command', { error: err.message, stack: err.stack });
+    const msg = `❌ **Diagnostic Error:** ${err.message}`;
+    if (interaction.deferred) {
+      await interaction.editReply({ content: msg, embeds: [], components: [] }).catch(() => {});
+    } else if (!interaction.replied) {
+      await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+    }
   }
-
-  await interaction.editReply({
-    content: result.response,
-    allowedMentions: ResponseService.getAllowedMentions()
-  });
 }
 
 /**
  * Handles the /undo command.
  */
 async function handleUndoCommand(interaction) {
-  await interaction.deferReply();
+  try {
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply();
+    }
 
-  const guild = interaction.guild;
-  const member = interaction.member;
-  const prompt = interaction.options.getString('prompt');
-  const recoveryExecutionId = Logger.generateExecutionId();
+    const guild = interaction.guild;
+    const member = interaction.member;
+    const prompt = interaction.options?.getString ? interaction.options.getString('prompt') : null;
+    const recoveryExecutionId = Logger.generateExecutionId();
 
   // 1. Target Selection via RecoveryEngine
   const selection = RecoveryEngine.selectTarget(guild.id, prompt, interaction.user);
@@ -820,32 +887,59 @@ async function handleUndoCommand(interaction) {
     }
   }
 
-  // 6. Execute Recovery
-  const result = await RecoveryEngine.executeRecovery(guild, candidate, interaction.user, recoveryExecutionId);
-  return await interaction.editReply({
-    content: result.message,
-    allowedMentions: ResponseService.getAllowedMentions()
-  });
+    // 6. Execute Recovery
+    const result = await RecoveryEngine.executeRecovery(guild, candidate, interaction.user, recoveryExecutionId);
+    return await interaction.editReply({
+      content: result.message,
+      allowedMentions: ResponseService.getAllowedMentions()
+    });
+  } catch (err) {
+    logger.error('Error in /undo command', { error: err.message, stack: err.stack });
+    const msg = `❌ **Undo Error:** ${err.message}`;
+    if (interaction.deferred) {
+      await interaction.editReply({ content: msg, embeds: [], components: [] }).catch(() => {});
+    } else if (!interaction.replied) {
+      await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+    }
+  }
 }
 
 /**
  * Handles the /help command.
  */
 async function handleHelpCommand(interaction) {
-  const prompt = interaction.options.getString('prompt');
+  try {
+    const prompt = interaction.options?.getString ? interaction.options.getString('prompt') : null;
 
-  if (!prompt || !prompt.trim()) {
-    const embed = HelpManager.createHelpEmbed();
-    return await interaction.reply({
-      embeds: [embed],
+    if (!prompt || !prompt.trim()) {
+      const embed = HelpManager.createHelpEmbed();
+      if (interaction.deferred) {
+        return await interaction.editReply({
+          embeds: [embed],
+          allowedMentions: ResponseService.getAllowedMentions()
+        });
+      }
+      return await interaction.reply({
+        embeds: [embed],
+        allowedMentions: ResponseService.getAllowedMentions()
+      });
+    }
+
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply();
+    }
+    const answer = await HelpManager.answerQuestion(prompt);
+    await interaction.editReply({
+      content: answer,
       allowedMentions: ResponseService.getAllowedMentions()
     });
+  } catch (err) {
+    logger.error('Error in /help command', { error: err.message, stack: err.stack });
+    const msg = `❌ **Help Error:** ${err.message}`;
+    if (interaction.deferred) {
+      await interaction.editReply({ content: msg, embeds: [], components: [] }).catch(() => {});
+    } else if (!interaction.replied) {
+      await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+    }
   }
-
-  await interaction.deferReply();
-  const answer = await HelpManager.answerQuestion(prompt);
-  await interaction.editReply({
-    content: answer,
-    allowedMentions: ResponseService.getAllowedMentions()
-  });
 }

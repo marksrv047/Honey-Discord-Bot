@@ -141,8 +141,8 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
 
   // If bot is in a voice channel, check if all other users left
   const voiceChannel = oldState.channel || newState.channel;
-  if (voiceChannel && botId && voiceChannel.members.has(botId)) {
-    const nonBots = voiceChannel.members.filter(m => !m.user.bot);
+  if (voiceChannel && botId && voiceChannel.members?.has?.(botId)) {
+    const nonBots = voiceChannel.members.filter(m => !m.user?.bot);
     if (nonBots.size === 0) {
       logger.info('All users left voice channel, scheduling idle disconnect', { guildId });
       sub.resetIdleTimer();
@@ -213,27 +213,76 @@ client.on(Events.MessageCreate, async (message) => {
 // Event: Interaction Dispatcher
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
-    // 1. Handle Slash Commands (/go, /undo, /diagnostics)
+    // 1. Handle Slash Commands (/go, /undo, /diagnose, /modlog, /help, etc.)
     if (interaction.isChatInputCommand()) {
       await handleCommandInteraction(interaction);
       return;
     }
 
-    // 2. Handle Persistent Ticket Buttons (Open Ticket / Close Ticket)
+    // 2. Handle Autocomplete interactions
+    if (interaction.isAutocomplete()) {
+      await interaction.respond([]).catch(() => {});
+      return;
+    }
+
+    // 3. Handle Persistent Ticket Buttons (Open Ticket / Close Ticket) & Confirmation Buttons
     if (interaction.isButton()) {
       const handled = await TicketManager.handleButtonInteraction(interaction);
       if (handled) return;
+
+      // Handle confirmation buttons that expired or were clicked by unauthorized users
+      if (interaction.customId?.startsWith('confirm_') || interaction.customId?.startsWith('cancel_')) {
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({
+            content: '⚠️ This confirmation prompt has expired or can only be operated by the command initiator.',
+            ephemeral: true
+          }).catch(() => {});
+          return;
+        }
+      }
+
+      // Any other unhandled button: acknowledge ephemerally to prevent "The application did not respond"
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          content: '⚠️ This button interaction is no longer active.',
+          ephemeral: true
+        }).catch(() => {});
+        return;
+      }
     }
 
-    // 3. Handle Self-Assignable Role Dropdowns
+    // 4. Handle Self-Assignable Role Dropdowns
     if (interaction.isStringSelectMenu()) {
       const handled = await RoleMenuManager.handleSelectMenuInteraction(interaction);
       if (handled) return;
+
+      // Any other unhandled select menu: acknowledge ephemerally
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          content: '⚠️ This selection menu is no longer active.',
+          ephemeral: true
+        }).catch(() => {});
+        return;
+      }
+    }
+
+    // 5. Acknowledge any other repliable interaction to prevent 3-second timeout
+    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: '⚠️ This interaction is not currently supported.',
+        ephemeral: true
+      }).catch(() => {});
     }
   } catch (err) {
     logger.error('Unhandled interaction error', { error: err.message, stack: err.stack });
-    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      await interaction.reply({ content: '❌ An unhandled system error occurred.', ephemeral: true }).catch(() => {});
+    try {
+      if (interaction.deferred) {
+        await interaction.editReply({ content: '❌ An unhandled system error occurred.', embeds: [], components: [] }).catch(() => {});
+      } else if (!interaction.replied && interaction.isRepliable()) {
+        await interaction.reply({ content: '❌ An unhandled system error occurred.', ephemeral: true }).catch(() => {});
+      }
+    } catch {
+      // Ignore secondary error reporting failures
     }
   }
 });
