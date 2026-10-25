@@ -47,6 +47,13 @@ export const slashCommands = [
 export async function handleCommandInteraction(interaction) {
   if (!interaction.isChatInputCommand()) return;
 
+  if (!interaction.guild) {
+    return await interaction.reply({
+      content: '❌ Honey Bot administration commands must be run inside a Discord server, not in Direct Messages.',
+      ephemeral: true
+    }).catch(() => {});
+  }
+
   const { commandName } = interaction;
 
   if (commandName === 'go') {
@@ -173,6 +180,7 @@ async function handleUndoCommand(interaction) {
  * Handles the /diagnostics command.
  */
 async function handleDiagnosticsCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true }).catch(() => {});
   const configStatus = validateConfig();
   const ping = interaction.client.ws.ping;
 
@@ -188,5 +196,5 @@ async function handleDiagnosticsCommand(interaction) {
     )
     .setFooter({ text: 'Discord Admin Agent v1.0.0 • Node.js v24' });
 
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+  await interaction.editReply({ embeds: [embed] });
 }

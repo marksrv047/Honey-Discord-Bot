@@ -1,5 +1,21 @@
 import dns from 'node:dns';
-dns.setDefaultResultOrder('ipv4first');
+import net from 'node:net';
+
+// 1. Force IPv4-first DNS resolution in Node.js to prevent Gateway handshake stalls in Docker/Render
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch {
+  // ignore
+}
+
+// 2. Disable dual-stack IPv6 auto-select family to prevent Docker IPv6 packet blackhole hangs
+try {
+  if (typeof net.setDefaultAutoSelectFamily === 'function') {
+    net.setDefaultAutoSelectFamily(false);
+  }
+} catch {
+  // ignore
+}
 
 import http from 'node:http';
 import { Client, GatewayIntentBits, Events, ActivityType } from 'discord.js';
@@ -31,6 +47,10 @@ const server = http.createServer((req, res) => {
   }, null, 2));
 });
 
+server.on('error', (err) => {
+  logger.warn(`Health check server port ${port} busy or error: ${err.message}`);
+});
+
 server.listen(port, () => {
   logger.info(`🌐 24/7 Cloud health-check endpoint listening on port ${port}`);
 });
@@ -41,11 +61,10 @@ if (!validation.valid) {
   logger.warn('Configuration issues detected:', { issues: validation.issues });
 }
 
-// Initialize Discord Client with essential intents
+// Initialize Discord Client with essential guild administration intents
 const client = new Client({
   intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.Guilds
   ]
 });
 
