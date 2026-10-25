@@ -192,3 +192,27 @@ test('Targeted Execution: Purge messages invokes bulkDelete within Discord bound
   assert.ok(result.details.includes('Purged 5 messages from #general'));
 });
 
+test('Targeted Execution: Context resolves decorative emoji channels like "📢・announce" from simple "announce" or "📢・announce"', async () => {
+  const decorativeChannel = { id: 'ch_announce_999', name: '📢・announce', type: 0 };
+  const mockGuild = {
+    id: 'guild_123',
+    channels: {
+      cache: new Map([
+        ['ch_announce_999', decorativeChannel]
+      ])
+    }
+  };
+
+  const context = new ExecutionContext({ guild: mockGuild, channel: { id: 'ch_current' } });
+
+  // 1. Plain text "announce" resolves "📢・announce"
+  const resolvedFromPlain = await context.resolveTarget('announce', 'channel');
+  assert.strictEqual(resolvedFromPlain.id, 'ch_announce_999');
+  assert.strictEqual(resolvedFromPlain.name, '📢・announce');
+
+  // 2. Exact text "📢・announce" resolves
+  const resolvedFromDecorative = await context.resolveTarget('📢・announce', 'channel');
+  assert.strictEqual(resolvedFromDecorative.id, 'ch_announce_999');
+});
+
+

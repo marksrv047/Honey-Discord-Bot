@@ -9,10 +9,14 @@ const logger = new Logger('Recovery');
 export function createErrorEmbed(err, executionId = 'unknown') {
   const message = err?.message || String(err);
   let title = '❌ Execution Interrupted';
-  let explanation = 'An unexpected issue occurred while processing this administrative instruction.';
+  let explanation = message && message !== 'Error' ? message : 'An unexpected issue occurred while processing this administrative instruction.';
   let recommendation = 'Please review your command instruction and try again.';
 
-  if (message.includes('rate limit') || message.includes('429') || message.includes('RESOURCE_EXHAUSTED')) {
+  if (message.includes('not found') || message.includes('Unknown Channel') || message.includes('Unknown Role')) {
+    title = '🔍 Resource Not Found';
+    explanation = message;
+    recommendation = 'Verify the channel or role name, or mention it directly (e.g. #channel or @role) so the bot can resolve it immediately.';
+  } else if (message.includes('rate limit') || message.includes('429') || message.includes('RESOURCE_EXHAUSTED')) {
     title = '⏳ AI Quota Rate Limit';
     explanation = 'The free-tier AI inference engine reached its temporary per-minute rate limit.';
     recommendation = 'Please wait 30–60 seconds for the quota window to refresh, then run your command again.';

@@ -495,7 +495,34 @@ export class Operations {
   static async sendAnnouncement(guild, channelRef, options, context) {
     const channel = await context.resolveTarget(channelRef, 'channel');
     if (!channel) {
-      return { success: false, error: `Announcement channel "${channelRef}" not found`, action: 'send_announcement' };
+      return { success: false, error: `Announcement channel "${channelRef}" not found in this server.`, action: 'send_announcement' };
+    }
+
+    // Channel-specific permission inspection
+    const botMember = guild.members?.me;
+    if (botMember && typeof channel.permissionsFor === 'function') {
+      const perms = channel.permissionsFor(botMember);
+      if (!perms.has(PermissionFlagsBits.ViewChannel)) {
+        return {
+          success: false,
+          error: `Bot cannot view channel #${channel.name}. Please grant Honey Bot the "View Channel" permission in #${channel.name}.`,
+          action: 'send_announcement'
+        };
+      }
+      if (!perms.has(PermissionFlagsBits.SendMessages)) {
+        return {
+          success: false,
+          error: `Bot does not have permission to send messages in #${channel.name}. In Channel Settings > Permissions for #${channel.name}, allow Honey Bot to "Send Messages".`,
+          action: 'send_announcement'
+        };
+      }
+      if (options.mentionEveryone && !perms.has(PermissionFlagsBits.MentionEveryone)) {
+        return {
+          success: false,
+          error: `Bot lacks permission to mention @everyone in #${channel.name}. Please grant Honey Bot "Mention @everyone" permission in #${channel.name}.`,
+          action: 'send_announcement'
+        };
+      }
     }
 
     const embed = new EmbedBuilder()
@@ -510,13 +537,26 @@ export class Operations {
       payload.content = '@everyone';
     }
 
-    const sent = await channel.send(payload);
+    let sent;
+    try {
+      sent = await channel.send(payload);
+    } catch (err) {
+      if (err.code === 50013 || err.message?.includes('Missing Permissions')) {
+        return {
+          success: false,
+          error: `Discord Permission Error: Honey Bot cannot post in #${channel.name}. Please ensure the bot's role or channel permission overwrite has "Send Messages" enabled.`,
+          action: 'send_announcement'
+        };
+      }
+      throw err;
+    }
+
     return {
       success: true,
       action: 'send_announcement',
       details: `Announcement posted to #${channel.name}${options.mentionEveryone ? ' with @everyone' : ''}`,
       verified: Boolean(sent?.id),
-      resourceId: sent.id
+      resourceId: sent?.id
     };
   }
 
@@ -526,17 +566,50 @@ export class Operations {
   static async sendMessage(guild, channelRef, content, context) {
     const channel = await context.resolveTarget(channelRef, 'channel');
     if (!channel) {
-      return { success: false, error: `Channel "${channelRef}" not found`, action: 'send_message' };
+      return { success: false, error: `Target channel "${channelRef}" not found in this server.`, action: 'send_message' };
+    }
+
+    // Channel-specific permission inspection
+    const botMember = guild.members?.me;
+    if (botMember && typeof channel.permissionsFor === 'function') {
+      const perms = channel.permissionsFor(botMember);
+      if (!perms.has(PermissionFlagsBits.ViewChannel)) {
+        return {
+          success: false,
+          error: `Bot cannot view channel #${channel.name}. Please grant Honey Bot "View Channel" in #${channel.name}.`,
+          action: 'send_message'
+        };
+      }
+      if (!perms.has(PermissionFlagsBits.SendMessages)) {
+        return {
+          success: false,
+          error: `Bot does not have permission to send messages in #${channel.name}. In Channel Settings > Permissions for #${channel.name}, allow Honey Bot to "Send Messages".`,
+          action: 'send_message'
+        };
+      }
     }
 
     const text = typeof content === 'object' ? (content.content || content.message) : content;
-    const sent = await channel.send(text);
+    let sent;
+    try {
+      sent = await channel.send(text);
+    } catch (err) {
+      if (err.code === 50013 || err.message?.includes('Missing Permissions')) {
+        return {
+          success: false,
+          error: `Discord Permission Error: Honey Bot cannot send messages in #${channel.name}. Please check channel permissions for the bot in #${channel.name}.`,
+          action: 'send_message'
+        };
+      }
+      throw err;
+    }
+
     return {
       success: true,
       action: 'send_message',
       details: `Message sent to #${channel.name}`,
       verified: Boolean(sent?.id),
-      resourceId: sent.id
+      resourceId: sent?.id
     };
   }
 
