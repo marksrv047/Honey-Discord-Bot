@@ -79,17 +79,30 @@ async function handleGoCommand(interaction) {
 
   logger.info(`Received /go command [${executionId}]`, { user: interaction.user.tag, prompt: userPrompt });
 
+  // Hard safety timeout guard so the message is never left stranded
+  let isDone = false;
+  const timeoutGuard = setTimeout(async () => {
+    if (isDone) return;
+    try {
+      await interaction.editReply({
+        content: '⏳ **Operation Timed Out:** The request took longer than expected to process. Please try again.',
+        embeds: [],
+        components: []
+      });
+    } catch {}
+  }, 25000);
+
   try {
     // Phase 1: Pre-check & Server Snapshot
-    await interaction.editReply('🔍 **Auditing server state and understanding intent...**');
     const serverState = await getGuildStateSnapshot(guild);
 
     // Phase 2: AI Intent Understanding & Planning
-    await interaction.editReply('🧠 **Synthesizing administrative plan with Zero-Cost AI...**');
     const plan = await planner.createPlan(userPrompt, serverState);
 
     // Check if clarification is needed
     if (plan.clarificationNeeded) {
+      isDone = true;
+      clearTimeout(timeoutGuard);
       return await interaction.editReply({
         content: `❓ **Clarification Needed:**\n${plan.clarificationNeeded}\n\n*Please run \`/go\` again with more details.*`
       });
@@ -97,6 +110,8 @@ async function handleGoCommand(interaction) {
 
     // Check if this is a conversational chat, greeting, or friendly question
     if (plan.conversationalResponse) {
+      isDone = true;
+      clearTimeout(timeoutGuard);
       const chatEmbed = new EmbedBuilder()
         .setTitle('🍯 Honey Administrative Assistant')
         .setColor(0xF39C12)
@@ -115,6 +130,8 @@ async function handleGoCommand(interaction) {
 
     // Check if plan has 0 actions (e.g. impossible request or purely explanatory)
     if (!plan.actions || plan.actions.length === 0) {
+      isDone = true;
+      clearTimeout(timeoutGuard);
       return await interaction.editReply({
         content: `ℹ️ **Assessment Result:**\n${plan.thoughtProcess}`
       });
@@ -123,6 +140,8 @@ async function handleGoCommand(interaction) {
     // Phase 3: Authorization Check
     const userAuth = checkUserAuthorization(member, plan.actions);
     if (!userAuth.authorized) {
+      isDone = true;
+      clearTimeout(timeoutGuard);
       return await interaction.editReply({
         content: `🛑 **Unauthorized:** ${userAuth.reason}`
       });
@@ -130,6 +149,8 @@ async function handleGoCommand(interaction) {
 
     const botAuth = checkBotPermissions(guild, plan.actions);
     if (!botAuth.capable) {
+      isDone = true;
+      clearTimeout(timeoutGuard);
       return await interaction.editReply({
         content: `⚠️ **Bot Permission Error:** ${botAuth.reason}`
       });
@@ -137,16 +158,20 @@ async function handleGoCommand(interaction) {
 
     // Phase 4: High-Impact Confirmation Check
     if (plan.isHighImpact) {
+      clearTimeout(timeoutGuard);
       const confirmed = await ConfirmationManager.requestConfirmation(interaction, plan);
-      if (!confirmed) return; // User cancelled or timed out
-    } else {
-      await interaction.editReply(`⚡ **Executing ${plan.actions.length} verified administrative actions...**`);
+      if (!confirmed) {
+        isDone = true;
+        return; // User cancelled or timed out
+      }
     }
 
     // Phase 5: Validated Execution & Post-Verification
     const results = await Executor.executePlan(guild, plan, executionId, member);
 
     // Phase 6: Rich Report
+    isDone = true;
+    clearTimeout(timeoutGuard);
     const reportEmbed = Verifier.generateReportEmbed(plan, results, executionId);
     await interaction.editReply({
       content: '',
@@ -155,6 +180,8 @@ async function handleGoCommand(interaction) {
     });
 
   } catch (err) {
+    isDone = true;
+    clearTimeout(timeoutGuard);
     logger.error(`Error in /go command [${executionId}]`, { error: err.message, stack: err.stack });
     const errorEmbed = createErrorEmbed(err, executionId);
     await interaction.editReply({
@@ -183,8 +210,6 @@ async function handleUndoCommand(interaction) {
   }
 
   const [executionId, resources] = lastEntry;
-  await interaction.editReply(`⏳ **Rolling back execution \`${executionId}\` (${resources.length} created resources)...**`);
-
   const result = await ActionLedger.rollbackExecution(guild, executionId);
 
   if (result.success) {
