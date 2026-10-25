@@ -71,7 +71,7 @@ export class IntentRouter {
       return {
         intent: 'conversational',
         thought: 'User greeted the bot',
-        conversationalResponse: "Bzz! 🍯 Hey there! I'm Honey, your autonomous Discord server architect. You can tell me to rename this channel, create roles, lock channels, or set up tickets. What can I do for you today?",
+        conversationalResponse: "Hello. I am Honey, a server administration assistant. You can give me instructions such as renaming channels, managing roles, or auditing permissions.",
         isHighImpact: false
       };
     }

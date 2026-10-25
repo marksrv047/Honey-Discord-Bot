@@ -42,6 +42,10 @@ export class Logger {
     return 'exec_' + Math.random().toString(36).substring(2, 9);
   }
 
+  static redactSecrets(data) {
+    return redactSecrets(data);
+  }
+
   format(level, message, meta = {}) {
     const timestamp = new Date().toISOString();
     const cleanMeta = redactSecrets(meta);

@@ -149,17 +149,11 @@ client.once(Events.ClientReady, (readyClient) => {
   });
 });
 
-// Event: Friendly mention response in chat
+// Event: Mention response in chat
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
   if (message.mentions.has(client.user)) {
-    const greetings = [
-      `Bzz! 🍯 Hello <@${message.author.id}>! I'm Honey, your autonomous server architect. Tell me what to build with \`/go <instruction>\` or run \`/diagnostics\` to check my health!`,
-      `Hey <@${message.author.id}>! 🐝 Honey is on duty. What channels, roles, or permissions are we setting up today? Try \`/go <instruction>\`!`,
-      `Hi there! 🍯 Want to chat or build something? Use \`/go prompt: <anything>\` — I can configure roles, categories, tickets, or just answer questions!`
-    ];
-    const replyText = greetings[Math.floor(Math.random() * greetings.length)];
-    await message.reply(replyText).catch(() => {});
+    await message.reply(`Hello <@${message.author.id}>. I am Honey, a server administration assistant. Use \`/go <instruction>\` to execute server changes, or \`/audit\` for diagnostics.`).catch(() => {});
   }
 });
 

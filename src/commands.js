@@ -11,6 +11,8 @@ import { IntentRouter } from './intent-router.js';
 import { TaskWorkflow } from './task-workflow.js';
 import { validateConfig, config } from './config.js';
 import { SecurityGate, SecurityPolicyViolationError } from './security-gate.js';
+import { HealthCheckEngine } from './health-check.js';
+import { formatSingleOutcome } from './format-response.js';
 import { Logger } from './logger.js';
 
 const logger = new Logger('Commands');
@@ -43,6 +45,12 @@ export const slashCommands = [
   new SlashCommandBuilder()
     .setName('diagnostics')
     .setDescription('Inspects AI provider status, zero-cost guarantee, and Discord permissions')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+  // Comprehensive self-audit and health diagnostics command
+  new SlashCommandBuilder()
+    .setName('audit')
+    .setDescription('Runs comprehensive self-audit and health diagnostics across all subsystems')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 ];
 
@@ -54,7 +62,7 @@ export async function handleCommandInteraction(interaction) {
 
   if (!interaction.guild) {
     return await interaction.reply({
-      content: '❌ Honey Bot administration commands must be run inside a Discord server, not in Direct Messages.',
+      content: 'Honey Bot administration commands must be run inside a Discord server, not in Direct Messages.',
       ephemeral: true
     }).catch(() => {});
   }
@@ -65,8 +73,8 @@ export async function handleCommandInteraction(interaction) {
     await handleGoCommand(interaction);
   } else if (commandName === 'undo') {
     await handleUndoCommand(interaction);
-  } else if (commandName === 'diagnostics') {
-    await handleDiagnosticsCommand(interaction);
+  } else if (commandName === 'diagnostics' || commandName === 'audit') {
+    await handleAuditCommand(interaction);
   }
 }
 
@@ -128,19 +136,10 @@ async function handleGoCommand(interaction) {
     if (interpreted.conversationalResponse) {
       isDone = true;
       clearTimeout(timeoutGuard);
-      const chatEmbed = new EmbedBuilder()
-        .setTitle('🍯 Honey Administrative Assistant')
-        .setColor(0xF39C12)
-        .setDescription(interpreted.conversationalResponse)
-        .addFields({
-          name: '🐝 Try running instructions like:',
-          value: '• `/go prompt: rename this channel to general`\n• `/go prompt: lock this channel`\n• `/go prompt: setup ticket system for support`\n• `/go prompt: audit server permissions`\n• `/undo` to revert any recent changes'
-        })
-        .setFooter({ text: 'Operated by Zero-Cost AI • /go <instruction>' });
-
       return await interaction.editReply({
-        content: '',
-        embeds: [chatEmbed]
+        content: interpreted.conversationalResponse,
+        embeds: [],
+        components: []
       });
     }
 
@@ -250,18 +249,22 @@ async function handleGoCommand(interaction) {
       return await interaction.editReply({ content: '', embeds: [errorEmbed], components: [] });
     }
 
-    // Format concise result embed
-    const singleReportEmbed = new EmbedBuilder()
-      .setTitle('✅ Action Completed & Verified')
-      .setColor(0x2ECC71)
-      .setDescription(`**${opResult.details}**\n\n*Targeted execution • 0 unneeded discovery calls*`)
-      .setFooter({ text: `Execution ID: ${executionId} • Honey Admin Bot` })
-      .setTimestamp();
+    // Format concise outcome message (premium minimal UX)
+    const outcomeMessage = formatSingleOutcome(interpreted.intent, opResult, {
+      ...interpreted.args,
+      targetRef: interpreted.targetRef,
+      name: interpreted.args?.name
+    });
 
     await interaction.editReply({
-      content: '',
-      embeds: [singleReportEmbed],
+      content: outcomeMessage,
+      embeds: [],
       components: []
+    }).catch(async (editErr) => {
+      // If the interaction message was deleted in a bulk purge, post directly to channel
+      if (editErr?.code === 10008 || editErr?.message?.includes('Unknown Message')) {
+        await interaction.channel?.send(outcomeMessage).catch(() => {});
+      }
     });
 
   } catch (err) {
@@ -290,7 +293,7 @@ async function handleUndoCommand(interaction) {
 
   if (!lastEntry) {
     return await interaction.editReply({
-      content: 'ℹ️ **No recent created channels or roles found in this session to undo.**'
+      content: 'No recent created channels or roles found in this session to undo.'
     });
   }
 
@@ -299,37 +302,61 @@ async function handleUndoCommand(interaction) {
 
   if (result.success) {
     const embed = new EmbedBuilder()
-      .setTitle('🔄 Rollback Successful')
+      .setTitle('Rollback Successful')
       .setDescription(`Execution \`${executionId}\` has been reversed.\n\n` + result.report.map(r => `• ${r}`).join('\n'))
-      .setColor(0x3498DB);
+      .setColor(0x5865F2);
 
     await interaction.editReply({ embeds: [embed] });
   } else {
-    await interaction.editReply(`❌ **Rollback failed:** ${result.message}`);
+    await interaction.editReply(`Rollback failed: ${result.message}`);
   }
 }
 
 /**
- * Handles the /diagnostics command.
+ * Handles the /audit and /diagnostics commands.
+ * Runs comprehensive, read-only health checks across all subsystems.
  */
-async function handleDiagnosticsCommand(interaction) {
+async function handleAuditCommand(interaction) {
   await interaction.deferReply({ ephemeral: true }).catch(() => {});
-  const configStatus = validateConfig();
-  const ping = interaction.client.ws.ping;
+  const executionId = Logger.generateExecutionId();
+
+  const engine = new HealthCheckEngine({
+    client: interaction.client,
+    guild: interaction.guild
+  });
+
+  const report = await engine.runAllChecks();
+
+  const color = report.overallStatus === 'healthy' ? 0x2ECC71 : (report.overallStatus === 'degraded' ? 0xE67E22 : 0xED4245);
 
   const embed = new EmbedBuilder()
-    .setTitle('🛠️ Admin Agent Diagnostics & Health Report')
-    .setColor(configStatus.valid ? 0x2ECC71 : 0xE74C3C)
-    .addFields(
-      { name: 'Discord Gateway Ping', value: `${ping}ms`, inline: true },
-      { name: 'Active AI Provider', value: `\`${config.ai.provider.toUpperCase()}\``, inline: true },
-      { name: 'Execution Engine', value: '⚡ **Intent-Driven / Targeted**', inline: true },
-      { name: 'Model In Use', value: `\`${config.ai[config.ai.provider]?.model || 'default'}\``, inline: true },
-      { name: 'Task Budgets', value: '📊 `Max 3 Calls • 6k Tokens • 30s Deadline`', inline: true },
-      { name: 'Zero-Cost Guarantee', value: '🔒 **ACTIVE (No paid fallbacks)**', inline: true },
-      { name: 'Configuration Status', value: configStatus.valid ? '✅ Valid' : `⚠️ ${configStatus.issues.join('\n')}`, inline: false }
+    .setTitle('System Health & Self-Audit Report')
+    .setColor(color)
+    .setDescription(
+      `Status: **${report.overallStatus.toUpperCase()}** (${report.durationMs}ms)\n` +
+      `Summary: ${report.summary.passed} passed, ${report.summary.failed} failed, ${report.summary.inconclusive + report.summary.skipped} skipped/inconclusive.`
     )
-    .setFooter({ text: 'Honey Admin Bot v1.2.0 • Lightweight Intent Engine' });
+    .addFields(
+      {
+        name: 'Subsystem Checks',
+        value:
+          `• Application: ${report.categories.application.filter(c => c.status === 'passed').length}/${report.categories.application.length}\n` +
+          `• Code Health: ${report.categories.code.filter(c => c.status === 'passed').length}/${report.categories.code.length}\n` +
+          `• Dependencies: ${report.categories.dependency.filter(c => c.status === 'passed').length}/${report.categories.dependency.length}\n` +
+          `• Configuration: ${report.categories.configuration.filter(c => c.status === 'passed').length}/${report.categories.configuration.length}\n` +
+          `• Security Gate: ${report.categories.security.filter(c => c.status === 'passed').length}/${report.categories.security.length}\n` +
+          `• Discord Integration: ${report.categories.discord.filter(c => c.status === 'passed').length}/${report.categories.discord.length}`,
+        inline: false
+      }
+    )
+    .setFooter({ text: `Execution ID: ${executionId} • Read-only diagnostics` });
+
+  if (report.findings.length > 0) {
+    const findingsText = report.findings.slice(0, 5).map(f =>
+      `\`[${f.severity.toUpperCase()}]\` **${f.name}**: ${f.message}\nAction: ${f.remediation}`
+    ).join('\n\n');
+    embed.addFields({ name: 'Findings & Remediation', value: findingsText.slice(0, 1024), inline: false });
+  }
 
   await interaction.editReply({ embeds: [embed] });
 }

@@ -29,7 +29,7 @@ export class ConfirmationManager {
       `**Actions to Execute (${plan.actions.length}):**\n${actionText}`;
 
     const embed = new EmbedBuilder()
-      .setTitle('⚠️ High-Impact Operation Confirmation Required')
+      .setTitle('Confirmation Required')
       .setDescription(description.slice(0, 4000)) // Hard guarantee under Discord's 4096 limit
       .setColor(0xE67E22)
       .setFooter({ text: `Requester: ${interaction.user.tag || interaction.user.username} • Expires in ${timeoutMs / 1000}s` });
@@ -39,8 +39,7 @@ export class ConfirmationManager {
     const confirmBtn = new ButtonBuilder()
       .setCustomId(`confirm_${interaction.id}_${token}`)
       .setLabel('Confirm & Execute')
-      .setStyle(ButtonStyle.Danger)
-      .setEmoji('⚠️');
+      .setStyle(ButtonStyle.Danger);
 
     const cancelBtn = new ButtonBuilder()
       .setCustomId(`cancel_${interaction.id}_${token}`)
@@ -49,12 +48,12 @@ export class ConfirmationManager {
 
     const row = new ActionRowBuilder().addComponents(confirmBtn, cancelBtn);
 
-    // Explicitly clear prior deferred content string so it doesn't overlap
-    const reply = await interaction.editReply({
-      content: '',
-      embeds: [embed],
-      components: [row]
-    });
+    // Edit deferred reply or reply directly
+    const replyPromise = (interaction.deferred || interaction.editReply)
+      ? interaction.editReply({ content: '', embeds: [embed], components: [row] })
+      : interaction.reply({ content: '', embeds: [embed], components: [row] });
+
+    const reply = await replyPromise;
 
     try {
       const response = await reply.awaitMessageComponent({
@@ -68,7 +67,7 @@ export class ConfirmationManager {
         const isValid = SecurityGate.verifyConfirmationToken(token, interaction.user.id, interaction.guild?.id || 'guild', plan.actions);
         if (!isValid) {
           await response.update({
-            content: '🛑 **Security Refusal:** Confirmation token verification failed. Action parameters were altered or token was reused.',
+            content: 'Security Refusal: Confirmation token verification failed. Action parameters were altered or token was reused.',
             embeds: [],
             components: []
           });
@@ -76,14 +75,14 @@ export class ConfirmationManager {
         }
 
         await response.update({
-          content: '⏳ **Confirmation received. Proceeding with execution...**',
+          content: 'Confirmation received. Proceeding with execution...',
           embeds: [],
           components: []
         });
         return true;
       } else {
         await response.update({
-          content: '❌ **Operation cancelled by user. No server changes were made.**',
+          content: 'Operation cancelled. No server changes were made.',
           embeds: [],
           components: []
         });
@@ -91,11 +90,13 @@ export class ConfirmationManager {
       }
     } catch {
       // Timeout or expired interaction
-      await interaction.editReply({
-        content: '⏰ **Confirmation timed out. Operation aborted safely.**',
-        embeds: [],
-        components: []
-      });
+      if (interaction.editReply) {
+        await interaction.editReply({
+          content: 'Confirmation timed out. Operation aborted safely.',
+          embeds: [],
+          components: []
+        }).catch(() => {});
+      }
       return false;
     }
   }
