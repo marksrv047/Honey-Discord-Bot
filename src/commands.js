@@ -5,7 +5,7 @@ import { Verifier } from './verification.js';
 import { ConfirmationManager } from './confirmations.js';
 import { checkUserAuthorization, checkBotPermissions } from './permissions.js';
 import { getGuildStateSnapshot } from './server-state.js';
-import { ActionLedger } from './recovery.js';
+import { ActionLedger, createErrorEmbed } from './recovery.js';
 import { validateConfig, config } from './config.js';
 import { Logger } from './logger.js';
 
@@ -138,8 +138,13 @@ async function handleGoCommand(interaction) {
 
   } catch (err) {
     logger.error(`Error in /go command [${executionId}]`, { error: err.message, stack: err.stack });
+    const errorEmbed = createErrorEmbed(err, executionId);
     await interaction.editReply({
-      content: `❌ **Execution Failed:** ${err.message}`
+      content: '',
+      embeds: [errorEmbed],
+      components: []
+    }).catch(async () => {
+      await interaction.followUp({ embeds: [errorEmbed], ephemeral: true }).catch(() => {});
     });
   }
 }

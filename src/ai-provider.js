@@ -147,8 +147,7 @@ USER INSTRUCTION:
     const candidateModels = [
       config.ai.groq.model || 'openai/gpt-oss-120b',
       'openai/gpt-oss-120b',
-      'qwen/qwen3.8-27b',
-      'openai/gpt-oss-20b'
+      'qwen/qwen3.8-27b'
     ];
 
     const modelsToTry = [...new Set(candidateModels)];
