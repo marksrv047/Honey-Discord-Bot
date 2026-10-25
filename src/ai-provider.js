@@ -91,27 +91,49 @@ USER INSTRUCTION:
       throw new Error('GEMINI_API_KEY is missing. Get a 100% free key at https://aistudio.google.com/');
     }
 
-    try {
-      const genAI = new GoogleGenerativeAI(config.ai.gemini.apiKey);
-      const model = genAI.getGenerativeModel({
-        model: config.ai.gemini.model,
-        generationConfig: {
-          responseMimeType: 'application/json',
-          temperature: 0.2
-        },
-        systemInstruction: SYSTEM_PROMPT
-      });
+    const genAI = new GoogleGenerativeAI(config.ai.gemini.apiKey);
 
-      const response = await model.generateContent(promptPayload);
-      const text = response.response.text();
-      return this.parseJsonResponse(text);
-    } catch (err) {
-      logger.error('Gemini API call failed', { error: err.message });
-      if (err.message.includes('429') || err.message.includes('RESOURCE_EXHAUSTED')) {
-        throw new Error('Google Gemini free quota reached. Please wait a minute, or switch to Groq or local Ollama in .env.');
+    // Dynamic model candidate chain: Try primary model first, then auto-fallback if 404 or 503
+    const preferredModel = config.ai.gemini.model && !config.ai.gemini.model.includes('2.0')
+      ? config.ai.gemini.model
+      : 'gemini-3.8-flash';
+
+    const candidateModels = [
+      preferredModel,
+      'gemini-3.8-flash',
+      'gemini-3.5-flash',
+      'gemini-3.7-flash',
+      'gemini-3.1-flash-lite'
+    ];
+
+    const modelsToTry = [...new Set(candidateModels)];
+    let lastError = null;
+
+    for (const modelName of modelsToTry) {
+      try {
+        const model = genAI.getGenerativeModel({
+          model: modelName,
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.2
+          },
+          systemInstruction: SYSTEM_PROMPT
+        });
+
+        const response = await model.generateContent(promptPayload);
+        const text = response.response.text();
+        return this.parseJsonResponse(text);
+      } catch (err) {
+        lastError = err;
+        logger.warn(`Gemini model ${modelName} returned: ${err.message}. Trying next available model...`);
+        if (err.message.includes('429') || err.message.includes('RESOURCE_EXHAUSTED')) {
+          throw new Error('Google Gemini free quota reached. Please wait a minute, or switch to Groq or local Ollama in .env.');
+        }
       }
-      throw err;
     }
+
+    logger.error('All Gemini models in fallback chain failed', { error: lastError?.message });
+    throw lastError;
   }
 
   /**

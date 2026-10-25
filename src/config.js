@@ -21,7 +21,7 @@ export const config = {
     // Google Gemini Free Tier (from https://aistudio.google.com/ - No CC required)
     gemini: {
       apiKey: process.env.GEMINI_API_KEY || '',
-      model: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+      model: process.env.GEMINI_MODEL && !process.env.GEMINI_MODEL.includes('2.0') ? process.env.GEMINI_MODEL : 'gemini-3.8-flash',
     },
 
     // Groq Free Tier (from https://console.groq.com/ - Generous free RPM/RPD)
