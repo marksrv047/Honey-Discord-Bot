@@ -32,8 +32,24 @@ let lastLoginError = null;
 let lastDebugInfo = 'No gateway packet received yet';
 
 // Built-in 24/7 Cloud Web Health-Check Server (Required for Koyeb, Render, etc.)
-const port = process.env.PORT || 3000;
-const server = http.createServer((req, res) => {
+const port = process.env.PORT || 3050;
+const server = http.createServer(async (req, res) => {
+  if (req.url === '/test-discord') {
+    try {
+      const start = Date.now();
+      const resDiscord = await fetch('https://discord.com/api/v10/gateway/bot', {
+        headers: { Authorization: `Bot ${config.discord.token}` },
+        signal: AbortSignal.timeout(5000)
+      });
+      const text = await resDiscord.text();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ status: resDiscord.status, duration: Date.now() - start, body: JSON.parse(text) }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: err.message, code: err.code }));
+    }
+  }
+
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({
     status: 'online',
@@ -64,7 +80,8 @@ if (!validation.valid) {
 // Initialize Discord Client with essential guild administration intents
 const client = new Client({
   intents: [
-    GatewayIntentBits.Guilds
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages
   ]
 });
 
@@ -99,6 +116,20 @@ client.once(Events.ClientReady, (readyClient) => {
     activities: [{ name: '/go <instruction>', type: ActivityType.Playing }],
     status: 'online'
   });
+});
+
+// Event: Friendly mention response in chat
+client.on(Events.MessageCreate, async (message) => {
+  if (message.author.bot) return;
+  if (message.mentions.has(client.user)) {
+    const greetings = [
+      `Bzz! 🍯 Hello <@${message.author.id}>! I'm Honey, your autonomous server architect. Tell me what to build with \`/go <instruction>\` or run \`/diagnostics\` to check my health!`,
+      `Hey <@${message.author.id}>! 🐝 Honey is on duty. What channels, roles, or permissions are we setting up today? Try \`/go <instruction>\`!`,
+      `Hi there! 🍯 Want to chat or build something? Use \`/go prompt: <anything>\` — I can configure roles, categories, tickets, or just answer questions!`
+    ];
+    const replyText = greetings[Math.floor(Math.random() * greetings.length)];
+    await message.reply(replyText).catch(() => {});
+  }
 });
 
 // Event: Interaction Dispatcher

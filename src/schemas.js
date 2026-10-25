@@ -267,6 +267,7 @@ export const ActionSchema = z.discriminatedUnion('action', [
 export const PlanSchema = z.object({
   thoughtProcess: z.string().describe('Short explanation of intent understanding and planned steps'),
   clarificationNeeded: z.string().nullable().optional().describe('Set if user prompt is dangerously ambiguous'),
+  conversationalResponse: z.string().nullable().optional().describe('Warm, charming response when user is casually chatting, greeting, asking who Honey is, or asking general server advice'),
   isHighImpact: z.boolean().default(false).describe('True if plan contains destructive or mass modifications'),
   actions: z.array(ActionSchema).max(25, { message: 'Max 25 actions allowed per single prompt' })
 });

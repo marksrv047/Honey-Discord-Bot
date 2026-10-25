@@ -95,6 +95,24 @@ async function handleGoCommand(interaction) {
       });
     }
 
+    // Check if this is a conversational chat, greeting, or friendly question
+    if (plan.conversationalResponse) {
+      const chatEmbed = new EmbedBuilder()
+        .setTitle('🍯 Honey Administrative Assistant')
+        .setColor(0xF39C12)
+        .setDescription(plan.conversationalResponse)
+        .addFields({
+          name: '🐝 Try running instructions like:',
+          value: '• `/go prompt: create a gaming category with voice channels and a role`\n• `/go prompt: setup ticket system for support`\n• `/go prompt: audit server permissions`\n• `/undo` to revert any recent changes'
+        })
+        .setFooter({ text: 'Operated by Zero-Cost AI • /go <instruction>' });
+
+      return await interaction.editReply({
+        content: '',
+        embeds: [chatEmbed]
+      });
+    }
+
     // Check if plan has 0 actions (e.g. impossible request or purely explanatory)
     if (!plan.actions || plan.actions.length === 0) {
       return await interaction.editReply({
