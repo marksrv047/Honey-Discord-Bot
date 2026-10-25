@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="Honey Bot Banner" width="100%" />
+</p>
+
 # 🍯 Honey — Autonomous AI Discord Administration Agent
 
 > Autonomous Discord server management driven entirely by natural-language English commands (`/go <instruction>`), powered by zero-cost AI models (Google Gemini 2.0 Flash / Groq / Ollama) and Discord.js v14.

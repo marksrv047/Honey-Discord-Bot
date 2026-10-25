@@ -202,6 +202,34 @@ export const AuditServerSchema = z.object({
   scope: z.enum(['permissions', 'channels', 'roles', 'all']).default('all')
 });
 
+export const SetupRoleMenuSchema = z.object({
+  action: z.literal('setup_role_menu'),
+  channelName: z.string().default('roles'),
+  title: z.string().default('Self-Assignable Roles'),
+  description: z.string().default('Select the roles you want from the dropdown menu below:'),
+  roles: z.array(z.object({
+    name: z.string(),
+    description: z.string().optional(),
+    emoji: z.string().optional(),
+    color: HexColorSchema.optional()
+  })).min(1).max(25)
+});
+
+export const SetupAutoModRuleSchema = z.object({
+  action: z.literal('setup_automod_rule'),
+  name: z.string().min(1).max(100),
+  ruleType: z.enum(['INVITES', 'SPAM', 'MENTION_SPAM', 'KEYWORDS']),
+  keywords: z.array(z.string()).optional().default([]),
+  actionType: z.enum(['BLOCK', 'TIMEOUT', 'ALERT']).default('BLOCK'),
+  timeoutDurationSeconds: z.number().int().min(60).max(2419200).optional().default(300)
+});
+
+export const SetupModLogsSchema = z.object({
+  action: z.literal('setup_mod_logs'),
+  channelName: z.string().default('mod-logs'),
+  staffRoleName: z.string().default('Staff')
+});
+
 /**
  * Discriminated union of all supported actions
  */
@@ -227,7 +255,10 @@ export const ActionSchema = z.discriminatedUnion('action', [
   UnbanMemberSchema,
   ChangeNicknameSchema,
   SetupTicketSystemSchema,
-  AuditServerSchema
+  AuditServerSchema,
+  SetupRoleMenuSchema,
+  SetupAutoModRuleSchema,
+  SetupModLogsSchema
 ]);
 
 /**

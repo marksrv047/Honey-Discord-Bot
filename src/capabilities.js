@@ -158,6 +158,27 @@ export const CAPABILITY_REGISTRY = {
     requiredUserPermissions: [PermissionFlagsBits.ManageGuild],
     isDestructive: false,
     boostRequirement: 0,
+  },
+  setup_role_menu: {
+    description: 'Creates a self-assignable role selection dropdown in a designated channel.',
+    requiredBotPermissions: [PermissionFlagsBits.ManageRoles, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.SendMessages],
+    requiredUserPermissions: [PermissionFlagsBits.ManageRoles, PermissionFlagsBits.ManageChannels],
+    isDestructive: false,
+    boostRequirement: 0,
+  },
+  setup_automod_rule: {
+    description: 'Configures native Discord AutoMod rules for spam, invite blocking, and keywords.',
+    requiredBotPermissions: [PermissionFlagsBits.ManageGuild],
+    requiredUserPermissions: [PermissionFlagsBits.ManageGuild],
+    isDestructive: false,
+    boostRequirement: 0,
+  },
+  setup_mod_logs: {
+    description: 'Creates a private moderation logging channel for staff.',
+    requiredBotPermissions: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.SendMessages],
+    requiredUserPermissions: [PermissionFlagsBits.ManageChannels],
+    isDestructive: false,
+    boostRequirement: 0,
   }
 };
 
