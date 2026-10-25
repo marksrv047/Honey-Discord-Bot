@@ -1,0 +1,29 @@
+{
+  "name": "honey-bot",
+  "version": "1.0.0",
+  "description": "Honey — Autonomous Zero-Cost AI Discord Administration Agent with /go command",
+  "main": "bot.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bot.js",
+    "deploy": "node deploy-commands.js",
+    "test": "node --test tests/**/*.test.js"
+  },
+  "keywords": [
+    "discord",
+    "discord-bot",
+    "ai-agent",
+    "discord-administration",
+    "gemini",
+    "groq",
+    "ollama"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "discord.js": "^14.18.0",
+    "dotenv": "^16.4.7",
+    "zod": "^3.24.2"
+  }
+}

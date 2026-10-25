@@ -1,0 +1,404 @@
+import { ChannelType, PermissionFlagsBits } from 'discord.js';
+import { checkRoleHierarchy, auditServerPermissions } from './permissions.js';
+import { classifyDiscordError, ActionLedger } from './recovery.js';
+import { Verifier } from './verification.js';
+import { TicketManager } from './tickets.js';
+import { config } from './config.js';
+import { Logger } from './logger.js';
+
+const logger = new Logger('Executor');
+
+/**
+ * Deterministic Discord API execution engine.
+ */
+export class Executor {
+  /**
+   * Sorts actions topologically so dependencies (categories, roles) are created before channels and permissions.
+   */
+  static orderActions(actions) {
+    const priority = {
+      update_server_name: 1,
+      update_server_description: 1,
+      update_server_icon: 1,
+      update_server_banner: 1,
+      update_server_settings: 1,
+      create_role: 2,
+      create_channel_category: 3, // Categories before regular channels
+      create_channel: 4,
+      edit_role: 5,
+      edit_channel: 5,
+      set_channel_permission: 6,
+      assign_role: 7,
+      remove_role: 7,
+      change_nickname: 8,
+      timeout_member: 8,
+      remove_timeout: 8,
+      kick_member: 9,
+      ban_member: 9,
+      unban_member: 9,
+      delete_channel: 10,
+      delete_role: 10,
+      setup_ticket_system: 11,
+      audit_server: 12
+    };
+
+    return [...actions].sort((a, b) => {
+      let pA = priority[a.action] || 5;
+      let pB = priority[b.action] || 5;
+
+      // Prioritize category channels over other channels
+      if (a.action === 'create_channel' && a.type === 'GUILD_CATEGORY') pA = 3;
+      if (b.action === 'create_channel' && b.type === 'GUILD_CATEGORY') pB = 3;
+
+      return pA - pB;
+    });
+  }
+
+  /**
+   * Executes an entire plan sequentially with pre-checks, rate-limit backoff, and post-verification.
+   */
+  static async executePlan(guild, plan, executionId, invokingMember) {
+    const sortedActions = Executor.orderActions(plan.actions);
+    const results = [];
+
+    logger.info(`Starting execution ${executionId} with ${sortedActions.length} actions`, { guild: guild.name });
+
+    for (const action of sortedActions) {
+      // 1. Spacing delay between calls to prevent rate limits
+      await new Promise(r => setTimeout(r, config.safety.actionDelayMs));
+
+      let executionResult = { success: false, details: '' };
+
+      try {
+        executionResult = await Executor.executeSingleActionWithRetry(guild, action, executionId, invokingMember);
+      } catch (err) {
+        const classified = classifyDiscordError(err);
+        logger.error(`Action ${action.action} encountered error`, { error: err.message, type: classified.type });
+        executionResult = {
+          success: false,
+          error: classified.userMessage
+        };
+      }
+
+      // 2. Post-Verification Phase
+      const verification = await Verifier.verifyAction(guild, action, executionResult);
+      results.push(verification);
+
+      // Stop on fatal permission failures that block all subsequent operations
+      if (!executionResult.success && executionResult.isFatal) {
+        logger.warn('Execution aborted due to fatal prerequisite failure', { action: action.action });
+        break;
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Executes a single action with bounded retries for transient errors.
+   */
+  static async executeSingleActionWithRetry(guild, action, executionId, invokingMember) {
+    let attempts = 0;
+    const maxRetries = config.safety.maxRetries;
+
+    while (attempts <= maxRetries) {
+      try {
+        return await Executor.executeSingleAction(guild, action, executionId, invokingMember);
+      } catch (err) {
+        attempts++;
+        const classified = classifyDiscordError(err);
+
+        if (classified.retryable && attempts <= maxRetries) {
+          const backoff = attempts * 1000;
+          logger.warn(`Action failed transiently, retrying in ${backoff}ms (Attempt ${attempts})`, { action: action.action });
+          await new Promise(r => setTimeout(r, backoff));
+        } else {
+          throw err;
+        }
+      }
+    }
+  }
+
+  /**
+   * Core dispatcher for individual Discord actions.
+   */
+  static async executeSingleAction(guild, action, executionId, invokingMember) {
+    switch (action.action) {
+      case 'update_server_name': {
+        await guild.setName(action.name, `Updated via /go agent by ${invokingMember.user.tag}`);
+        return { success: true, details: `Server name set to "${action.name}"` };
+      }
+
+      case 'update_server_description': {
+        if (!guild.features.includes('COMMUNITY')) {
+          return { success: true, details: 'Skipped description: Server requires Community feature enabled in Discord settings.' };
+        }
+        await guild.setDescription(action.description, `Updated via /go agent`);
+        return { success: true, details: `Server description updated` };
+      }
+
+      case 'update_server_icon': {
+        await guild.setIcon(action.iconUrl, `Icon updated via /go agent`);
+        return { success: true, details: `Server icon updated successfully` };
+      }
+
+      case 'update_server_banner': {
+        if (guild.premiumTier < 2) {
+          return {
+            success: true,
+            details: `Skipped banner: Server is Boost Tier ${guild.premiumTier}. Discord requires Boost Tier 2 (7+ boosts) for custom banners.`
+          };
+        }
+        await guild.setBanner(action.bannerUrl, `Banner updated via /go agent`);
+        return { success: true, details: `Server banner updated` };
+      }
+
+      case 'create_role': {
+        // Idempotency: check if role already exists
+        const existing = guild.roles.cache.find(r => r.name.toLowerCase() === action.name.toLowerCase());
+        if (existing) {
+          return { success: true, details: `Role @${existing.name} already exists (re-using existing)` };
+        }
+
+        const role = await guild.roles.create({
+          name: action.name,
+          color: action.color || '#99AAB5',
+          hoist: Boolean(action.hoist),
+          mentionable: Boolean(action.mentionable),
+          permissions: action.permissions || [],
+          reason: `Created via /go agent by ${invokingMember.user.tag}`
+        });
+
+        ActionLedger.recordCreatedResource(executionId, 'role', role.id, role.name);
+        return { success: true, details: `Role @${role.name} created with color ${action.color || 'default'}` };
+      }
+
+      case 'edit_role': {
+        const role = guild.roles.cache.find(r => r.id === action.targetRole || r.name.toLowerCase() === action.targetRole.toLowerCase());
+        if (!role) {
+          return { success: false, error: `Role "${action.targetRole}" not found in server` };
+        }
+
+        const hierarchy = checkRoleHierarchy(guild, action, role);
+        if (!hierarchy.valid) {
+          return { success: false, error: hierarchy.reason };
+        }
+
+        await role.edit({
+          name: action.name || role.name,
+          color: action.color || role.color,
+          hoist: action.hoist !== undefined ? action.hoist : role.hoist,
+          mentionable: action.mentionable !== undefined ? action.mentionable : role.mentionable,
+          permissions: action.permissions || role.permissions
+        }, `Edited via /go agent`);
+
+        return { success: true, details: `Role @${role.name} updated` };
+      }
+
+      case 'delete_role': {
+        const role = guild.roles.cache.find(r => r.id === action.targetRole || r.name.toLowerCase() === action.targetRole.toLowerCase());
+        if (!role) {
+          return { success: true, details: `Role "${action.targetRole}" does not exist (nothing to delete)` };
+        }
+
+        const hierarchy = checkRoleHierarchy(guild, action, role);
+        if (!hierarchy.valid) {
+          return { success: false, error: hierarchy.reason };
+        }
+
+        await role.delete(`Deleted via /go agent by ${invokingMember.user.tag}`);
+        return { success: true, details: `Role @${role.name} deleted` };
+      }
+
+      case 'create_channel': {
+        // Resolve channel type
+        let chType = ChannelType.GuildText;
+        if (action.type === 'GUILD_VOICE') chType = ChannelType.GuildVoice;
+        if (action.type === 'GUILD_ANNOUNCEMENT') chType = ChannelType.GuildAnnouncement;
+        if (action.type === 'GUILD_CATEGORY') chType = ChannelType.GuildCategory;
+        if (action.type === 'GUILD_STAGE_VOICE') chType = ChannelType.GuildStageVoice;
+
+        // Find parent category if specified
+        let parentId = null;
+        if (action.category && chType !== ChannelType.GuildCategory) {
+          const category = guild.channels.cache.find(
+            c => c.type === ChannelType.GuildCategory && (c.id === action.category || c.name.toLowerCase() === action.category.toLowerCase())
+          );
+          if (category) parentId = category.id;
+        }
+
+        // Check if channel already exists
+        const existing = guild.channels.cache.find(c => c.name.toLowerCase() === action.name.toLowerCase() && c.parentId === parentId);
+        if (existing) {
+          return { success: true, details: `Channel #${existing.name} already exists (re-using existing)` };
+        }
+
+        // Permission overwrites for private channels
+        const overwrites = [];
+        if (action.isPrivate) {
+          overwrites.push({
+            id: guild.roles.everyone.id,
+            deny: [PermissionFlagsBits.ViewChannel]
+          });
+        }
+
+        if (action.allowedRoles && action.allowedRoles.length > 0) {
+          for (const roleNameOrId of action.allowedRoles) {
+            const r = guild.roles.cache.find(role => role.id === roleNameOrId || role.name.toLowerCase() === roleNameOrId.toLowerCase());
+            if (r) {
+              overwrites.push({
+                id: r.id,
+                allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+              });
+            }
+          }
+        }
+
+        const channel = await guild.channels.create({
+          name: action.name,
+          type: chType,
+          parent: parentId,
+          topic: action.topic || undefined,
+          rateLimitPerUser: action.slowmodeSeconds || 0,
+          nsfw: Boolean(action.nsfw),
+          permissionOverwrites: overwrites.length > 0 ? overwrites : undefined,
+          reason: `Created via /go agent by ${invokingMember.user.tag}`
+        });
+
+        ActionLedger.recordCreatedResource(executionId, 'channel', channel.id, channel.name);
+        return { success: true, details: `Channel #${channel.name} created successfully` };
+      }
+
+      case 'edit_channel': {
+        const channel = guild.channels.cache.find(c => c.id === action.targetChannel || c.name.toLowerCase() === action.targetChannel.toLowerCase());
+        if (!channel) {
+          return { success: false, error: `Channel "${action.targetChannel}" not found` };
+        }
+
+        await channel.edit({
+          name: action.name || channel.name,
+          topic: action.topic !== undefined ? action.topic : channel.topic,
+          rateLimitPerUser: action.slowmodeSeconds !== undefined ? action.slowmodeSeconds : channel.rateLimitPerUser,
+          nsfw: action.nsfw !== undefined ? action.nsfw : channel.nsfw
+        }, `Edited via /go agent`);
+
+        return { success: true, details: `Channel #${channel.name} edited` };
+      }
+
+      case 'delete_channel': {
+        const channel = guild.channels.cache.find(c => c.id === action.targetChannel || c.name.toLowerCase() === action.targetChannel.toLowerCase());
+        if (!channel) {
+          return { success: true, details: `Channel "${action.targetChannel}" already deleted` };
+        }
+
+        await channel.delete(`Deleted via /go agent by ${invokingMember.user.tag}`);
+        return { success: true, details: `Channel #${channel.name} deleted` };
+      }
+
+      case 'set_channel_permission': {
+        const channel = guild.channels.cache.find(c => c.id === action.targetChannel || c.name.toLowerCase() === action.targetChannel.toLowerCase());
+        if (!channel) {
+          return { success: false, error: `Channel "${action.targetChannel}" not found` };
+        }
+
+        // Find target role or member
+        const role = guild.roles.cache.find(r => r.id === action.targetRoleOrMember || r.name.toLowerCase() === action.targetRoleOrMember.toLowerCase());
+        const targetId = role ? role.id : action.targetRoleOrMember;
+
+        const allowBits = action.allow ? action.allow.map(p => PermissionFlagsBits[p]).filter(Boolean) : [];
+        const denyBits = action.deny ? action.deny.map(p => PermissionFlagsBits[p]).filter(Boolean) : [];
+
+        await channel.permissionOverwrites.edit(targetId, {
+          ...Object.fromEntries(allowBits.map(b => [b, true])),
+          ...Object.fromEntries(denyBits.map(b => [b, false]))
+        }, { reason: `Overwrites updated via /go agent` });
+
+        return { success: true, details: `Permissions for ${role ? `@${role.name}` : targetId} updated on #${channel.name}` };
+      }
+
+      case 'timeout_member': {
+        const member = guild.members.cache.find(m => m.id === action.targetMember || m.user?.username.toLowerCase() === action.targetMember.toLowerCase());
+        if (!member) {
+          return { success: false, error: `Member "${action.targetMember}" not found in server` };
+        }
+
+        const hierarchy = checkRoleHierarchy(guild, action, member);
+        if (!hierarchy.valid) return { success: false, error: hierarchy.reason };
+
+        await member.timeout(action.durationMinutes * 60 * 1000, action.reason || 'Timeout issued via /go agent');
+        return { success: true, details: `Member ${member.user.tag} timed out for ${action.durationMinutes}m` };
+      }
+
+      case 'remove_timeout': {
+        const member = guild.members.cache.find(m => m.id === action.targetMember || m.user?.username.toLowerCase() === action.targetMember.toLowerCase());
+        if (!member) return { success: false, error: `Member "${action.targetMember}" not found` };
+
+        await member.timeout(null, action.reason || 'Timeout removed via /go agent');
+        return { success: true, details: `Timeout removed from ${member.user.tag}` };
+      }
+
+      case 'kick_member': {
+        const member = guild.members.cache.find(m => m.id === action.targetMember || m.user?.username.toLowerCase() === action.targetMember.toLowerCase());
+        if (!member) return { success: false, error: `Member "${action.targetMember}" not found` };
+
+        const hierarchy = checkRoleHierarchy(guild, action, member);
+        if (!hierarchy.valid) return { success: false, error: hierarchy.reason };
+
+        await member.kick(action.reason || 'Kicked via /go agent');
+        return { success: true, details: `Member ${member.user.tag} kicked` };
+      }
+
+      case 'ban_member': {
+        const member = guild.members.cache.find(m => m.id === action.targetMember || m.user?.username.toLowerCase() === action.targetMember.toLowerCase());
+        const targetId = member ? member.id : action.targetMember;
+
+        if (member) {
+          const hierarchy = checkRoleHierarchy(guild, action, member);
+          if (!hierarchy.valid) return { success: false, error: hierarchy.reason };
+        }
+
+        await guild.members.ban(targetId, {
+          deleteMessageSeconds: (action.deleteMessageDays || 0) * 86400,
+          reason: action.reason || 'Banned via /go agent'
+        });
+
+        return { success: true, details: `User ${targetId} banned` };
+      }
+
+      case 'unban_member': {
+        await guild.members.unban(action.targetMemberId, action.reason || 'Unbanned via /go agent');
+        return { success: true, details: `User ID ${action.targetMemberId} unbanned` };
+      }
+
+      case 'change_nickname': {
+        const member = guild.members.cache.find(m => m.id === action.targetMember || m.user?.username.toLowerCase() === action.targetMember.toLowerCase());
+        if (!member) return { success: false, error: `Member "${action.targetMember}" not found` };
+
+        const hierarchy = checkRoleHierarchy(guild, action, member);
+        if (!hierarchy.valid) return { success: false, error: hierarchy.reason };
+
+        await member.setNickname(action.nickname, action.reason || 'Changed via /go agent');
+        return { success: true, details: `Nickname for ${member.user.tag} set to "${action.nickname}"` };
+      }
+
+      case 'setup_ticket_system': {
+        const ticketResult = await TicketManager.setupTicketSystem(guild, action);
+        return {
+          success: true,
+          details: `Ticket panel created in #${ticketResult.channel} under category "${ticketResult.category}" with role @${ticketResult.supportRole}`
+        };
+      }
+
+      case 'audit_server': {
+        const issues = auditServerPermissions(guild);
+        return {
+          success: true,
+          details: issues.length > 0 ? issues.join(' | ') : 'Security audit passed: No excessive @everyone permissions found.'
+        };
+      }
+
+      default:
+        return { success: false, error: `Unknown action: ${action.action}` };
+    }
+  }
+}
