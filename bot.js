@@ -7,16 +7,22 @@ import { Logger } from './src/logger.js';
 
 const logger = new Logger('Bot');
 
+let botLoginStatus = 'initializing';
+let lastLoginError = null;
+
 // Built-in 24/7 Cloud Web Health-Check Server (Required for Koyeb, Render, etc.)
 const port = process.env.PORT || 3000;
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({
     status: 'online',
-    bot: client.user ? client.user.tag : 'initializing',
+    bot: client.user ? client.user.tag : botLoginStatus,
+    discordTokenConfigured: Boolean(config.discord.token),
+    geminiKeyConfigured: Boolean(config.ai.gemini.apiKey),
+    loginError: lastLoginError,
     uptime: Math.floor(process.uptime()),
     zeroCostAI: config.ai.provider
-  }));
+  }, null, 2));
 });
 
 server.listen(port, () => {
@@ -93,9 +99,14 @@ process.on('SIGTERM', shutdown);
 
 // Log in
 if (config.discord.token) {
-  client.login(config.discord.token).catch(err => {
+  logger.info('Attempting login to Discord Gateway...');
+  client.login(config.discord.token.trim()).catch(err => {
+    lastLoginError = err.message;
+    botLoginStatus = 'failed_login: ' + err.message;
     logger.error('Failed to log in to Discord', { error: err.message });
   });
 } else {
-  logger.warn('DISCORD_TOKEN is not set. Bot will not connect to Discord until .env is configured.');
+  botLoginStatus = 'missing_token';
+  lastLoginError = 'DISCORD_TOKEN environment variable is missing in Render Environment settings.';
+  logger.error('DISCORD_TOKEN is not set in environment. Bot cannot connect to Discord.');
 }
