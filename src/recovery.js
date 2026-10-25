@@ -6,43 +6,85 @@ const logger = new Logger('Recovery');
 /**
  * Creates a beautiful, user-friendly Discord embed explaining errors with actionable recommendations.
  */
+/**
+ * Creates an unmasked, highly informative Discord embed detailing the exact failure, limits, and resolution.
+ * Zero generic error masking.
+ */
 export function createErrorEmbed(err, executionId = 'unknown') {
   const message = err?.message || String(err);
-  let title = '❌ Execution Interrupted';
-  let explanation = message && message !== 'Error' ? message : 'An unexpected issue occurred while processing this administrative instruction.';
-  let recommendation = 'Please review your command instruction and try again.';
+  let title = '❌ Execution Error';
+  let category = 'System / API Failure';
+  let explanation = message && message !== 'Error' ? message : 'An unspecified error occurred during execution.';
+  let recommendation = 'Please check the error details above and retry.';
 
-  if (message.includes('not found') || message.includes('Unknown Channel') || message.includes('Unknown Role')) {
+  // 1. AI Token, Quota, or Credit Limits
+  if (message.includes('rate limit') || message.includes('429') || message.includes('RESOURCE_EXHAUSTED') || message.includes('tokens per minute') || message.includes('TPM') || message.includes('quota') || message.includes('token budget') || message.includes('credit')) {
+    title = '⏳ AI Inference Rate Limit / Token Budget Exceeded';
+    category = 'AI Provider Quota Exhaustion';
+    explanation = message;
+    recommendation = '• The free-tier AI inference window reached its temporary RPM/TPM limit or task budget.\n• Wait 30–60 seconds for the quota window to refresh, or break complex requests into smaller steps.\n• Run `/diagnostics` to inspect the active AI model and token consumption.';
+  }
+  // 2. Channel, Role, or Resource Not Found
+  else if (message.includes('not found') || message.includes('Unknown Channel') || message.includes('Unknown Role') || message.includes('Unknown Member')) {
     title = '🔍 Resource Not Found';
+    category = 'Target Resolution Failure';
     explanation = message;
-    recommendation = 'Verify the channel or role name, or mention it directly (e.g. #channel or @role) so the bot can resolve it immediately.';
-  } else if (message.includes('rate limit') || message.includes('429') || message.includes('RESOURCE_EXHAUSTED')) {
-    title = '⏳ AI Quota Rate Limit';
-    explanation = 'The free-tier AI inference engine reached its temporary per-minute rate limit.';
-    recommendation = 'Please wait 30–60 seconds for the quota window to refresh, then run your command again.';
-  } else if (message.includes('Request too large') || message.includes('tokens per minute') || message.includes('413')) {
-    title = '📏 Instruction Exceeded Free Token Budget';
-    explanation = 'This instruction combined with your server\'s current state exceeded the single-turn AI token window.';
-    recommendation = 'Try breaking your request into 2 smaller, focused commands (e.g. set up categories and roles first, then channels).';
-  } else if (message.includes('json_validate_failed') || message.includes('JSON') || message.includes('Failed to parse')) {
-    title = '🧩 Instruction Complexity Issue';
-    explanation = 'The AI engine was unable to formulate a valid, strictly structured Discord execution plan from this input.';
-    recommendation = 'Try giving more concrete details (e.g. "Create 3 channels #gaming, #social, and #bot-commands under a Community category").';
-  } else if (message.includes('50013') || message.includes('Missing Permissions') || message.includes('Hierarchy')) {
-    title = '🛑 Discord Permission / Hierarchy Restriction';
-    explanation = 'Discord rejected the action because Honey Bot lacks the required permissions or its role position is too low.';
-    recommendation = 'In Server Settings > Roles, ensure the "honey" bot role is positioned higher than the roles it is managing.';
-  } else if (message.includes('Unauthorized') || message.includes('Bot Permission Error')) {
-    title = '🛡️ Authorization Guard Block';
+    recommendation = '• If targeting a channel, mention it directly (e.g. #channel) or check for decorative emojis/middle dots.\n• If targeting a role, mention it (@Role) or check spelling.\n• Ensure Honey Bot has "View Channel" permissions if the channel is private.';
+  }
+  // 3. Out of Bounds: Length, Size, or Bounds Limits
+  else if (message.includes('out of bounds') || message.includes('too large') || message.includes('2000') || message.includes('character limit') || message.includes('exceeding Discord')) {
+    title = '📏 Parameter Limit / Out of Bounds';
+    category = 'Discord API Bounds Restriction';
     explanation = message;
-    recommendation = 'Ensure you have the "Manage Server" permission and the bot has Administrator rights in this server.';
+    recommendation = '• Messages: Must be ≤ 2,000 characters (split long text into multiple messages).\n• Embed descriptions: Must be ≤ 4,096 characters.\n• Slowmode: Must be between 0 and 21,600 seconds (6 hours).\n• Purge: Must be between 1 and 100 messages.\n• Nicknames: Must be ≤ 32 characters.';
+  }
+  // 4. JSON Formulation or AI Parsing Issue
+  else if (message.includes('json_validate_failed') || message.includes('JSON') || message.includes('Failed to parse') || message.includes('structured object')) {
+    title = '🧩 AI Formulation Error';
+    category = 'LLM Output Parsing';
+    explanation = `The AI model failed to produce a valid action plan: ${message}`;
+    recommendation = 'Try rephrasing with clear, explicit action verbs (e.g. "Create role VIP with color #FFD700" or "Rename this channel to dev-chat").';
+  }
+  // 5. Discord Missing Permissions
+  else if (message.includes('50013') || message.includes('Missing Permissions') || message.includes('Bot lacks required permissions')) {
+    title = '🛑 Missing Discord Permissions';
+    category = 'Discord Authorization Failure';
+    explanation = message;
+    recommendation = '• In Server Settings > Roles, check the permissions for the "Honey Bot" role.\n• In the specific channel settings > Permissions, verify Honey Bot has "Send Messages", "View Channel", and "Mention Everyone" allowed.';
+  }
+  // 6. Role Hierarchy Violation
+  else if (message.includes('Hierarchy') || message.includes('higher than or equal')) {
+    title = '🪜 Discord Role Hierarchy Error';
+    category = 'Role Hierarchy Restriction';
+    explanation = message;
+    recommendation = 'In Server Settings > Roles, click and drag the "Honey Bot" role higher on the list than the role or member you are managing.';
+  }
+  // 7. Security Gate / Policy Refusal
+  else if (message.includes('Security Policy Violation') || message.includes('Anti-Nuke') || message.includes('Prompt injection') || message.includes('Security Refusal') || message.includes('UNAUTHORIZED_ADMIN_GRANT')) {
+    title = '🛡️ Security Gate Policy Refusal';
+    category = 'Immutable Security Rule Enforcement';
+    explanation = message;
+    recommendation = 'This action is blocked by Honey Bot\'s immutable security policy. Mass destructions, server nukes, and unauthorized Administrator grants cannot be performed.';
+  }
+  // 8. User Authorization
+  else if (message.includes('Access Denied') || message.includes('Unauthorized') || message.includes('Bot Permission Error')) {
+    title = '🔒 User Access Restriction';
+    category = 'Command Authorization';
+    explanation = message;
+    recommendation = 'Honey Bot administration commands require the Discord Administrator permission, and your role must be positioned strictly above the bot.';
   }
 
   return new EmbedBuilder()
     .setTitle(title)
     .setColor(0xE74C3C)
-    .setDescription(`**What happened:**\n${explanation}\n\n💡 **Recommended Action:**\n${recommendation}`)
-    .setFooter({ text: `Execution ID: ${executionId} • Honey Admin Bot` });
+    .addFields(
+      { name: '🔎 What Failed', value: `\`\`\`fix\n${explanation.slice(0, 1000)}\n\`\`\``, inline: false },
+      { name: '🏷️ Category', value: category, inline: true },
+      { name: '🆔 Execution ID', value: `\`${executionId}\``, inline: true },
+      { name: '💡 Recommended Action', value: recommendation, inline: false }
+    )
+    .setFooter({ text: `Honey Admin Diagnostics • ${new Date().toLocaleTimeString()}` })
+    .setTimestamp();
 }
 
 /**

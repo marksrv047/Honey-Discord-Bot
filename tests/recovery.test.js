@@ -45,3 +45,26 @@ test('Recovery: ActionLedger tracks created resources and enables safe rollback'
   assert.equal(deletedActions.length, 2);
   assert.equal(ActionLedger.getCreatedResources(executionId).length, 0); // Ledger cleared after rollback
 });
+
+test('Recovery: createErrorEmbed generates specific unmasked diagnostic fields', async () => {
+  const { createErrorEmbed } = await import('../src/recovery.js');
+
+  // 1. Resource Not Found
+  const notFoundEmbed = createErrorEmbed(new Error('Announcement channel "announce" not found in this server.'), 'exec_101');
+  assert.equal(notFoundEmbed.data.title, '🔍 Resource Not Found');
+  const whatFailedField = notFoundEmbed.data.fields.find(f => f.name.includes('What Failed'));
+  assert.match(whatFailedField.value, /Announcement channel "announce" not found/);
+  assert.equal(notFoundEmbed.data.fields.find(f => f.name.includes('Category')).value, 'Target Resolution Failure');
+
+  // 2. Out of Bounds
+  const outOfBoundsEmbed = createErrorEmbed(new Error('Message length out of bounds: Content is 2450 characters, exceeding Discord\'s 2,000 character limit.'), 'exec_102');
+  assert.equal(outOfBoundsEmbed.data.title, '📏 Parameter Limit / Out of Bounds');
+  assert.match(outOfBoundsEmbed.data.fields.find(f => f.name.includes('What Failed')).value, /2450 characters/);
+  assert.equal(outOfBoundsEmbed.data.fields.find(f => f.name.includes('Category')).value, 'Discord API Bounds Restriction');
+
+  // 3. AI Token Rate Limit
+  const tokenEmbed = createErrorEmbed(new Error('429 rate limit exceeded for tokens per minute (TPM)'), 'exec_103');
+  assert.equal(tokenEmbed.data.title, '⏳ AI Inference Rate Limit / Token Budget Exceeded');
+  assert.equal(tokenEmbed.data.fields.find(f => f.name.includes('Category')).value, 'AI Provider Quota Exhaustion');
+});
+

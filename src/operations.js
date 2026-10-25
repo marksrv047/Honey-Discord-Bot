@@ -97,7 +97,15 @@ export class Operations {
       return { success: false, error: `Channel "${channelRef}" not found`, action: 'set_channel_slowmode' };
     }
 
-    const sec = parseInt(seconds, 10) || 0;
+    const sec = parseInt(seconds, 10);
+    if (isNaN(sec) || sec < 0 || sec > 21600) {
+      return {
+        success: false,
+        error: `Slowmode duration out of bounds: Slowmode must be between 0 and 21,600 seconds (6 hours). Received "${seconds}".`,
+        action: 'set_channel_slowmode'
+      };
+    }
+
     if (channel.rateLimitPerUser === sec) {
       return {
         success: true,
@@ -392,6 +400,14 @@ export class Operations {
       return { success: false, error: `Member "${memberRef}" not found`, action: 'change_nickname' };
     }
 
+    if (nickname && nickname.length > 32) {
+      return {
+        success: false,
+        error: `Nickname length out of bounds: Discord nicknames cannot exceed 32 characters (received ${nickname.length} characters).`,
+        action: 'change_nickname'
+      };
+    }
+
     const hierarchy = checkRoleHierarchy(guild, { action: 'change_nickname' }, member);
     if (!hierarchy.valid) {
       return { success: false, error: hierarchy.reason, action: 'change_nickname' };
@@ -525,6 +541,15 @@ export class Operations {
       }
     }
 
+    const msgText = options.message || '';
+    if (msgText.length > 4000) {
+      return {
+        success: false,
+        error: `Announcement length out of bounds: Message is ${msgText.length} characters, exceeding Discord's 4,000 character embed description limit.`,
+        action: 'send_announcement'
+      };
+    }
+
     const embed = new EmbedBuilder()
       .setTitle(options.title || '📢 Server Announcement')
       .setDescription(options.message || 'Announcement')
@@ -569,6 +594,18 @@ export class Operations {
       return { success: false, error: `Target channel "${channelRef}" not found in this server.`, action: 'send_message' };
     }
 
+    const text = typeof content === 'object' ? (content.content || content.message) : content;
+    if (!text || String(text).trim().length === 0) {
+      return { success: false, error: 'Message content cannot be empty.', action: 'send_message' };
+    }
+    if (String(text).length > 2000) {
+      return {
+        success: false,
+        error: `Message length out of bounds: Content is ${String(text).length} characters, exceeding Discord's 2,000 character limit. Split your message into multiple parts.`,
+        action: 'send_message'
+      };
+    }
+
     // Channel-specific permission inspection
     const botMember = guild.members?.me;
     if (botMember && typeof channel.permissionsFor === 'function') {
@@ -589,7 +626,6 @@ export class Operations {
       }
     }
 
-    const text = typeof content === 'object' ? (content.content || content.message) : content;
     let sent;
     try {
       sent = await channel.send(text);
@@ -619,11 +655,19 @@ export class Operations {
   static async purgeMessages(guild, channelRef, count = 5, context) {
     const channel = await context.resolveTarget(channelRef, 'channel');
     if (!channel) {
-      return { success: false, error: `Channel "${channelRef}" not found`, action: 'purge_messages' };
+      return { success: false, error: `Channel "${channelRef}" not found in this server.`, action: 'purge_messages' };
     }
 
-    const deleteCount = Math.min(Math.max(parseInt(count, 10) || 1, 1), 100);
-    const deleted = await channel.bulkDelete(deleteCount, true);
+    const countNum = parseInt(count, 10);
+    if (isNaN(countNum) || countNum < 1 || countNum > 100) {
+      return {
+        success: false,
+        error: `Purge count out of bounds: Bulk delete must be between 1 and 100 messages (Discord API restriction). Received "${count}".`,
+        action: 'purge_messages'
+      };
+    }
+
+    const deleted = await channel.bulkDelete(countNum, true);
     return {
       success: true,
       action: 'purge_messages',
