@@ -376,6 +376,89 @@ export class Executor {
         return { success: true, details: `Permissions for ${role ? `@${role.name}` : targetId} updated on #${channel.name}` };
       }
 
+      case 'create_category': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        return await Operations.createCategory(guild, action, ctx);
+      }
+
+      case 'rename_category': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        const targetRef = action.targetCategory || action.targetRef || action.category || action.name;
+        const newName = action.newName || action.name;
+        return await Operations.renameCategory(guild, targetRef, newName, ctx);
+      }
+
+      case 'delete_category': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        const targetRef = action.targetCategory || action.targetRef || action.category;
+        return await Operations.deleteCategory(guild, targetRef, action, ctx);
+      }
+
+      case 'inspect_category': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        const targetRef = action.targetCategory || action.targetRef || action.category;
+        return await Operations.inspectCategory(guild, targetRef, ctx);
+      }
+
+      case 'list_categories': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        return await Operations.listCategories(guild, ctx);
+      }
+
+      case 'move_channel_to_category': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        const targetCh = action.targetChannel || action.channel || action.targetRef;
+        const targetCat = action.category ?? action.targetCategory;
+        return await Operations.moveChannelToCategory(guild, targetCh, targetCat, action, ctx);
+      }
+
+      case 'set_category_permission': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        const targetCat = action.targetCategory || action.category || action.targetRef;
+        const targetEntity = action.targetRoleOrMember || action.targetRole || action.targetMember || action.role || action.user;
+        return await Operations.setCategoryPermission(guild, targetCat, targetEntity, action.allow || [], action.deny || [], ctx);
+      }
+
+      case 'sync_category_permissions': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        const targetCat = action.targetCategory || action.category || action.targetRef;
+        const targetCh = action.targetChannel || 'all';
+        return await Operations.syncCategoryPermissions(guild, targetCat, targetCh, ctx);
+      }
+
+      case 'inspect_category_sync': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        const targetCat = action.targetCategory || action.category || action.targetRef;
+        return await Operations.inspectCategorySync(guild, targetCat, ctx);
+      }
+
       case 'timeout_member': {
         const rawTarget = String(action.targetMember || action.targetRef || '');
         const cleanId = rawTarget.replace(/[<@!>]/g, '').trim();
@@ -870,6 +953,33 @@ export class Executor {
 
       case 'move_channel':
         return await Operations.moveChannel(guild, intentObj.targetRef, intentObj.args.category, executionContext);
+
+      case 'create_category':
+        return await Operations.createCategory(guild, { name: intentObj.args?.name || intentObj.targetRef, ...intentObj.args }, executionContext);
+
+      case 'rename_category':
+        return await Operations.renameCategory(guild, intentObj.targetRef || intentObj.args?.targetCategory, intentObj.args?.newName || intentObj.args?.name, executionContext);
+
+      case 'delete_category':
+        return await Operations.deleteCategory(guild, intentObj.targetRef || intentObj.args?.targetCategory, intentObj.args || {}, executionContext);
+
+      case 'inspect_category':
+        return await Operations.inspectCategory(guild, intentObj.targetRef || intentObj.args?.targetCategory, executionContext);
+
+      case 'list_categories':
+        return await Operations.listCategories(guild, executionContext);
+
+      case 'move_channel_to_category':
+        return await Operations.moveChannelToCategory(guild, intentObj.targetRef || intentObj.args?.targetChannel, intentObj.args?.category ?? intentObj.args?.targetCategory, intentObj.args || {}, executionContext);
+
+      case 'set_category_permission':
+        return await Operations.setCategoryPermission(guild, intentObj.targetRef || intentObj.args?.targetCategory, intentObj.args?.targetRoleOrMember || intentObj.args?.targetRole || intentObj.args?.role, intentObj.args?.allow || [], intentObj.args?.deny || [], executionContext);
+
+      case 'sync_category_permissions':
+        return await Operations.syncCategoryPermissions(guild, intentObj.targetRef || intentObj.args?.targetCategory, intentObj.args?.targetChannel || 'all', executionContext);
+
+      case 'inspect_category_sync':
+        return await Operations.inspectCategorySync(guild, intentObj.targetRef || intentObj.args?.targetCategory, executionContext);
 
       case 'lookup_member':
         return await Operations.lookupMember(guild, intentObj.targetRef, executionContext);

@@ -79,6 +79,15 @@ export class ModLogService {
       ModLogService.loadAllConfigs();
     }
 
+    const defaultPreferences = {
+      logBotActions: true,
+      logExternalActions: true,
+      filterEvents: ['moderation', 'roles', 'channels', 'categories', 'permissions', 'policy'],
+      logSuccess: true,
+      logFailed: true,
+      logDenied: true
+    };
+
     const conf = ModLogService._configCache[guildId];
     if (!conf) {
       return {
@@ -86,12 +95,11 @@ export class ModLogService {
         channelId: null,
         channelName: null,
         enabled: false,
+        revision: 1,
+        setupStatus: 'unconfigured',
         updatedAt: null,
         updatedBy: null,
-        preferences: {
-          logBotActions: true,
-          logExternalActions: true
-        },
+        preferences: defaultPreferences,
         lastDeliverySuccess: null,
         lastDeliveryFailure: null,
         pendingDeliveries: [],
@@ -101,12 +109,18 @@ export class ModLogService {
     }
 
     return {
+      revision: conf.revision || 1,
+      setupStatus: conf.setupStatus || (conf.channelId && conf.enabled ? 'configured' : 'unconfigured'),
       lastDeliverySuccess: null,
       lastDeliveryFailure: null,
       pendingDeliveries: [],
       deliveredCount: 0,
       failedCount: 0,
-      ...conf
+      ...conf,
+      preferences: {
+        ...defaultPreferences,
+        ...(conf.preferences || {})
+      }
     };
   }
 
@@ -123,13 +137,18 @@ export class ModLogService {
     const updated = {
       ...current,
       ...updates,
+      preferences: {
+        ...current.preferences,
+        ...(updates.preferences || {})
+      },
+      revision: (current.revision || 1) + 1,
       guildId,
       updatedAt: new Date().toISOString()
     };
 
     ModLogService._configCache[guildId] = updated;
     ModLogService._persistConfigs();
-    logger.info('Updated modlog configuration', { guildId, channelId: updated.channelId, enabled: updated.enabled });
+    logger.info('Updated modlog configuration', { guildId, channelId: updated.channelId, enabled: updated.enabled, revision: updated.revision });
     return updated;
   }
 
@@ -238,6 +257,218 @@ export class ModLogService {
     });
 
     return { success: true, channel, config: updated };
+  }
+
+  /**
+   * Creates a dedicated moderation logging channel with proper bot permissions and restrictive visibility.
+   */
+  static async createLogChannel(guild, options = {}) {
+    const {
+      channelName = 'mod-logs',
+      isPrivate = true,
+      userTagOrId = 'System',
+      testDelivery = true
+    } = options;
+
+    if (!guild) {
+      return { success: false, error: 'No guild context provided.' };
+    }
+
+    const botMember = guild.members?.me || await guild.members.fetchMe().catch(() => null);
+    if (!botMember) {
+      return { success: false, error: 'Could not resolve bot permissions in server.' };
+    }
+
+    if (!botMember.permissions?.has(PermissionFlagsBits.ManageChannels)) {
+      return {
+        success: false,
+        error: 'Bot lacks ManageChannels permission to create a moderation log channel.'
+      };
+    }
+
+    const overwrites = [
+      {
+        id: botMember.id,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.EmbedLinks,
+          PermissionFlagsBits.ReadMessageHistory
+        ]
+      }
+    ];
+
+    if (isPrivate && guild.roles?.everyone) {
+      overwrites.push({
+        id: guild.roles.everyone.id,
+        deny: [PermissionFlagsBits.ViewChannel]
+      });
+    }
+
+    let channel = guild.channels?.cache?.find?.(
+      c => c.name?.toLowerCase() === channelName.toLowerCase() && (c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement)
+    );
+
+    if (!channel) {
+      try {
+        channel = await guild.channels.create({
+          name: channelName,
+          type: ChannelType.GuildText,
+          topic: 'Honey Bot Moderation & Administration Logs',
+          permissionOverwrites: overwrites,
+          reason: `Created mod-logs channel on request by ${userTagOrId}`
+        });
+      } catch (err) {
+        logger.error('Failed to create moderation log channel', { error: err.message, guildId: guild.id });
+        return {
+          success: false,
+          error: `Failed to create channel #${channelName}: ${err.message}`
+        };
+      }
+    } else {
+      try {
+        await channel.permissionOverwrites.edit(botMember.id, {
+          ViewChannel: true,
+          SendMessages: true,
+          EmbedLinks: true,
+          ReadMessageHistory: true
+        });
+      } catch (err) {
+        logger.warn('Could not update bot overwrites on existing channel', { error: err.message });
+      }
+    }
+
+    const updated = ModLogService.updateConfig(guild.id, {
+      channelId: channel.id,
+      channelName: channel.name,
+      enabled: true,
+      setupStatus: 'configured',
+      updatedBy: userTagOrId
+    });
+
+    const validation = await ModLogService.validateLogChannel(guild, channel.id);
+    if (!validation.valid) {
+      ModLogService.updateConfig(guild.id, { setupStatus: 'testing_failed' });
+      return {
+        success: false,
+        channel,
+        config: updated,
+        error: `Channel was created but validation failed: ${validation.error}`
+      };
+    }
+
+    let testResult = null;
+    if (testDelivery) {
+      testResult = await ModLogService.testLogChannel(guild);
+      if (!testResult.success) {
+        ModLogService.updateConfig(guild.id, { setupStatus: 'testing_failed' });
+        return {
+          success: false,
+          channel,
+          config: updated,
+          deliverySuccess: false,
+          error: `Channel was configured, but test entry delivery failed: ${testResult.error}`
+        };
+      }
+    }
+
+    return {
+      success: true,
+      channel,
+      channelId: channel.id,
+      created: true,
+      tested: testResult ? testResult.success : true,
+      config: updated,
+      deliverySuccess: testResult ? testResult.success : true
+    };
+  }
+
+  /**
+   * Complete natural-language setup workflow for moderation logs.
+   */
+  static async setupModlogs(guild, options = {}) {
+    const {
+      channelRef = null,
+      channelName = 'mod-logs',
+      isPrivate = true,
+      createIfMissing = false,
+      userTagOrId = 'System',
+      testDelivery = true
+    } = options;
+
+    if (!guild) {
+      return { success: false, error: 'No guild context provided.' };
+    }
+
+    if (channelRef && channelRef !== 'auto' && channelRef !== 'create') {
+      const setRes = await ModLogService.setLogChannel(guild, channelRef, userTagOrId);
+      if (!setRes.success) {
+        return {
+          success: false,
+          error: setRes.error,
+          setupStatus: 'failed'
+        };
+      }
+
+      if (testDelivery) {
+        const testRes = await ModLogService.testLogChannel(guild);
+        if (!testRes.success) {
+          ModLogService.updateConfig(guild.id, { setupStatus: 'testing_failed' });
+          return {
+            success: false,
+            channel: setRes.channel,
+            config: setRes.config,
+            deliverySuccess: false,
+            error: `Configured channel #${setRes.channel?.name}, but test message delivery failed: ${testRes.error}`
+          };
+        }
+      }
+
+      return {
+        success: true,
+        channel: setRes.channel,
+        channelId: setRes.channel.id,
+        created: false,
+        tested: testDelivery,
+        config: setRes.config,
+        deliverySuccess: true
+      };
+    }
+
+    const existing = guild.channels?.cache?.find?.(
+      c => (c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement) &&
+           (c.name?.toLowerCase() === channelName.toLowerCase() || c.name?.toLowerCase() === 'mod-logs' || c.name?.toLowerCase() === 'moderation-logs')
+    );
+
+    if (existing && !createIfMissing) {
+      return await ModLogService.setupModlogs(guild, {
+        channelRef: existing.id,
+        userTagOrId,
+        testDelivery
+      });
+    }
+
+    return await ModLogService.createLogChannel(guild, {
+      channelName,
+      isPrivate,
+      userTagOrId,
+      testDelivery
+    });
+  }
+
+  /**
+   * Updates moderation logging preferences (e.g. event filters, success/failure/denial filters).
+   */
+  static updatePreferences(guildId, preferencesUpdate = {}, userTagOrId = 'System') {
+    const conf = ModLogService.getConfig(guildId);
+    const updated = ModLogService.updateConfig(guildId, {
+      preferences: {
+        ...conf.preferences,
+        ...preferencesUpdate
+      },
+      updatedBy: userTagOrId
+    });
+    return { success: true, config: updated };
   }
 
   /**
@@ -433,7 +664,15 @@ export class ModLogService {
       deliveredCount: (conf.deliveredCount || 0) + flushed
     });
 
-    return { flushed, remaining: remaining.length };
+    return { flushed, delivered: flushed, remaining: remaining.length };
+  }
+
+  /**
+   * Retrieves pending log delivery records for a guild.
+   */
+  static getPendingDeliveries(guildId) {
+    const conf = ModLogService.getConfig(guildId);
+    return conf?.pendingDeliveries || [];
   }
 
   /**
@@ -551,6 +790,20 @@ export class ModLogService {
   }
 
   /**
+   * Categorizes an action into an event category for filtering.
+   */
+  static getActionCategory(action) {
+    const act = String(action || '').toLowerCase();
+    if (/category|sync_category/i.test(act)) return 'categories';
+    if (/permission|overwrite/i.test(act)) return 'permissions';
+    if (/policy|access|modlog/i.test(act)) return 'policy';
+    if (/role/i.test(act)) return 'roles';
+    if (/channel/i.test(act)) return 'channels';
+    if (/timeout|kick|ban|unban|purge|mute|deafen|warn/i.test(act)) return 'moderation';
+    return 'moderation';
+  }
+
+  /**
    * Logs a moderation or administrative action to the guild's configured log channel.
    * Completely decoupled from action execution: failures to log never throw or fail the action.
    */
@@ -569,11 +822,30 @@ export class ModLogService {
       reason,
       duration,
       count,
-      outcome = 'succeeded',
+      outcome = actionData.outcome || actionData.status || 'succeeded',
       failureReason = null,
       executionId = null,
       source = '/go'
     } = actionData;
+
+    // Check outcome filters
+    const prefs = conf.preferences || {};
+    if (outcome === 'succeeded' && prefs.logSuccess === false) {
+      return { logged: false, reason: 'filtered_success' };
+    }
+    if (outcome === 'failed' && prefs.logFailed === false) {
+      return { logged: false, reason: 'filtered_failure' };
+    }
+    if (outcome === 'denied' && prefs.logDenied === false) {
+      return { logged: false, reason: 'filtered_denied' };
+    }
+
+    // Check event category filters
+    const eventCategory = ModLogService.getActionCategory(action);
+    const filterEvents = prefs.filterEvents;
+    if (Array.isArray(filterEvents) && !filterEvents.includes('all') && !filterEvents.includes(eventCategory)) {
+      return { logged: false, reason: 'filtered_event_category' };
+    }
 
     // Check deduplication
     const targetId = target?.id || target?.name || target || 'unknown';
@@ -596,18 +868,7 @@ export class ModLogService {
     }
 
     // Build embed
-    const embed = ModLogService.createModLogEmbed({
-      action,
-      actor,
-      target,
-      reason,
-      duration,
-      count,
-      outcome,
-      failureReason,
-      executionId,
-      source
-    });
+    const embed = ModLogService.createModLogEmbed(actionData);
 
     try {
       await channel.send({ embeds: [embed] });
@@ -617,9 +878,20 @@ export class ModLogService {
       });
       return { logged: true, channelId: channel.id };
     } catch (err) {
-      logger.error('Failed to deliver mod-log entry', { error: err.message, guildId: guild.id });
-      ModLogService._enqueuePendingDelivery(guild.id, actionData, err.message);
-      return { logged: false, error: err.message, queued: true };
+      logger.warn('Failed to deliver mod-log embed, attempting plain-text fallback', { error: err.message, guildId: guild.id });
+      try {
+        const plainText = ModLogService.formatPlainTextLog(actionData);
+        await channel.send({ content: plainText });
+        ModLogService.updateConfig(guild.id, {
+          lastDeliverySuccess: new Date().toISOString(),
+          deliveredCount: (conf.deliveredCount || 0) + 1
+        });
+        return { logged: true, channelId: channel.id, fallback: true };
+      } catch (fallbackErr) {
+        logger.error('Failed to deliver mod-log entry via plain text', { error: fallbackErr.message, guildId: guild.id });
+        ModLogService._enqueuePendingDelivery(guild.id, actionData, fallbackErr.message);
+        return { logged: false, error: fallbackErr.message, queued: true };
+      }
     }
   }
 
@@ -637,30 +909,44 @@ export class ModLogService {
       outcome = 'succeeded',
       failureReason = null,
       executionId = null,
-      source = '/go'
+      source = '/go',
+      scope = null,
+      changes = null,
+      affectedChannels = null,
+      unsynchronizedChannels = null,
+      succeeded = null,
+      failed = null,
+      remainingWork = null
     } = data;
 
-    // Color by severity/type
-    let color = 0x5865F2; // Default Blurple
-    if (action.includes('ban')) color = 0xED4245; // Red
+    // Determine category and color
+    const category = ModLogService.getActionCategory(action);
+    let color = 0x5865F2; // Blurple
+    if (category === 'categories' || category === 'channels') color = 0x3498DB; // Blue
+    else if (category === 'permissions') color = 0x9B59B6; // Purple
+    else if (category === 'roles') color = 0x1ABC9C; // Teal
+    else if (action.includes('ban') || action.includes('delete')) color = 0xED4245; // Red
     else if (action.includes('kick')) color = 0xE67E22; // Orange
     else if (action.includes('timeout')) color = 0xFEE75C; // Yellow
     else if (action.includes('purge')) color = 0x95A5A6; // Gray
-    else if (action.includes('role') || action.includes('channel')) color = 0x3498DB; // Blue
+
+    if (outcome === 'partial') color = 0xE67E22; // Orange
     if (outcome === 'failed' || outcome === 'denied') color = 0x992D22; // Dark Red
 
+    const categoryTitle = category.charAt(0).toUpperCase() + category.slice(1);
     const actionTitle = formatActionTitle(action);
 
     const embed = new EmbedBuilder()
-      .setTitle(`[Moderation] ${actionTitle}`)
+      .setTitle(`[${categoryTitle}] ${actionTitle}`)
       .setColor(color)
       .setTimestamp();
 
-    // Actor
+    // Actor / Initiator
     const actorStr = actor?.tag
       ? `${actor.tag} (${actor.id ? `<@${actor.id}>` : 'External'})`
       : (actor?.id ? `<@${actor.id}>` : (actor || 'Unknown'));
-    embed.addFields({ name: 'Moderator', value: actorStr, inline: true });
+    const actorFieldName = category === 'moderation' ? 'Moderator' : 'Initiated by';
+    embed.addFields({ name: actorFieldName, value: actorStr, inline: true });
 
     // Target
     let targetStr = 'N/A';
@@ -668,16 +954,49 @@ export class ModLogService {
       if (typeof target === 'object') {
         targetStr = target.tag
           ? `${target.tag} (<@${target.id}>)`
-          : (target.name ? `#${target.name} (<#${target.id}>)` : `${target.id || 'Unknown'}`);
+          : (target.name ? `${target.type === 4 ? '📁 ' : '#'}${target.name} (${target.id})` : `${target.id || 'Unknown'}`);
       } else {
         targetStr = String(target);
       }
     }
     embed.addFields({ name: 'Target', value: targetStr, inline: true });
 
+    // Scope if specified
+    if (scope) {
+      embed.addFields({ name: 'Scope', value: String(scope), inline: true });
+    }
+
     // Outcome
-    const outcomeText = outcome === 'succeeded' ? 'Completed' : (outcome === 'failed' ? `Failed: ${failureReason || 'Error'}` : outcome);
-    embed.addFields({ name: 'Outcome', value: outcomeText, inline: true });
+    let outcomeText = outcome === 'succeeded'
+      ? (category === 'moderation' ? 'Completed' : 'Succeeded and verified')
+      : (outcome === 'failed' ? `Failed: ${failureReason || 'Error'}` : outcome);
+    if (outcome === 'partial') outcomeText = 'Partially completed';
+    const outcomeFieldName = category === 'moderation' ? 'Outcome' : 'Result';
+    embed.addFields({ name: outcomeFieldName, value: outcomeText, inline: true });
+
+    // Specific category/permission fields
+    if (changes) {
+      embed.addFields({ name: 'Changes', value: String(changes).slice(0, 512), inline: false });
+    }
+    if (affectedChannels) {
+      const affText = Array.isArray(affectedChannels) ? affectedChannels.join(', ') : String(affectedChannels);
+      embed.addFields({ name: 'Affected child channels', value: affText.slice(0, 512), inline: false });
+    }
+    if (unsynchronizedChannels) {
+      const unsyncText = Array.isArray(unsynchronizedChannels) ? unsynchronizedChannels.join(', ') : String(unsynchronizedChannels);
+      embed.addFields({ name: 'Unsynchronized channels', value: unsyncText.slice(0, 512), inline: false });
+    }
+
+    // Partial operation fields
+    if (succeeded) {
+      embed.addFields({ name: 'Succeeded', value: String(succeeded).slice(0, 512), inline: false });
+    }
+    if (failed) {
+      embed.addFields({ name: 'Failed', value: String(failed).slice(0, 512), inline: false });
+    }
+    if (remainingWork) {
+      embed.addFields({ name: 'Remaining work', value: String(remainingWork).slice(0, 512), inline: false });
+    }
 
     // Stated reason (sanitized, max 512 chars)
     const cleanReason = String(reason || 'No reason provided').slice(0, 512);
@@ -696,6 +1015,59 @@ export class ModLogService {
     embed.setFooter({ text: footerParts.join(' • ') });
 
     return embed;
+  }
+
+  /**
+   * Formats a fallback plain-text moderation log entry when embeds cannot be delivered.
+   */
+  static formatPlainTextLog(data) {
+    const {
+      action,
+      actor,
+      target,
+      reason,
+      duration,
+      count,
+      outcome = 'succeeded',
+      failureReason = null,
+      executionId = null,
+      source = '/go',
+      changes = null,
+      affectedChannels = null,
+      remainingWork = null
+    } = data;
+
+    const actionTitle = formatActionTitle(action);
+    const actorStr = actor?.tag ? `${actor.tag} (${actor.id || ''})` : (actor?.id ? `<@${actor.id}>` : (actor || 'Unknown'));
+    let targetStr = 'N/A';
+    if (target) {
+      if (typeof target === 'object') {
+        targetStr = target.tag
+          ? `${target.tag} (${target.id})`
+          : (target.name ? `${target.type === 4 ? '📁 ' : '#'}${target.name} (${target.id})` : `${target.id || 'Unknown'}`);
+      } else {
+        targetStr = String(target);
+      }
+    }
+
+    const outcomeText = outcome === 'succeeded' ? 'Succeeded and verified' : (outcome === 'failed' ? `Failed: ${failureReason || 'Error'}` : outcome);
+    const lines = [
+      `📋 **[Moderation] ${actionTitle}**`,
+      `• **Target:** ${targetStr}`,
+      `• **Action:** ${actionTitle}${duration ? ` for ${duration}m` : ''}${count ? ` (count: ${count})` : ''}`,
+      `• **Initiated by:** ${actorStr}`,
+      `• **Reason:** ${reason || 'No reason provided'}`,
+      `• **Result:** ${outcomeText}`
+    ];
+
+    if (changes) lines.push(`• **Changes:** ${changes}`);
+    if (affectedChannels) lines.push(`• **Affected channels:** ${Array.isArray(affectedChannels) ? affectedChannels.join(', ') : affectedChannels}`);
+    if (remainingWork) lines.push(`• **Remaining work:** ${remainingWork}`);
+
+    lines.push(`• **Time:** ${new Date().toISOString()}`);
+    lines.push(`• **Execution ID:** ${executionId || 'N/A'} (Source: ${source})`);
+
+    return lines.join('\n');
   }
 }
 

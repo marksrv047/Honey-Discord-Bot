@@ -575,6 +575,47 @@ async function handleModlogCommand(interaction) {
       });
     }
 
+    case 'setup_logging': {
+      const targetRef = interpreted.targetChannel;
+      const res = await ModLogService.setupModlogs(guild, {
+        channelName: targetRef || 'mod-logs',
+        createIfMissing: true,
+        userTagOrId: interaction.user.tag,
+        testDelivery: true
+      });
+
+      if (!res.success) {
+        return await interaction.editReply({
+          content: `Couldn't complete mod-logs setup: ${res.error}`,
+          allowedMentions: ResponseService.getAllowedMentions()
+        });
+      }
+
+      const chMention = ResponseService.formatChannelMention(res.channel?.id, res.channel?.name);
+      return await interaction.editReply({
+        content: `Mod logging is configured for ${chMention}. The channel was created/verified, and the test entry was delivered.`,
+        allowedMentions: ResponseService.getAllowedMentions()
+      });
+    }
+
+    case 'update_filter': {
+      const updates = {};
+      if (interpreted.filterEvents) updates.filterEvents = interpreted.filterEvents;
+      if (interpreted.logSuccess !== undefined) updates.logSuccess = interpreted.logSuccess;
+      if (interpreted.logFailed !== undefined) updates.logFailed = interpreted.logFailed;
+      if (interpreted.logDenied !== undefined) updates.logDenied = interpreted.logDenied;
+
+      const res = ModLogService.updatePreferences(guild.id, updates, interaction.user.tag);
+      const conf = res.config;
+      const chMention = conf.channelId ? ResponseService.formatChannelMention(conf.channelId, conf.channelName) : 'none';
+      let details = `Updated moderation log preferences for this server.\n• **Destination:** ${chMention}\n• **Filter Events:** ${conf.preferences.filterEvents.join(', ')}\n• **Log Success:** ${conf.preferences.logSuccess}\n• **Log Failed:** ${conf.preferences.logFailed}\n• **Log Denied:** ${conf.preferences.logDenied}\n• **Revision:** ${conf.revision}`;
+
+      return await interaction.editReply({
+        content: details,
+        allowedMentions: ResponseService.getAllowedMentions()
+      });
+    }
+
     case 'configure_channel': {
       let targetRef = interpreted.targetChannel;
       if (targetRef === 'current' || !targetRef) {

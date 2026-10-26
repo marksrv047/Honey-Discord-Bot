@@ -387,8 +387,17 @@ export class GuildConfigService {
 
     const filePath = this.storagePath;
     const tmpFile = `${filePath}.tmp.${Date.now()}_${Math.random().toString(36).substring(7)}`;
-    fs.writeFileSync(tmpFile, JSON.stringify(serializable, null, 2), 'utf8');
-    fs.renameSync(tmpFile, filePath);
+    try {
+      fs.renameSync(tmpFile, filePath);
+    } catch (renameErr) {
+      try {
+        fs.copyFileSync(tmpFile, filePath);
+        fs.unlinkSync(tmpFile);
+      } catch (copyErr) {
+        fs.writeFileSync(filePath, JSON.stringify(serializable, null, 2), 'utf8');
+        try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch {}
+      }
+    }
   }
 
   /**

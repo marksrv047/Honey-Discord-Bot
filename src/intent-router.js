@@ -18,7 +18,7 @@ You are the Discord Administration Intent Interpreter.
 Analyze the user instruction and interaction context. Return ONLY a single raw JSON object matching this schema:
 {
   "thought": "Brief interpretation of intent",
-  "intent": "rename_channel" | "edit_channel_topic" | "set_channel_slowmode" | "lock_channel" | "unlock_channel" | "create_channel" | "delete_channel" | "create_role" | "edit_role" | "delete_role" | "assign_role" | "remove_role" | "change_nickname" | "remove_nickname" | "inspect_nickname" | "timeout_member" | "remove_timeout" | "kick_member" | "ban_member" | "unban_member" | "setup_ticket_system" | "audit_server" | "list_channels" | "list_roles" | "send_announcement" | "send_message" | "purge_messages" | "search_messages" | "music_play" | "music_pause" | "music_resume" | "music_skip" | "music_stop" | "music_queue" | "music_nowplaying" | "music_volume" | "music_leave" | "configure_guild_policy" | "inspect_guild_policy" | "test_guild_policy" | "reset_guild_policy" | "conversational" | "unsupported" | "complex_plan",
+  "intent": "rename_channel" | "edit_channel_topic" | "set_channel_slowmode" | "lock_channel" | "unlock_channel" | "create_channel" | "delete_channel" | "create_category" | "rename_category" | "delete_category" | "inspect_category" | "list_categories" | "move_channel_to_category" | "set_category_permission" | "sync_category_permissions" | "inspect_category_sync" | "create_role" | "edit_role" | "delete_role" | "assign_role" | "remove_role" | "change_nickname" | "remove_nickname" | "inspect_nickname" | "timeout_member" | "remove_timeout" | "kick_member" | "ban_member" | "unban_member" | "setup_ticket_system" | "audit_server" | "list_channels" | "list_roles" | "send_announcement" | "send_message" | "purge_messages" | "search_messages" | "music_play" | "music_pause" | "music_resume" | "music_skip" | "music_stop" | "music_queue" | "music_nowplaying" | "music_volume" | "music_leave" | "configure_guild_policy" | "inspect_guild_policy" | "test_guild_policy" | "reset_guild_policy" | "conversational" | "unsupported" | "complex_plan",
   "targetType": "channel" | "role" | "member" | "server" | null,
   "targetRef": "current" | string (ID, name, or mention, e.g. "current", "<#123>", "<@123>", "VIP", "announce"),
   "args": {
@@ -377,6 +377,207 @@ export class IntentRouter {
         },
         isHighImpact: false,
         thought: `Revoke member ${member} special access`
+      };
+    }
+
+    // =========================================================================
+    // CATEGORY MANAGEMENT FAST-PATHS
+    // =========================================================================
+
+    // C1. Explain consequences of deleting category
+    if (/(?:explain\s+what\s+(?:will\s+change|happens?)\s+if\s+i\s+delete\s+(?:this\s+)?category)/i.test(cleanPrompt)) {
+      const catMatch = cleanPrompt.match(/(?:category\s+)(["'#\w\s.-]+)$/i);
+      const catTarget = catMatch ? catMatch[1].trim().replace(/^["']|["']$/g, '') : 'current';
+      return {
+        intent: 'delete_category',
+        targetType: 'category',
+        targetRef: catTarget,
+        args: { category: catTarget, targetCategory: catTarget, explainOnly: true },
+        isHighImpact: false,
+        thought: `Explain consequences of deleting category "${catTarget}"`
+      };
+    }
+
+    // C2. Delete category and its channels (destructive, high-impact)
+    const deleteCatWithChannelsMatch = cleanPrompt.match(/^delete\s+(?:this\s+|the\s+)?(?:category\s+)?(["'#\w\s.-]+?)\s*(?:category)?\s+and\s+(?:all\s+)?(?:its\s+)?channels$/i);
+    if (deleteCatWithChannelsMatch) {
+      const catTarget = deleteCatWithChannelsMatch[1].trim().replace(/^["']|["']$/g, '');
+      const cleanTarget = /this|here/i.test(catTarget) ? 'current' : catTarget;
+      return {
+        intent: 'delete_category',
+        targetType: 'category',
+        targetRef: cleanTarget,
+        args: { category: cleanTarget, targetCategory: cleanTarget, deleteChildren: true },
+        isHighImpact: true,
+        thought: `Delete category "${cleanTarget}" and all its child channels (destructive)`
+      };
+    }
+
+    // C3. Delete category (preserving channels or empty)
+    const deleteCatMatch = cleanPrompt.match(/^(?:delete|remove)\s+(?:the\s+)?(?:empty\s+)?(?:category\s+)?(["'#\w\s.-]+?)\s+category$/i) ||
+      cleanPrompt.match(/^(?:delete|remove)\s+(?:the\s+)?(?:empty\s+)?category\s+(["'#\w\s.-]+)$/i);
+    if (deleteCatMatch) {
+      const catTarget = deleteCatMatch[1].trim().replace(/^["']|["']$/g, '');
+      if (!/^(channel|role|member)$/i.test(catTarget)) {
+        return {
+          intent: 'delete_category',
+          targetType: 'category',
+          targetRef: catTarget,
+          args: { category: catTarget, targetCategory: catTarget, deleteChildren: false },
+          isHighImpact: true,
+          thought: `Delete category "${catTarget}"`
+        };
+      }
+    }
+
+    // C4. Inspect Category Sync: "Show me which channels have permission overrides that differ from their category"
+    if (/(?:show\s+(?:me\s+)?which\s+channels\s+have\s+permission\s+overrides?\s+that\s+differ\s+from\s+their\s+category|check\s+category\s+sync|unsynchronized\s+channels)/i.test(cleanPrompt)) {
+      const catMatch = cleanPrompt.match(/(?:in|for|inside)\s+(?:the\s+)?(["'#\w\s.-]+?)(?:\s+category)?$/i);
+      const catRef = catMatch ? catMatch[1].trim().replace(/^["']|["']$/g, '') : 'current';
+      return {
+        intent: 'inspect_category_sync',
+        targetType: 'category',
+        targetRef: catRef,
+        args: { category: catRef, targetCategory: catRef },
+        isHighImpact: false,
+        thought: `Inspect category sync state for "${catRef}"`
+      };
+    }
+
+    // C5. Synchronize child channels with category permissions
+    if (/(?:synchronize|sync)\s+(?:the\s+)?(?:child\s+)?channels?\s+with\s+(?:the\s+)?category(?:\s+permissions?)?/i.test(cleanPrompt) ||
+        /(?:synchronize|sync)\s+all\s+channels?\s+in\s+(?:the\s+)?(["'#\w\s.-]+?)(?:\s+category)?$/i.test(cleanPrompt)) {
+      const catMatch = cleanPrompt.match(/(?:in|under|inside)\s+(?:the\s+)?(?:category\s+)?(["'#\w\s.-]+?)(?:\s+category)?$/i) ||
+        cleanPrompt.match(/(?:in|under|with)\s+(?:the\s+)?(["'#\w\s.-]+?)(?:\s+category)?$/i);
+      const catRef = catMatch ? catMatch[1].trim().replace(/^["']|["']$/g, '') : 'current';
+      return {
+        intent: 'sync_category_permissions',
+        targetType: 'category',
+        targetRef: catRef,
+        args: { category: catRef, targetCategory: catRef, targetChannel: 'all' },
+        isHighImpact: false,
+        thought: `Synchronize child channels with category "${catRef}"`
+      };
+    }
+
+    // C6. "Show me the channels inside Support" / "Inspect Support category"
+    const inspectCatMatch = cleanPrompt.match(/^(?:show\s+(?:me\s+)?(?:the\s+)?channels\s+(?:inside|in|under)\s+(["'#\w\s.-]+?)(?:\s+category)?|inspect\s+(?:the\s+)?category\s+(["'#\w\s.-]+)|inspect\s+(["'#\w\s.-]+?)\s+category)$/i);
+    if (inspectCatMatch) {
+      const catRef = (inspectCatMatch[1] || inspectCatMatch[2] || inspectCatMatch[3]).trim().replace(/^["']|["']$/g, '');
+      if (!/^(server|all|here|current)$/i.test(catRef)) {
+        return {
+          intent: 'inspect_category',
+          targetType: 'category',
+          targetRef: catRef,
+          args: { category: catRef, targetCategory: catRef },
+          isHighImpact: false,
+          thought: `Inspect channels and permissions inside category "${catRef}"`
+        };
+      }
+    }
+
+    // C7. "List all categories" / "Show categories"
+    if (/^(?:show|list|get|display)\s+(?:all\s+)?categories$/i.test(cleanPrompt)) {
+      return {
+        intent: 'list_categories',
+        targetType: 'server',
+        targetRef: 'current',
+        args: {},
+        isHighImpact: false,
+        thought: 'List all categories in the server'
+      };
+    }
+
+    // C8. "Move #tickets into Support" / "Move #channel into Category"
+    const moveChannelIntoCatMatch = cleanPrompt.match(/^move\s+(this\s+channel|<#\d+>|#?[\w-]+)\s+(?:in|into|under|to)\s+(?:the\s+)?(?:category\s+)?(["'#\w\s.-]+?)(?:\s+category)?$/i);
+    if (moveChannelIntoCatMatch) {
+      const chRef = /this/i.test(moveChannelIntoCatMatch[1]) ? 'current' : moveChannelIntoCatMatch[1].replace(/^#/, '');
+      const catRef = moveChannelIntoCatMatch[2].trim().replace(/^["']|["']$/g, '');
+      return {
+        intent: 'move_channel_to_category',
+        targetType: 'channel',
+        targetRef: chRef,
+        args: { channel: chRef, targetChannel: chRef, category: catRef, targetCategory: catRef, syncPermissions: false },
+        isHighImpact: false,
+        thought: `Move channel #${chRef} into category "${catRef}"`
+      };
+    }
+
+    // C9. "Create a Support category" / "Create a private Staff category"
+    const createCatMatch = cleanPrompt.match(/^create\s+(?:a\s+)?(private\s+)?(["'#\w\s.-]+?)\s+category$/i) ||
+      cleanPrompt.match(/^create\s+(?:a\s+)?category\s+(?:called|named\s+)?(["'#\w\s.-]+)$/i);
+    if (createCatMatch) {
+      const isPrivate = Boolean(createCatMatch[1]);
+      const name = (createCatMatch[2] || createCatMatch[1]).trim().replace(/^["']|["']$/g, '');
+      if (!/^(channel|role|member)$/i.test(name)) {
+        return {
+          intent: 'create_category',
+          targetType: 'category',
+          targetRef: name,
+          args: { name, isPrivate },
+          isHighImpact: false,
+          thought: `Create category "${name}"${isPrivate ? ' (private)' : ''}`
+        };
+      }
+    }
+
+    // C10. "Rename the Support category to Customer Support"
+    const renameCatMatch = cleanPrompt.match(/^rename\s+(?:the\s+)?(?:category\s+)?(["'#\w\s.-]+?)\s+category\s+to\s+(["'#\w\s.-]+)$/i) ||
+      cleanPrompt.match(/^rename\s+(?:the\s+)?category\s+(["'#\w\s.-]+?)\s+to\s+(["'#\w\s.-]+)$/i);
+    if (renameCatMatch) {
+      const catTarget = renameCatMatch[1].trim().replace(/^["']|["']$/g, '');
+      const newName = renameCatMatch[2].trim().replace(/^["']|["']$/g, '');
+      return {
+        intent: 'rename_category',
+        targetType: 'category',
+        targetRef: catTarget,
+        args: { category: catTarget, targetCategory: catTarget, newName },
+        isHighImpact: false,
+        thought: `Rename category "${catTarget}" to "${newName}"`
+      };
+    }
+
+    // C11. "Make all channels in Support read-only for the Member role"
+    const readOnlyCatMatch = cleanPrompt.match(/^make\s+(?:all\s+channels\s+in\s+)?(["'#\w\s.-]+?)(?:\s+category)?\s+read-only\s+for\s+(?:the\s+)?@?([\w\s.-]+?)(?:\s+role)?$/i);
+    if (readOnlyCatMatch) {
+      const catRef = readOnlyCatMatch[1].trim().replace(/^["']|["']$/g, '');
+      const roleRef = readOnlyCatMatch[2].trim().replace(/^@/, '');
+      return {
+        intent: 'set_category_permission',
+        targetType: 'category',
+        targetRef: catRef,
+        args: { category: catRef, targetCategory: catRef, target: roleRef, targetRoleOrMember: roleRef, deny: ['SendMessages'], allow: [] },
+        isHighImpact: false,
+        thought: `Make category "${catRef}" read-only for role ${roleRef}`
+      };
+    }
+
+    // C12. "Allow the Support Team to view the Support category"
+    const allowCatViewMatch = cleanPrompt.match(/^allow\s+(?:the\s+)?@?([\w\s.-]+?)\s+to\s+view\s+(?:the\s+)?(["'#\w\s.-]+?)(?:\s+category)?$/i);
+    if (allowCatViewMatch) {
+      const roleRef = allowCatViewMatch[1].trim().replace(/^@/, '');
+      const catRef = allowCatViewMatch[2].trim().replace(/^["']|["']$/g, '');
+      return {
+        intent: 'set_category_permission',
+        targetType: 'category',
+        targetRef: catRef,
+        args: { category: catRef, targetCategory: catRef, target: roleRef, targetRoleOrMember: roleRef, allow: ['ViewChannel'], deny: [] },
+        isHighImpact: false,
+        thought: `Allow role ${roleRef} to view category "${catRef}"`
+      };
+    }
+
+    // C13. "Remove the explicit send-message restriction from this category"
+    const removeCatRestrictionMatch = cleanPrompt.match(/^remove\s+(?:the\s+)?explicit\s+send-message\s+restriction\s+from\s+(?:this\s+category|the\s+(["'#\w\s.-]+?)\s+category|this)$/i);
+    if (removeCatRestrictionMatch) {
+      const catRef = removeCatRestrictionMatch[1] ? removeCatRestrictionMatch[1].trim().replace(/^["']|["']$/g, '') : 'current';
+      return {
+        intent: 'set_category_permission',
+        targetType: 'category',
+        targetRef: catRef,
+        args: { category: catRef, targetCategory: catRef, removeRestrictions: ['SendMessages'] },
+        isHighImpact: false,
+        thought: `Remove send message restriction from category "${catRef}"`
       };
     }
 

@@ -1473,6 +1473,711 @@ export class Operations {
   }
 
   /**
+   * Resolves a category channel in a guild, checking ID, mention, or name,
+   * and detecting ambiguous name matches.
+   */
+  static async resolveCategory(guild, categoryRef, context = {}) {
+    if (!guild || !categoryRef) return null;
+    const cleanRef = String(categoryRef).trim().replace(/^["']|["']$/g, '');
+
+    // 1. Direct ID match
+    const ch = guild.channels?.cache?.get?.(cleanRef) || await guild.channels?.fetch?.(cleanRef).catch(() => null);
+    if (ch && ch.type === ChannelType.GuildCategory) return ch;
+
+    // 2. Mention match (<#123>)
+    const mentionMatch = cleanRef.match(/^<#(\d+)>$/);
+    if (mentionMatch) {
+      const mentionCh = guild.channels?.cache?.get?.(mentionMatch[1]) || await guild.channels?.fetch?.(mentionMatch[1]).catch(() => null);
+      if (mentionCh && mentionCh.type === ChannelType.GuildCategory) return mentionCh;
+    }
+
+    // 3. Name lookup in GuildCategory channels
+    const categories = [];
+    if (guild.channels?.cache) {
+      for (const ch of guild.channels.cache.values()) {
+        if (ch.type === ChannelType.GuildCategory) {
+          categories.push(ch);
+        }
+      }
+    }
+
+    const lowerRef = cleanRef.toLowerCase();
+    const exactMatches = categories.filter(c => c.name?.toLowerCase() === lowerRef);
+    if (exactMatches.length === 1) return exactMatches[0];
+    if (exactMatches.length > 1) {
+      return {
+        isAmbiguous: true,
+        clarificationQuestion: `I found multiple categories named "${cleanRef}". Which one did you mean: ${exactMatches.map(c => `"${c.name}" (ID: ${c.id})`).join(' or ')}?`,
+        candidates: exactMatches
+      };
+    }
+
+    // Fuzzy / prefix match
+    const fuzzyMatches = categories.filter(c => c.name?.toLowerCase().includes(lowerRef));
+    if (fuzzyMatches.length === 1) return fuzzyMatches[0];
+    if (fuzzyMatches.length > 1) {
+      return {
+        isAmbiguous: true,
+        clarificationQuestion: `Multiple categories match "${cleanRef}". Which one did you mean: ${fuzzyMatches.map(c => `"${c.name}"`).join(' or ')}?`,
+        candidates: fuzzyMatches
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * Creates a new category channel.
+   */
+  static async createCategory(guild, options, context = {}) {
+    const name = String(options.name || '').trim();
+    if (!name) return { success: false, error: 'Category name is required.', action: 'create_category' };
+
+    // Idempotency: check if category with same name exists
+    const existing = guild.channels?.cache?.find?.(c => c.type === ChannelType.GuildCategory && c.name?.toLowerCase() === name.toLowerCase());
+    if (existing) {
+      return {
+        success: true,
+        action: 'create_category',
+        category: existing,
+        resourceId: existing.id,
+        details: `Category "${existing.name}" already exists (re-using existing)`,
+        verified: true
+      };
+    }
+
+    const overwrites = [];
+    if (options.isPrivate && guild.roles?.everyone) {
+      overwrites.push({
+        id: guild.roles.everyone.id,
+        deny: [PermissionFlagsBits.ViewChannel]
+      });
+    }
+
+    if (Array.isArray(options.allowedRoles) && options.allowedRoles.length > 0) {
+      for (const roleRef of options.allowedRoles) {
+        const role = guild.roles?.cache?.find?.(r => r.id === roleRef || r.name?.toLowerCase() === String(roleRef).replace(/^@/, '').toLowerCase());
+        if (role) {
+          overwrites.push({
+            id: role.id,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]
+          });
+        }
+      }
+    }
+
+    const botMember = guild.members?.me;
+    if (botMember) {
+      overwrites.push({
+        id: botMember.id,
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles]
+      });
+    }
+
+    const category = await guild.channels.create({
+      name,
+      type: ChannelType.GuildCategory,
+      permissionOverwrites: overwrites.length > 0 ? overwrites : undefined,
+      reason: `Created category via Honey Bot by ${context?.invokingUser?.tag || 'moderator'}`
+    });
+
+    if (context?.executionId) {
+      ActionLedger.recordCreatedResource(context.executionId, 'category', category.id, category.name, guild.id);
+    }
+
+    if (typeof ModLogService?.logAction === 'function') {
+      await ModLogService.logAction(guild, {
+        action: 'create_category',
+        actor: context?.invokingUser,
+        target: category,
+        reason: options.reason || 'Category created',
+        outcome: 'succeeded',
+        executionId: context?.executionId
+      }).catch(() => {});
+    }
+
+    return {
+      success: true,
+      action: 'create_category',
+      category,
+      resourceId: category.id,
+      details: `Created category "${category.name}"${options.isPrivate ? ' (private)' : ''}`,
+      verified: true
+    };
+  }
+
+  /**
+   * Renames an existing category.
+   */
+  static async renameCategory(guild, categoryRef, newName, context = {}) {
+    const category = await Operations.resolveCategory(guild, categoryRef, context);
+    if (category?.isAmbiguous) {
+      return { success: false, isAmbiguous: true, error: category.clarificationQuestion, candidates: category.candidates, action: 'rename_category' };
+    }
+    if (!category) {
+      return { success: false, error: `Category "${categoryRef}" not found in this server.`, action: 'rename_category' };
+    }
+
+    const oldName = category.name;
+    const cleanNewName = String(newName || '').trim();
+    if (!cleanNewName) return { success: false, error: 'New category name is required.', action: 'rename_category' };
+
+    if (oldName.toLowerCase() === cleanNewName.toLowerCase()) {
+      return {
+        success: true,
+        action: 'rename_category',
+        oldName,
+        newName: cleanNewName,
+        alreadySatisfied: true,
+        details: `Category "${oldName}" is already named "${cleanNewName}"`,
+        verified: true
+      };
+    }
+
+    await category.setName(cleanNewName, `Renamed via Honey Bot by ${context?.invokingUser?.tag || 'moderator'}`);
+
+    if (context?.executionId) {
+      ActionLedger.recordAction(guild.id, context.executionId, {
+        action: 'rename_category',
+        guildId: guild.id,
+        targetId: category.id,
+        targetName: cleanNewName,
+        preState: { name: oldName },
+        postState: { name: cleanNewName },
+        actor: context.invokingUser
+      });
+    }
+
+    if (typeof ModLogService?.logAction === 'function') {
+      await ModLogService.logAction(guild, {
+        action: 'rename_category',
+        actor: context?.invokingUser,
+        target: category,
+        reason: `Renamed from "${oldName}" to "${cleanNewName}"`,
+        outcome: 'succeeded',
+        executionId: context?.executionId
+      }).catch(() => {});
+    }
+
+    return {
+      success: true,
+      action: 'rename_category',
+      oldName,
+      newName: cleanNewName,
+      details: `Renamed category from "${oldName}" to "${cleanNewName}"`,
+      verified: true
+    };
+  }
+
+  /**
+   * Deletes a category safely, unparenting child channels or deleting them when confirmed.
+   */
+  static async deleteCategory(guild, categoryRef, options = {}, context = {}) {
+    const category = await Operations.resolveCategory(guild, categoryRef, context);
+    if (category?.isAmbiguous) {
+      return { success: false, isAmbiguous: true, error: category.clarificationQuestion, candidates: category.candidates, action: 'delete_category' };
+    }
+    if (!category) {
+      return { success: false, error: `Category "${categoryRef}" not found in this server.`, action: 'delete_category' };
+    }
+
+    const categoryName = category.name;
+    const categoryId = category.id;
+    const children = Array.from(guild.channels?.cache?.filter?.(c => c.parentId === categoryId)?.values?.() || []);
+
+    if (options.explainOnly) {
+      return {
+        success: true,
+        action: 'delete_category',
+        explainOnly: true,
+        category: { id: categoryId, name: categoryName },
+        consequences: {
+          childChannelCount: children.length,
+          childChannels: children.map(c => c.name),
+          defaultBehavior: 'Unparents child channels so they remain accessible at the top level of the channel list.',
+          destructiveOption: 'Delete category and all child channels (requires explicit confirmation).'
+        },
+        details: `Deleting category "${categoryName}" will unparent ${children.length} child channel(s): ${children.map(c => `#${c.name}`).join(', ') || 'none'}. No channels will be deleted unless specifically requested and confirmed.`
+      };
+    }
+
+    const unparentedChannels = [];
+    if (children.length > 0) {
+      if (options.deleteChildren) {
+        for (const child of children) {
+          await child.delete(`Child channel deleted with category "${categoryName}"`);
+        }
+      } else {
+        for (const child of children) {
+          await child.setParent(null, { lockPermissions: false });
+          unparentedChannels.push(child.name);
+        }
+      }
+    }
+
+    await category.delete(`Deleted via Honey Bot by ${context?.invokingUser?.tag || 'moderator'}`);
+
+    if (typeof ModLogService?.logAction === 'function') {
+      await ModLogService.logAction(guild, {
+        action: 'delete_category',
+        actor: context?.invokingUser,
+        target: { name: categoryName, id: categoryId, type: 4 },
+        reason: options.deleteChildren ? `Deleted category and ${children.length} child channel(s)` : `Deleted category (unparented ${children.length} child channels)`,
+        outcome: 'succeeded',
+        executionId: context?.executionId
+      }).catch(() => {});
+    }
+
+    const childInfo = children.length > 0
+      ? (options.deleteChildren ? ` and deleted ${children.length} child channel(s)` : ` (preserved and unparented ${children.length} child channel(s))`)
+      : ' (empty)';
+
+    return {
+      success: true,
+      action: 'delete_category',
+      category: { id: categoryId, name: categoryName },
+      unparentedChannels,
+      details: `Deleted category "${categoryName}"${childInfo}`,
+      verified: true
+    };
+  }
+
+  /**
+   * Inspects a category, listing child channels, sync state, and permission overwrites.
+   */
+  static async inspectCategory(guild, categoryRef, context = {}) {
+    const category = await Operations.resolveCategory(guild, categoryRef, context);
+    if (category?.isAmbiguous) {
+      return { success: false, isAmbiguous: true, error: category.clarificationQuestion, candidates: category.candidates, action: 'inspect_category' };
+    }
+    if (!category) {
+      return { success: false, error: `Category "${categoryRef}" not found in this server.`, action: 'inspect_category' };
+    }
+
+    const children = Array.from(guild.channels?.cache?.filter?.(c => c.parentId === category.id)?.values?.() || []);
+    const childDetails = children.map(c => ({
+      name: c.name,
+      id: c.id,
+      type: c.type,
+      synchronized: Boolean(c.permissionsLocked)
+    }));
+
+    const overwrites = [];
+    if (category.permissionOverwrites?.cache) {
+      for (const ow of category.permissionOverwrites.cache.values()) {
+        const role = guild.roles?.cache?.get?.(ow.id);
+        const member = guild.members?.cache?.get?.(ow.id);
+        const name = role ? `@${role.name}` : (member ? member.user?.tag || member.displayName : ow.id);
+        overwrites.push({
+          id: ow.id,
+          name,
+          allow: ow.allow?.toArray?.() || [],
+          deny: ow.deny?.toArray?.() || []
+        });
+      }
+    }
+
+    let report = `📁 **Category: ${category.name}** (\`${category.id}\`)\n`;
+    report += `• **Child Channels (${children.length}):**\n`;
+    if (children.length === 0) {
+      report += `  *(No child channels)*\n`;
+    } else {
+      for (const c of childDetails) {
+        report += `  • #${c.name} — ${c.synchronized ? '🟢 Synchronized' : '🟠 Custom overrides'}\n`;
+      }
+    }
+
+    report += `• **Permission Overwrites (${overwrites.length}):**\n`;
+    if (overwrites.length === 0) {
+      report += `  *(Default permissions, no custom overwrites)*`;
+    } else {
+      for (const ow of overwrites) {
+        const allowStr = ow.allow.length > 0 ? `Allowed: ${ow.allow.join(', ')}` : '';
+        const denyStr = ow.deny.length > 0 ? `Denied: ${ow.deny.join(', ')}` : '';
+        const parts = [allowStr, denyStr].filter(Boolean).join(' | ');
+        report += `  • **${ow.name}**: ${parts || 'None'}\n`;
+      }
+    }
+
+    return {
+      success: true,
+      action: 'inspect_category',
+      category: { id: category.id, name: category.name, childCount: children.length },
+      children: childDetails,
+      overwrites,
+      details: report.trim(),
+      verified: true
+    };
+  }
+
+  /**
+   * Lists all categories in the server and child channel summaries.
+   */
+  static async listCategories(guild, context = {}) {
+    if (!guild) return { success: false, error: 'No guild context.', action: 'list_categories' };
+
+    const categories = Array.from(guild.channels?.cache?.filter?.(c => c.type === ChannelType.GuildCategory)?.values?.() || []);
+    if (categories.length === 0) {
+      return {
+        success: true,
+        action: 'list_categories',
+        categories: [],
+        count: 0,
+        details: 'This server has no channel categories.'
+      };
+    }
+
+    let text = `📁 **Server Categories (${categories.length}):**\n`;
+    const summaries = [];
+    for (const cat of categories) {
+      const childCount = guild.channels?.cache?.filter?.(c => c.parentId === cat.id)?.size || 0;
+      summaries.push({ id: cat.id, name: cat.name, childCount });
+      text += `• **${cat.name}** (\`${cat.id}\`) — ${childCount} channel(s)\n`;
+    }
+
+    return {
+      success: true,
+      action: 'list_categories',
+      categories: summaries,
+      count: summaries.length,
+      details: text.trim(),
+      verified: true
+    };
+  }
+
+  /**
+   * Moves a channel into or out of a category with optional synchronization.
+   */
+  static async moveChannelToCategory(guild, channelRef, categoryRef, options = {}, context = {}) {
+    let channel = null;
+    if (typeof context?.resolveTarget === 'function') {
+      channel = await context.resolveTarget(channelRef, 'channel');
+    }
+    if (!channel && guild?.channels?.cache) {
+      channel = guild.channels.cache.get?.(channelRef) ||
+        Array.from(guild.channels.cache.values()).find(c => c.id === channelRef || c.name?.toLowerCase() === String(channelRef).replace(/^#/, '').toLowerCase());
+    }
+    if (!channel) return { success: false, error: `Channel "${channelRef}" not found in this server.`, action: 'move_channel_to_category' };
+
+    const oldParentId = channel.parentId;
+
+    if (!categoryRef || categoryRef === 'none' || categoryRef === 'null') {
+      await channel.setParent(null, { lockPermissions: false });
+      if (context?.executionId) {
+        ActionLedger.recordAction(guild.id, context.executionId, {
+          action: 'move_channel_to_category',
+          guildId: guild.id,
+          targetId: channel.id,
+          targetName: channel.name,
+          preState: { parentId: oldParentId },
+          postState: { parentId: null },
+          actor: context.invokingUser
+        });
+      }
+      return {
+        success: true,
+        action: 'move_channel_to_category',
+        channel,
+        channelId: channel.id,
+        categoryId: null,
+        details: `Removed #${channel.name} from its category`,
+        verified: true
+      };
+    }
+
+    const category = await Operations.resolveCategory(guild, categoryRef, context);
+    if (category?.isAmbiguous) {
+      return { success: false, isAmbiguous: true, error: category.clarificationQuestion, candidates: category.candidates, action: 'move_channel_to_category' };
+    }
+    if (!category) {
+      return { success: false, error: `Category "${categoryRef}" not found in this server.`, action: 'move_channel_to_category' };
+    }
+
+    const syncPermissions = Boolean(options.syncPermissions);
+    await channel.setParent(category.id, { lockPermissions: syncPermissions });
+
+    if (context?.executionId) {
+      ActionLedger.recordAction(guild.id, context.executionId, {
+        action: 'move_channel_to_category',
+        guildId: guild.id,
+        targetId: channel.id,
+        targetName: channel.name,
+        preState: { parentId: oldParentId },
+        postState: { parentId: category.id },
+        actor: context.invokingUser
+      });
+    }
+
+    if (typeof ModLogService?.logAction === 'function') {
+      await ModLogService.logAction(guild, {
+        action: 'move_channel_to_category',
+        actor: context?.invokingUser,
+        target: channel,
+        reason: `Moved into category "${category.name}"${syncPermissions ? ' (permissions synchronized)' : ''}`,
+        outcome: 'succeeded',
+        executionId: context?.executionId
+      }).catch(() => {});
+    }
+
+    return {
+      success: true,
+      action: 'move_channel_to_category',
+      channel,
+      channelId: channel.id,
+      categoryId: category.id,
+      details: `Moved #${channel.name} into category "${category.name}"${syncPermissions ? ' and synchronized permissions' : ''}`,
+      verified: true
+    };
+  }
+
+  /**
+   * Configures permission overwrites on a category.
+   */
+  static async setCategoryPermission(guild, categoryRef, targetRoleOrMember, allow = [], deny = [], context = {}) {
+    const category = await Operations.resolveCategory(guild, categoryRef, context);
+    if (category?.isAmbiguous) {
+      return { success: false, isAmbiguous: true, error: category.clarificationQuestion, candidates: category.candidates, action: 'set_category_permission' };
+    }
+    if (!category) {
+      return { success: false, error: `Category "${categoryRef}" not found in this server.`, action: 'set_category_permission' };
+    }
+
+    // Resolve target role or member
+    let target = null;
+    let isRole = true;
+    const cleanTarget = String(targetRoleOrMember).replace(/^[@&!]/, '').trim();
+
+    if (/^\d{17,20}$/.test(cleanTarget)) {
+      target = guild.roles?.cache?.get?.(cleanTarget);
+      if (!target) {
+        target = guild.members?.cache?.get?.(cleanTarget) || await guild.members?.fetch?.(cleanTarget).catch(() => null);
+        isRole = false;
+      }
+    } else {
+      if (/everyone/i.test(cleanTarget)) {
+        target = guild.roles.everyone;
+      } else {
+        target = guild.roles?.cache?.find?.(r => r.name.toLowerCase() === cleanTarget.toLowerCase());
+        if (!target) {
+          target = guild.members?.cache?.find?.(m => m.user?.username?.toLowerCase() === cleanTarget.toLowerCase() || m.displayName?.toLowerCase() === cleanTarget.toLowerCase());
+          isRole = false;
+        }
+      }
+    }
+
+    if (!target) {
+      return { success: false, error: `Role or member "${targetRoleOrMember}" not found in this server.`, action: 'set_category_permission' };
+    }
+
+    const existingOverwrite = category.permissionOverwrites?.cache?.get?.(target.id);
+    const preState = existingOverwrite ? {
+      allow: existingOverwrite.allow?.toArray?.() || [],
+      deny: existingOverwrite.deny?.toArray?.() || []
+    } : null;
+
+    const patch = {};
+    for (const p of allow) {
+      if (PermissionFlagsBits[p]) patch[p] = true;
+    }
+    for (const p of deny) {
+      if (PermissionFlagsBits[p]) patch[p] = false;
+    }
+
+    await category.permissionOverwrites.edit(target.id, patch, {
+      reason: `Updated category permissions via Honey Bot by ${context?.invokingUser?.tag || 'moderator'}`
+    });
+
+    // Check impact on child channels (Requirement 7)
+    const children = Array.from(guild.channels?.cache?.filter?.(c => c.parentId === category.id)?.values?.() || []);
+    const syncedChildren = [];
+    const unsyncedChildren = [];
+    for (const c of children) {
+      if (c.permissionsLocked) syncedChildren.push(c.name);
+      else unsyncedChildren.push(c.name);
+    }
+
+    if (context?.executionId) {
+      ActionLedger.recordAction(guild.id, context.executionId, {
+        action: 'set_category_permission',
+        guildId: guild.id,
+        targetId: category.id,
+        targetName: category.name,
+        targetRoleIdOrMemberId: target.id,
+        targetNameResolved: isRole ? `@${target.name}` : target.user?.tag,
+        preState,
+        postState: { allow, deny },
+        actor: context.invokingUser
+      });
+    }
+
+    const changesText = [
+      allow.length > 0 ? `Allowed: ${allow.join(', ')}` : '',
+      deny.length > 0 ? `Denied: ${deny.join(', ')}` : ''
+    ].filter(Boolean).join('; ');
+
+    if (typeof ModLogService?.logAction === 'function') {
+      await ModLogService.logAction(guild, {
+        action: 'set_category_permission',
+        actor: context?.invokingUser,
+        target: category,
+        reason: `Permissions updated for ${isRole ? `@${target.name}` : target.user?.tag}`,
+        scope: 'Category-level permissions',
+        changes: changesText || 'Overwrites updated',
+        affectedChannels: syncedChildren.length > 0 ? syncedChildren : 'None (no synchronized children)',
+        unsynchronizedChannels: unsyncedChildren.length > 0 ? unsyncedChildren : null,
+        outcome: 'succeeded',
+        executionId: context?.executionId
+      }).catch(() => {});
+    }
+
+    let detailMsg = `Updated permissions for ${isRole ? `@${target.name}` : target.user?.tag} on category "${category.name}".`;
+    if (syncedChildren.length > 0) detailMsg += ` Synchronized child channels affected: ${syncedChildren.map(n => `#${n}`).join(', ')}.`;
+    if (unsyncedChildren.length > 0) detailMsg += ` Unsynchronized child channels with custom overrides were NOT modified: ${unsyncedChildren.map(n => `#${n}`).join(', ')}.`;
+
+    return {
+      success: true,
+      action: 'set_category_permission',
+      affectedChannels: syncedChildren,
+      unsynchronizedChannels: unsyncedChildren,
+      affectedChildren: {
+        synchronizedCount: syncedChildren.length,
+        unsynchronizedCount: unsyncedChildren.length,
+        synchronized: syncedChildren,
+        unsynchronized: unsyncedChildren
+      },
+      details: detailMsg,
+      verified: true
+    };
+  }
+
+  /**
+   * Synchronizes child channels with their parent category.
+   */
+  static async syncCategoryPermissions(guild, categoryRef, channelRef = 'all', context = {}) {
+    const category = await Operations.resolveCategory(guild, categoryRef, context);
+    if (category?.isAmbiguous) {
+      return { success: false, isAmbiguous: true, error: category.clarificationQuestion, candidates: category.candidates, action: 'sync_category_permissions' };
+    }
+    if (!category) {
+      return { success: false, error: `Category "${categoryRef}" not found in this server.`, action: 'sync_category_permissions' };
+    }
+
+    let children = Array.from(guild.channels?.cache?.filter?.(c => c.parentId === category.id)?.values?.() || []);
+    if (children.length === 0) {
+      return { success: false, error: `Category "${category.name}" has no child channels to synchronize.`, action: 'sync_category_permissions' };
+    }
+
+    if (channelRef && channelRef !== 'all') {
+      const single = children.find(c => c.id === channelRef || c.name.toLowerCase() === String(channelRef).replace(/^#/, '').toLowerCase());
+      if (!single) {
+        return { success: false, error: `Channel "${channelRef}" is not inside category "${category.name}".`, action: 'sync_category_permissions' };
+      }
+      children = [single];
+    }
+
+    const succeeded = [];
+    const failed = [];
+
+    for (const child of children) {
+      try {
+        await child.lockPermissions();
+        succeeded.push(child.name);
+      } catch (err) {
+        failed.push({ name: child.name, error: err.message });
+      }
+    }
+
+    const isPartial = failed.length > 0 && succeeded.length > 0;
+    const isTotalFail = succeeded.length === 0 && failed.length > 0;
+
+    if (typeof ModLogService?.logAction === 'function') {
+      await ModLogService.logAction(guild, {
+        action: 'sync_category_permissions',
+        actor: context?.invokingUser,
+        target: category,
+        reason: `Synchronized child channel permissions with "${category.name}"`,
+        outcome: isPartial ? 'partial' : (isTotalFail ? 'failed' : 'succeeded'),
+        succeeded: succeeded.length > 0 ? succeeded.join(', ') : null,
+        failed: failed.length > 0 ? failed.map(f => `${f.name} (${f.error})`).join(', ') : null,
+        remainingWork: failed.length > 0 ? `Need manual permission fix for: ${failed.map(f => f.name).join(', ')}` : null,
+        executionId: context?.executionId
+      }).catch(() => {});
+    }
+
+    if (isTotalFail) {
+      return {
+        success: false,
+        error: `Failed to synchronize channels with category "${category.name}": ${failed[0].error}`,
+        action: 'sync_category_permissions'
+      };
+    }
+
+    if (isPartial) {
+      return {
+        success: true,
+        partial: true,
+        details: `Partially synchronized channels with category "${category.name}". Succeeded: ${succeeded.join(', ')}. Failed: ${failed.map(f => `${f.name} (${f.error})`).join(', ')}.`,
+        succeeded,
+        failed,
+        action: 'sync_category_permissions'
+      };
+    }
+
+    return {
+      success: true,
+      action: 'sync_category_permissions',
+      details: `Successfully synchronized ${succeeded.length} channel(s) with category "${category.name}": ${succeeded.map(n => `#${n}`).join(', ')}.`,
+      affectedChannels: succeeded,
+      syncedChannels: succeeded,
+      verified: true
+    };
+  }
+
+  /**
+   * Inspects and compares permissions between a category and its child channels.
+   */
+  static async inspectCategorySync(guild, categoryRef, context = {}) {
+    const category = await Operations.resolveCategory(guild, categoryRef, context);
+    if (category?.isAmbiguous) {
+      return { success: false, isAmbiguous: true, error: category.clarificationQuestion, candidates: category.candidates, action: 'inspect_category_sync' };
+    }
+    if (!category) {
+      return { success: false, error: `Category "${categoryRef}" not found in this server.`, action: 'inspect_category_sync' };
+    }
+
+    const children = Array.from(guild.channels?.cache?.filter?.(c => c.parentId === category.id)?.values?.() || []);
+    const synchronized = [];
+    const unsynchronized = [];
+    const unsynchronizedChannels = [];
+
+    for (const child of children) {
+      if (child.permissionsLocked) {
+        synchronized.push(child.name);
+      } else {
+        unsynchronized.push(child.name);
+        unsynchronizedChannels.push({ id: child.id, name: child.name, type: child.type });
+      }
+    }
+
+    let report = `📁 **Category Sync Status for "${category.name}":**\n`;
+    report += `• **Synchronized Channels (${synchronized.length}):** ${synchronized.length > 0 ? synchronized.map(n => `#${n}`).join(', ') : 'None'}\n`;
+    report += `• **Unsynchronized Channels with Custom Overrides (${unsynchronized.length}):** ${unsynchronized.length > 0 ? unsynchronized.map(n => `#${n}`).join(', ') : 'None'}`;
+
+    return {
+      success: true,
+      action: 'inspect_category_sync',
+      category: { id: category.id, name: category.name },
+      synchronized,
+      unsynchronized,
+      synchronizedCount: synchronized.length,
+      unsynchronizedCount: unsynchronized.length,
+      unsynchronizedChannels,
+      details: report,
+      verified: true
+    };
+  }
+
+  /**
    * Looks up a member and generates a detailed evidence-based profile display.
    * Produces both a Discord Embed and structured markdown text.
    */

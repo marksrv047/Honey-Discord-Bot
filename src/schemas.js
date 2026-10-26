@@ -299,6 +299,60 @@ export const MoveChannelSchema = z.object({
   category: z.string().min(1)
 });
 
+export const CreateCategorySchema = z.object({
+  action: z.literal('create_category'),
+  name: z.string().min(1).max(100),
+  isPrivate: z.boolean().optional().default(false),
+  allowedRoles: z.array(z.string()).optional().default([])
+});
+
+export const RenameCategorySchema = z.object({
+  action: z.literal('rename_category'),
+  targetCategory: z.string().min(1),
+  newName: z.string().min(1).max(100)
+});
+
+export const DeleteCategorySchema = z.object({
+  action: z.literal('delete_category'),
+  targetCategory: z.string().min(1),
+  deleteChildren: z.boolean().optional().default(false)
+});
+
+export const InspectCategorySchema = z.object({
+  action: z.literal('inspect_category'),
+  targetCategory: z.string().min(1)
+});
+
+export const ListCategoriesSchema = z.object({
+  action: z.literal('list_categories')
+});
+
+export const MoveChannelToCategorySchema = z.object({
+  action: z.literal('move_channel_to_category'),
+  targetChannel: z.string().min(1),
+  category: z.string().nullable().optional().default(null),
+  syncPermissions: z.boolean().optional().default(false)
+});
+
+export const SetCategoryPermissionSchema = z.object({
+  action: z.literal('set_category_permission'),
+  targetCategory: z.string().min(1),
+  targetRoleOrMember: z.string().min(1),
+  allow: z.array(DiscordPermissionEnum).optional().default([]),
+  deny: z.array(DiscordPermissionEnum).optional().default([])
+});
+
+export const SyncCategoryPermissionsSchema = z.object({
+  action: z.literal('sync_category_permissions'),
+  targetCategory: z.string().min(1),
+  targetChannel: z.string().optional().default('all')
+});
+
+export const InspectCategorySyncSchema = z.object({
+  action: z.literal('inspect_category_sync'),
+  targetCategory: z.string().min(1)
+});
+
 export const LookupMemberSchema = z.object({
   action: z.literal('lookup_member'),
   targetMember: z.string().min(1)
@@ -520,6 +574,15 @@ export const ActionSchema = z.discriminatedUnion('action', [
   UnpinMessageSchema,
   AddReactionSchema,
   MoveChannelSchema,
+  CreateCategorySchema,
+  RenameCategorySchema,
+  DeleteCategorySchema,
+  InspectCategorySchema,
+  ListCategoriesSchema,
+  MoveChannelToCategorySchema,
+  SetCategoryPermissionSchema,
+  SyncCategoryPermissionsSchema,
+  InspectCategorySyncSchema,
   LookupMemberSchema,
   GetBotInviteSchema,
   ExplainBotInstallationSchema,

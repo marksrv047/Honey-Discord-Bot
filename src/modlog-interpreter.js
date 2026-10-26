@@ -58,7 +58,50 @@ export class ModlogInterpreter {
       };
     }
 
-    // 2. Ambiguity check for "delete ... channel"
+    // 2. Setup requests
+    if (/(?:set\s*up|initialize)\s+(?:the\s+)?moderation\s+log\s+for\s+this\s+server/i.test(cleanPrompt)) {
+      return {
+        intent: 'configure_channel',
+        targetChannel: 'mod-logs',
+        createIfMissing: true,
+        testAfterConfig: true,
+        clarificationQuestion: null
+      };
+    }
+
+    if (/(?:set\s*up|create|initialize)\s+(?:the\s+)?(?:mod[- ]?logs?|moderation\s+logs?)(?:\s+channel)?(?:\s+in\s+this\s+server)?/i.test(cleanPrompt) ||
+        /create\s+(?:a\s+)?(?:mod[- ]?logs?|moderation\s+logs?)\s+channel/i.test(cleanPrompt)) {
+      const channelMatch = cleanPrompt.match(/(?:called|named|to|in)\s+(#?[\w-]+)/i);
+      const specifiedName = channelMatch ? channelMatch[1].replace(/^#/, '') : 'mod-logs';
+      return {
+        intent: 'setup_logging',
+        targetChannel: specifiedName,
+        createIfMissing: true,
+        testAfterConfig: true,
+        clarificationQuestion: null
+      };
+    }
+
+    // 2b. Event filter and preferences updates
+    if (/(?:log\s+permission\s+changes|log\s+category\s+modifications|also\s+log|include\s+(?:permissions?|categories)|record\s+permission\s+changes)/i.test(cleanPrompt)) {
+      return {
+        intent: 'update_filter',
+        filterEvents: ['moderation', 'roles', 'channels', 'categories', 'permissions', 'policy'],
+        clarificationQuestion: null
+      };
+    }
+
+    if (/(?:stop\s+logging\s+successful\s+actions|only\s+log\s+failed|keep\s+failed\s+actions\s+and\s+denied)/i.test(cleanPrompt)) {
+      return {
+        intent: 'update_filter',
+        logSuccess: false,
+        logFailed: true,
+        logDenied: true,
+        clarificationQuestion: null
+      };
+    }
+
+    // 2c. Ambiguity check for "delete ... channel"
     if (/delete\s+(?:the\s+)?(?:mod[- ]?log|logging)\s+channel/i.test(cleanPrompt)) {
       return {
         intent: 'clarification_needed',
@@ -69,7 +112,7 @@ export class ModlogInterpreter {
     }
 
     // 3. Troubleshooting & Safe Repairs
-    if (/(?:(?:check\s+)?why\s+(?:the\s+)?(?:last\s+)?(?:moderation\s+)?(?:entry|action)\s+(?:wasn['’]?t\s+logged|was\s+not\s+delivered)|why\s+(?:are\s+)?logs\s+not\s+appearing|check\s+(?:the\s+)?configuration\s+and\s+repair|repair\s+anything|fix\s+(?:the\s+)?(?:mod[- ]?log|logging)|troubleshoot|find\s+out\s+what('s|\s+is)\s+wrong|check\s+permissions)/i.test(cleanPrompt)) {
+    if (/(?:(?:check\s+)?why\s+(?:the\s+)?(?:last\s+)?(?:moderation\s+)?(?:entry|action)\s+(?:wasn['’]?t\s+logged|was\s+not\s+delivered)|why\s+(?:are\s+)?logs\s+not\s+appearing|why\s+aren['’]t\s+moderation\s+reports\s+appearing|check\s+(?:the\s+)?configuration\s+and\s+repair|repair\s+anything|fix\s+(?:the\s+)?(?:mod[- ]?log|logging)|troubleshoot|find\s+out\s+what('s|\s+is)\s+wrong|check\s+permissions)/i.test(cleanPrompt)) {
       const wantsRepair = /(?:repair|fix)/i.test(cleanPrompt);
       return {
         intent: 'troubleshoot_config',
@@ -96,7 +139,8 @@ export class ModlogInterpreter {
         /^which\s+channel\s+is\s+(?:currently\s+)?configured/i.test(cleanPrompt) ||
         /^mod[- ]?log\s+status$/i.test(cleanPrompt) ||
         /check\s+whether\s+.*(?:recorded|logged)/i.test(cleanPrompt) ||
-        /explain\s+(?:the\s+)?(?:current\s+)?(?:logging\s+)?config/i.test(cleanPrompt)) {
+        /explain\s+(?:the\s+)?(?:current\s+)?(?:logging\s+)?config/i.test(cleanPrompt) ||
+        /show\s+me\s+(?:the\s+)?current\s+logging\s+configuration/i.test(cleanPrompt)) {
       return {
         intent: 'inspect_config',
         targetChannel: null,
@@ -106,7 +150,7 @@ export class ModlogInterpreter {
     }
 
     // 5. Testing & Verification
-    if (/^(?:check\s+whether\s+logging\s+is\s+working|send\s+a\s+test\s+entry|check\s+whether\s+you\s+can\s+send\s+embeds|test\s+(?:the\s+)?(?:mod[- ]?log|logging)\s*(?:channel)?|check\s+whether\s+you\s+can\s+send\s+messages|verify\s+(?:the\s+)?(?:current\s+)?(?:logging\s+)?config(?:uration)?)/i.test(cleanPrompt)) {
+    if (/^(?:check\s+whether\s+logging\s+is\s+working|test\s+whether\s+moderation\s+logs\s+are\s+working|send\s+a\s+test\s+entry|check\s+whether\s+you\s+can\s+send\s+embeds|test\s+(?:the\s+)?(?:mod[- ]?log|logging)\s*(?:channel)?|check\s+whether\s+you\s+can\s+send\s+messages|verify\s+(?:the\s+)?(?:current\s+)?(?:logging\s+)?config(?:uration)?|verify\s+that\s+(?:all\s+)?(?:moderation\s+)?actions\s+are\s+being\s+recorded)/i.test(cleanPrompt)) {
       return {
         intent: 'test_channel',
         targetChannel: null,
@@ -137,10 +181,10 @@ export class ModlogInterpreter {
     }
 
     // 8. Configuration with channel
-    const configMatch = cleanPrompt.match(/(?:set|use|make|move\s+(?:moderation\s+)?(?:the\s+)?logs\s+to|switch\s+to|change\s+(?:the\s+)?log\s+channel\s+to)\s+(this(?:\s+channel)?|here|<#\d+>|#?[\w-]+)(?:\s+as\s+(?:the\s+)?(?:mod[- ]?log|moderation\s+log)(?:\s+channel)?)?(?:[,\s]+(?:and|then)\s+(?:test|verify)\s+it(?:\s+and\s+tell\s+me\s+whether\s+everything\s+works)?)?/i);
+    const configMatch = cleanPrompt.match(/(?:set|use|make|move\s+(?:moderation\s+)?(?:the\s+)?logs\s+to|switch\s+to|change\s+(?:the\s+)?log\s+channel\s+to)\s+(this(?:\s+channel)?|here|<#\d+>|#?[\w-]+)(?:\s+(?:as|for)\s+(?:the\s+)?(?:mod[- ]?log|moderation\s+log|moderation\s+reports)(?:\s+channel)?)?(?:[,\s]+(?:and|then)\s+(?:test|verify)\s+it(?:\s+and\s+tell\s+me\s+whether\s+everything\s+works)?)?/i);
     if (configMatch) {
       const channelRef = /this|here/i.test(configMatch[1]) ? 'current' : configMatch[1];
-      const testRequested = /(?:test|verify|whether\s+everything\s+works)/i.test(cleanPrompt);
+      const testRequested = /(?:test|verify|whether\s+everything\s+works|for\s+moderation\s+reports)/i.test(cleanPrompt);
       return {
         intent: 'configure_channel',
         targetChannel: channelRef,

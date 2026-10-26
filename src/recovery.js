@@ -915,6 +915,152 @@ RecoveryRegistry.register('configure_guild_policy', {
 });
 RecoveryRegistry.register('reset_guild_policy', RecoveryRegistry.getHandler('configure_guild_policy'));
 
+// 10. Category creation recovery (delete created category)
+RecoveryRegistry.register('create_category', {
+  reversible: true,
+  requiredPermissions: ['ManageChannels'],
+  requiresConfirmation: true,
+  checkConflict(guild, record) {
+    const catId = record.targetId || record.id;
+    const cat = guild.channels.cache.get(catId);
+    if (!cat) {
+      return { alreadyRecovered: true, message: 'That category has already been removed. No additional changes were made.' };
+    }
+    return { valid: true, category: cat };
+  },
+  async execute(guild, record, context) {
+    const cat = guild.channels.cache.get(record.targetId || record.id);
+    const name = cat?.name || record.targetName || record.name || 'category';
+    // Safely unparent children first
+    const allChannels = typeof guild.channels?.cache?.filter === 'function'
+      ? Array.from(guild.channels.cache.filter(c => c.parentId === cat?.id).values())
+      : Array.from(guild.channels?.cache?.values?.() || []).filter(c => c.parentId === cat?.id);
+    for (const ch of allChannels) {
+      await ch.setParent(null, { lockPermissions: false }).catch(() => {});
+    }
+    if (cat) {
+      await cat.delete(`Recovery of created category via Honey Bot by ${context?.actor?.tag || 'moderator'}`);
+    }
+    return { success: true, name };
+  },
+  verify(guild, record) {
+    return !guild.channels.cache.has(record.targetId || record.id);
+  },
+  formatSuccess(record) {
+    return `Deleted category "${record.targetName || record.name}". The reversal is verified.`;
+  }
+});
+RecoveryRegistry.register('category', RecoveryRegistry.getHandler('create_category'));
+
+// 11. Category rename recovery
+RecoveryRegistry.register('rename_category', {
+  reversible: true,
+  requiredPermissions: ['ManageChannels'],
+  requiresConfirmation: false,
+  checkConflict(guild, record) {
+    const catId = record.targetId || record.id;
+    const cat = guild.channels.cache.get(catId);
+    if (!cat) return { conflict: true, reason: 'Target category was deleted.' };
+
+    const previousName = record.preState?.name || record.oldName;
+    if (!previousName) {
+      return { unrecorded: true, reason: "I can't safely undo that action because its previous state wasn't recorded." };
+    }
+    if (cat.name === previousName) {
+      return { alreadyRecovered: true, message: 'That action has already been reversed. No additional changes were made.' };
+    }
+    return { valid: true, category: cat, previousName };
+  },
+  async execute(guild, record, context) {
+    const cat = guild.channels.cache.get(record.targetId || record.id);
+    const previousName = record.preState?.name || record.oldName;
+    await cat.setName(previousName, `Recovery of category rename by ${context?.actor?.tag || 'moderator'}`);
+    return { success: true, restoredName: previousName };
+  },
+  verify(guild, record) {
+    const cat = guild.channels.cache.get(record.targetId || record.id);
+    const previousName = record.preState?.name || record.oldName;
+    return Boolean(cat && cat.name === previousName);
+  },
+  formatSuccess(record) {
+    const prev = record.preState?.name || record.oldName;
+    return `Restored category name to "${prev}". The previous name is verified.`;
+  }
+});
+
+// 12. Move channel to category recovery
+RecoveryRegistry.register('move_channel_to_category', {
+  reversible: true,
+  requiredPermissions: ['ManageChannels'],
+  requiresConfirmation: false,
+  checkConflict(guild, record) {
+    const chId = record.targetId || record.id;
+    const ch = guild.channels.cache.get(chId);
+    if (!ch) return { conflict: true, reason: 'Target channel was deleted.' };
+    const prevParentId = record.preState?.parentId;
+    if (ch.parentId === prevParentId) {
+      return { alreadyRecovered: true, message: 'That channel is already in its original category state.' };
+    }
+    return { valid: true, channel: ch, prevParentId };
+  },
+  async execute(guild, record, context) {
+    const ch = guild.channels.cache.get(record.targetId || record.id);
+    const prevParentId = record.preState?.parentId ?? null;
+    await ch.setParent(prevParentId, { lockPermissions: false });
+    return { success: true };
+  },
+  verify(guild, record) {
+    const ch = guild.channels.cache.get(record.targetId || record.id);
+    const prevParentId = record.preState?.parentId ?? null;
+    return Boolean(ch && ch.parentId === prevParentId);
+  },
+  formatSuccess(record) {
+    return `Restored #${record.targetName || 'channel'} to its previous category. The placement is verified.`;
+  }
+});
+
+// 13. Category permission recovery
+RecoveryRegistry.register('set_category_permission', {
+  reversible: true,
+  requiredPermissions: ['ManageChannels', 'ManageRoles'],
+  requiresConfirmation: false,
+  checkConflict(guild, record) {
+    const catId = record.targetId || record.id;
+    const cat = guild.channels.cache.get(catId);
+    if (!cat) return { conflict: true, reason: 'Target category was deleted.' };
+    return { valid: true, category: cat };
+  },
+  async execute(guild, record, context) {
+    const cat = guild.channels.cache.get(record.targetId || record.id);
+    const targetEntityId = record.targetRoleIdOrMemberId || record.targetId;
+    if (!record.preState) {
+      // It had no previous overwrites, delete overwrite
+      await cat.permissionOverwrites.delete(targetEntityId, `Recovery by ${context?.actor?.tag || 'moderator'}`).catch(() => {});
+      return { success: true };
+    }
+    const prevAllow = record.preState.allow || [];
+    const prevDeny = record.preState.deny || [];
+    const patch = {};
+    for (const p of prevAllow) {
+      if (PermissionFlagsBits[p]) patch[p] = true;
+    }
+    for (const p of prevDeny) {
+      if (PermissionFlagsBits[p]) patch[p] = false;
+    }
+    await cat.permissionOverwrites.edit(targetEntityId, patch, {
+      reason: `Recovery of category permissions by ${context?.actor?.tag || 'moderator'}`
+    });
+    return { success: true };
+  },
+  verify(guild, record) {
+    const cat = guild.channels.cache.get(record.targetId || record.id);
+    return Boolean(cat);
+  },
+  formatSuccess(record) {
+    return `Restored previous permissions on category "${record.targetName || 'category'}". The overwrite is verified.`;
+  }
+});
+
 /**
  * Main recovery execution engine.
  * Handles deterministic target resolution, ambiguity detection, authorization, anti-nuke enforcement,
