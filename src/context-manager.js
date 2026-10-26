@@ -66,6 +66,29 @@ function getCacheValues(cache) {
       }
     }
 
+    // Include recent execution context for natural follow-up resolution
+    if (executionContext) {
+      const recentContext = {};
+      const lastTargeted = executionContext.targetCache?.get('last_targeted_member');
+      if (lastTargeted) {
+        recentContext.lastTargetedMember = {
+          id: lastTargeted.id,
+          tag: lastTargeted.user?.tag || lastTargeted.displayName || lastTargeted.name
+        };
+      }
+      const lastRole = executionContext.targetCache?.get('last_targeted_role');
+      if (lastRole) {
+        recentContext.lastTargetedRole = { id: lastRole.id, name: lastRole.name };
+      }
+      const lastChannel = executionContext.targetCache?.get('last_targeted_channel');
+      if (lastChannel) {
+        recentContext.lastTargetedChannel = { id: lastChannel.id, name: lastChannel.name };
+      }
+      if (Object.keys(recentContext).length > 0) {
+        context.recentContext = recentContext;
+      }
+    }
+
     // Estimate tokens
     const estimatedTokens = TaskBudget.estimateTokens(context);
     logger.debug('Built compact interpretation context', { estimatedTokens });

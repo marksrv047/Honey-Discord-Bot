@@ -122,30 +122,36 @@ export class ExecutionContext {
       }
     }
 
-    // 2. Contextual history resolution ("the channel we just created", "the role I mentioned", "that user")
-    if (resourceType === 'channel' && /(?:the\s+)?(?:channel\s+we\s+just\s+created|created\s+channel|that\s+channel)/i.test(refStr)) {
+    // 2. Contextual history resolution ("the channel we just created", "the channel you just created", "that role", "its color", "that user")
+    if (resourceType === 'channel' && /(?:the\s+)?(?:channel\s+(?:we|you)\s+just\s+created|created\s+channel|that\s+channel|it)$/i.test(refStr)) {
+      const cached = this.targetCache.get('last_targeted_channel');
+      if (cached) return cached;
       const lastCreated = ActionLedger.getLastCreatedChannel(this.guild.id);
       if (lastCreated?.id) {
         resolved = this.guild.channels.cache?.get(lastCreated.id) || await this.guild.channels?.fetch?.(lastCreated.id).catch(() => null);
         if (resolved) {
           this.targetCache.set(cacheKey, resolved);
+          this.targetCache.set('last_targeted_channel', resolved);
           return resolved;
         }
       }
     }
 
-    if (resourceType === 'role' && /(?:the\s+)?(?:role\s+i\s+mentioned|created\s+role|that\s+role)/i.test(refStr)) {
+    if (resourceType === 'role' && /(?:the\s+)?(?:role\s+i\s+mentioned|created\s+role|that\s+role|it|its)$/i.test(refStr)) {
+      const cached = this.targetCache.get('last_targeted_role');
+      if (cached) return cached;
       const lastCreated = ActionLedger.getLastCreatedRole(this.guild.id);
       if (lastCreated?.id) {
         resolved = this.guild.roles.cache?.get(lastCreated.id) || await this.guild.roles?.fetch?.(lastCreated.id).catch(() => null);
         if (resolved) {
           this.targetCache.set(cacheKey, resolved);
+          this.targetCache.set('last_targeted_role', resolved);
           return resolved;
         }
       }
     }
 
-    if (resourceType === 'member' && /(?:that\s+user|that\s+member|the\s+member\s+i\s+just\s+mentioned|the\s+user\s+i\s+just\s+mentioned)/i.test(refStr)) {
+    if (resourceType === 'member' && /(?:that\s+user|that\s+member|the\s+member\s+i\s+just\s+mentioned|the\s+user\s+i\s+just\s+mentioned|them|him|her)$/i.test(refStr)) {
       const lastTargeted = this.targetCache.get('last_targeted_member');
       if (lastTargeted) return lastTargeted;
     }
@@ -261,6 +267,10 @@ export class ExecutionContext {
       this.targetCache.set(cacheKey, resolved);
       if (resourceType === 'member') {
         this.targetCache.set('last_targeted_member', resolved);
+      } else if (resourceType === 'role') {
+        this.targetCache.set('last_targeted_role', resolved);
+      } else if (resourceType === 'channel') {
+        this.targetCache.set('last_targeted_channel', resolved);
       }
     }
 

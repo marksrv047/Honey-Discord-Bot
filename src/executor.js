@@ -75,17 +75,25 @@ export class Executor {
 
     for (const action of sortedActions) {
       // Check if this action depends on a target that failed previously in this execution
-      const target = action.targetChannel || action.targetRole || action.targetMember || action.name;
-      if (target && failedTargets.has(String(target).toLowerCase())) {
-        logger.warn(`Skipping action ${action.action} because prerequisite target ${target} failed`);
+      const targetsToCheck = [
+        action.targetChannel,
+        action.targetRole,
+        action.targetMember,
+        action.targetRoleOrMember,
+        action.role,
+        action.name
+      ].filter(Boolean);
+      const failedPrereq = targetsToCheck.find(t => failedTargets.has(String(t).toLowerCase()));
+      if (failedPrereq) {
+        logger.warn(`Skipping action ${action.action} because prerequisite target ${failedPrereq} failed`);
         results.push({
           action: action.action,
           status: 'SKIPPED',
           verificationStatus: 'failed',
           intendedChange: `Execute ${action.action}`,
-          observedOutcome: 'Prerequisite action failed: target resource was not created',
+          observedOutcome: `Prerequisite action failed: target resource "${failedPrereq}" was not created`,
           verified: false,
-          details: `Skipped: Prerequisite target "${target}" failed to create.`
+          details: `Skipped: Prerequisite target "${failedPrereq}" failed to create.`
         });
         continue;
       }

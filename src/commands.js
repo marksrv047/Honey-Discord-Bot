@@ -436,6 +436,14 @@ async function handleGoCommand(interaction) {
       source: '/go'
     }).catch(() => {});
 
+    if (opResult.success) {
+      executionContext.targetCache.set('last_action', {
+        action: interpreted.intent,
+        targetRef: interpreted.targetRef,
+        ...interpreted.args
+      });
+    }
+
     if (!opResult.success) {
       if (opResult.isAmbiguous) {
         return await interaction.editReply({

@@ -249,17 +249,91 @@ export class CompletenessChecker {
     }
 
     // =========================================================================
-    // 5. NEGATIVE CONSTRAINTS ENFORCEMENT
+    // 5. MULTI-STEP DEPENDENCY COMPLETION & ORDERING
     // =========================================================================
-    const negativeChannelMatch = prompt.match(/(?:do\s+not|don't|except)\s+(?:delete|modify|touch)\s+(?:#?([a-zA-Z0-9_-]+)|<#(\d+)>)/i);
-    if (negativeChannelMatch) {
-      const excluded = (negativeChannelMatch[2] || negativeChannelMatch[1]).toLowerCase();
-      const forbiddenAction = actions.find(a => 
-        (a.action.includes('channel') || a.action.includes('delete')) &&
-        (String(a.targetChannel || a.targetRef).toLowerCase() === excluded)
-      );
+    // Pattern: "Create a private moderator channel and give the moderator role access"
+    const privateChannelWithRoleMatch = prompt.match(/^create\s+(?:a\s+)?private\s+([a-zA-Z0-9_-]+)\s+channel\s+and\s+(?:give|grant)\s+(?:the\s+)?([a-zA-Z0-9_\s-]+)\s+role\s+access/i);
+    if (privateChannelWithRoleMatch) {
+      const chName = privateChannelWithRoleMatch[1].toLowerCase();
+      const roleName = privateChannelWithRoleMatch[2].trim();
+      const hasCreateCh = actions.some(a => a.action === 'create_channel' && a.name?.toLowerCase() === chName);
+      const hasPerm = actions.some(a => a.action === 'set_channel_permission' && a.targetChannel?.toLowerCase() === chName);
+
+      if (!hasCreateCh) {
+        actions.unshift({
+          action: 'create_channel',
+          name: chName,
+          isPrivate: true,
+          allowedRoles: [roleName]
+        });
+      }
+      if (!hasPerm) {
+        actions.push({
+          action: 'set_channel_permission',
+          targetChannel: chName,
+          targetRoleOrMember: roleName,
+          allow: ['ViewChannel', 'SendMessages']
+        });
+      }
+    }
+
+    // Pattern: "Create a role called VIP and assign it to Alex"
+    const createRoleAndAssignMatch = prompt.match(/^create\s+(?:a\s+)?role\s+(?:called|named)\s+([a-zA-Z0-9_\s-]+)\s+and\s+(?:assign\s+it\s+to|give\s+it\s+to)\s+(<@!?\d+>|@?[\w.-]+)/i);
+    if (createRoleAndAssignMatch) {
+      const roleName = createRoleAndAssignMatch[1].trim();
+      const targetMember = createRoleAndAssignMatch[2].trim().replace(/^@/, '');
+      const hasCreateRole = actions.some(a => a.action === 'create_role' && a.name?.toLowerCase() === roleName.toLowerCase());
+      const hasAssign = actions.some(a => a.action === 'assign_role' && (a.targetMember === targetMember || a.targetMember === `@${targetMember}`));
+
+      if (!hasCreateRole) {
+        actions.unshift({
+          action: 'create_role',
+          name: roleName
+        });
+      }
+      if (!hasAssign) {
+        actions.push({
+          action: 'assign_role',
+          targetRole: roleName,
+          targetMember
+        });
+      }
+    }
+
+    // =========================================================================
+    // 6. NEGATIVE CONSTRAINTS ENFORCEMENT
+    // =========================================================================
+    const negativeConstraints = [];
+
+    // Channel exclusions: "except #general", "do not delete announcements", "leave #general alone", "don't touch #general"
+    const channelExclusionMatches = [
+      ...prompt.matchAll(/(?:do\s+not|don't|except|leave)\s+(?:delete|modify|touch)?\s*(?:#?([a-zA-Z0-9_-]+)|<#(\d+)>)(?:\s+alone)?/gi)
+    ];
+    for (const match of channelExclusionMatches) {
+      const raw = match[2] || match[1];
+      if (raw && !/^(any|all|every|the|this|a)$/i.test(raw)) {
+        negativeConstraints.push({ type: 'channel', target: raw.toLowerCase().replace(/^#/, '') });
+      }
+    }
+
+    // Role exclusions: "except role Moderator", "do not touch the Admin role"
+    const roleExclusionMatches = [
+      ...prompt.matchAll(/(?:do\s+not|don't|except)\s+(?:touch|delete|modify)?\s*(?:the\s+)?role\s+@?([a-zA-Z0-9_\s-]+)/gi)
+    ];
+    for (const match of roleExclusionMatches) {
+      const raw = match[1]?.trim();
+      if (raw && !/^(any|all|every|the)$/i.test(raw)) {
+        negativeConstraints.push({ type: 'role', target: raw.toLowerCase().replace(/^@/, '') });
+      }
+    }
+
+    for (const constraint of negativeConstraints) {
+      const forbiddenAction = actions.find(a => {
+        const actionTarget = String(a.targetChannel || a.targetRole || a.targetMember || a.targetRef || a.name || '').toLowerCase().replace(/^[#@]/, '');
+        return actionTarget === constraint.target;
+      });
       if (forbiddenAction) {
-        errors.push(`Negative constraint violation: Action on #${excluded} was explicitly forbidden by user prompt.`);
+        errors.push(`Negative constraint violation: Action "${forbiddenAction.action}" on target "${constraint.target}" was explicitly forbidden by user prompt.`);
       }
     }
 

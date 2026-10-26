@@ -4,6 +4,8 @@ import { TaskBudget } from './budget.js';
 import { Logger } from './logger.js';
 import { config } from './config.js';
 import { resolveColor } from './color-utils.js';
+import { CapabilityRegistry } from './capabilities.js';
+import { ActionLedger } from './recovery.js';
 
 const logger = new Logger('IntentRouter');
 
@@ -16,11 +18,11 @@ You are the Discord Administration Intent Interpreter.
 Analyze the user instruction and interaction context. Return ONLY a single raw JSON object matching this schema:
 {
   "thought": "Brief interpretation of intent",
-  "intent": "rename_channel" | "edit_channel_topic" | "set_channel_slowmode" | "lock_channel" | "unlock_channel" | "create_channel" | "delete_channel" | "create_role" | "edit_role" | "delete_role" | "assign_role" | "remove_role" | "change_nickname" | "timeout_member" | "remove_timeout" | "kick_member" | "ban_member" | "unban_member" | "setup_ticket_system" | "audit_server" | "list_channels" | "list_roles" | "send_announcement" | "send_message" | "purge_messages" | "music_play" | "music_pause" | "music_resume" | "music_skip" | "music_stop" | "music_queue" | "music_nowplaying" | "music_volume" | "music_leave" | "conversational" | "unsupported" | "complex_plan",
+  "intent": "rename_channel" | "edit_channel_topic" | "set_channel_slowmode" | "lock_channel" | "unlock_channel" | "create_channel" | "delete_channel" | "create_role" | "edit_role" | "delete_role" | "assign_role" | "remove_role" | "change_nickname" | "remove_nickname" | "inspect_nickname" | "timeout_member" | "remove_timeout" | "kick_member" | "ban_member" | "unban_member" | "setup_ticket_system" | "audit_server" | "list_channels" | "list_roles" | "send_announcement" | "send_message" | "purge_messages" | "search_messages" | "music_play" | "music_pause" | "music_resume" | "music_skip" | "music_stop" | "music_queue" | "music_nowplaying" | "music_volume" | "music_leave" | "conversational" | "unsupported" | "complex_plan",
   "targetType": "channel" | "role" | "member" | "server" | null,
   "targetRef": "current" | string (ID, name, or mention, e.g. "current", "<#123>", "<@123>", "VIP", "announce"),
   "args": {
-    ... any arguments such as name, topic, seconds, durationMinutes, color, etc. ...
+    ... any arguments such as name, topic, seconds, durationMinutes, color, targetMember, targetRole, etc. ...
     "query": string (for music_play, e.g. "lofi beats" or "https://youtube.com/..."),
     "volume": number (for music_volume, 0 to 150),
     "message": string (for send_announcement, e.g. "Happy Halloween! @everyone"),
@@ -46,15 +48,19 @@ RULES:
      • **Role/Item Name** – Direct description
      Never squash bullet points into a single continuous paragraph.
 4. ANNOUNCEMENTS & MESSAGES:
-   - If user asks to write/post an announcement (e.g. "write an announcement message in 📢・announce mentioning everyone and letting them know it's happy halloween"):
-     intent: "send_announcement", targetType: "channel", targetRef: "announce", args: { message: "🎃 Happy Halloween everyone! Wishing you all a spooky and fun holiday season!", title: "📢 Happy Halloween Announcement", mentionEveryone: true }
-   - If user asks to send a message in a channel: intent: "send_message", targetType: "channel", args: { content: "...", mentionEveryone: boolean }
-5. BULK DELETE / PURGE:
-   - If user asks to delete N messages (e.g. "delete 5 messages in #general"): intent: "purge_messages", targetType: "channel", args: { count: 5 }
-6. MUSIC & VOICE PLAYBACK:
-   - If user asks to play a song/artist/URL: intent: "music_play", args: { query: "..." }
-   - If user asks to pause/resume/skip/stop/queue/now playing/volume/leave voice: route to appropriate music_* intent.
-7. Output raw JSON only. No markdown formatting.
+   - If user asks to write/post an announcement: intent: "send_announcement", targetType: "channel", targetRef: "announce", args: { message: "...", title: "📢 Announcement", mentionEveryone: true }
+   - If user asks to send a message: intent: "send_message", targetType: "channel", args: { content: "...", mentionEveryone: boolean }
+5. BULK DELETE / PURGE VS SEARCH:
+   - "Delete N messages in #ch": intent: "purge_messages", targetType: "channel", args: { count: N }
+   - "Find/search messages": intent: "search_messages", targetType: "channel", args: { count: 25 }. NEVER delete messages for search requests!
+6. DESIRED OUTCOMES & SYNONYMS:
+   - "make general slower" -> intent: "set_channel_slowmode", args: { seconds: 10 }
+   - "close this channel" / "lock down" -> intent: "lock_channel"
+   - "open this channel" / "unlock" -> intent: "unlock_channel"
+   - "I want Alex to show up as Night Owl" -> intent: "change_nickname", targetType: "member", targetRef: "Alex", args: { targetMember: "Alex", nickname: "Night Owl" }
+7. CONTEXTUAL FOLLOW-UPS:
+   - Resolve "that role", "its color", "the channel we just created", "do the same for X" using provided recentContext.
+8. Output raw JSON only. No markdown formatting.
 `;
 
 /**
@@ -73,6 +79,75 @@ export class IntentRouter {
   async route(userPrompt, executionContext, budget = new TaskBudget()) {
     const trimmed = userPrompt.trim();
     const cleanPrompt = trimmed.replace(/[.!?]+$/, '').trim();
+
+    // =========================================================================
+    // 0. UNSUPPORTED OPERATIONS & RESTRICTION PRE-FILTER
+    // =========================================================================
+    const unsupported = CapabilityRegistry.getExplanationForUnsupported(cleanPrompt);
+    if (unsupported) {
+      logger.info('Routed to unsupported operation explanation', { reason: unsupported.reason });
+      return {
+        intent: 'unsupported',
+        thought: unsupported.reason,
+        isHighImpact: false,
+        conversationalResponse: `🛑 **Unsupported Operation:** ${unsupported.reason}${unsupported.supportedAlternative ? `\n\n💡 *Alternative:* ${unsupported.supportedAlternative}` : ''}`
+      };
+    }
+
+    // =========================================================================
+    // 0b. CAPABILITY INQUIRIES & HELP QUESTIONS
+    // =========================================================================
+    if (/^(?:what\s+can\s+you\s+do|what\s+are\s+your\s+capabilities|show\s+(?:all\s+)?capabilities|help\s+with\s+capabilities)$/i.test(cleanPrompt)) {
+      return {
+        intent: 'conversational',
+        thought: 'User asked for bot capabilities overview',
+        conversationalResponse: "I am Honey Bot, your Discord administration assistant. I can help you with:\n• **Channel Management** – Create, rename, edit topic, lock, unlock, set slowmode, and move channels.\n• **Role Management** – Create roles with colors, edit names/colors/hoist, assign and revoke roles.\n• **Member Moderation** – Inspect profiles, change/remove server nicknames, timeout, kick, and ban.\n• **Messaging & Announcements** – Broadcast rich announcements, send messages, pin/unpin, and purge messages.\n• **Music & Audio** – Stream tracks, manage queue, pause, resume, and adjust volume.\n\nYou can use natural English directly with `/go` (e.g. `/go Rename Alex to Night Owl`).",
+        isHighImpact: false
+      };
+    }
+
+    const capabilityQuestionMatch = cleanPrompt.match(/^(?:can\s+you|are\s+you\s+able\s+to|do\s+you\s+support)\s+(.+)$/i);
+    if (capabilityQuestionMatch) {
+      const queriedAction = capabilityQuestionMatch[1].trim();
+      const matchedCap = CapabilityRegistry.findMatchingCapability(queriedAction);
+      if (matchedCap) {
+        const exampleText = matchedCap.examples?.length ? ` For example: \`/go ${matchedCap.examples[0]}\`` : '';
+        return {
+          intent: 'conversational',
+          thought: `Answered capability question about ${matchedCap.action}`,
+          conversationalResponse: `Yes, I support **${matchedCap.action}** (${matchedCap.description.toLowerCase()}).${exampleText}`,
+          isHighImpact: false
+        };
+      }
+    }
+
+    // =========================================================================
+    // 0c. CONTEXTUAL FOLLOW-UP SHORTCUTS ("Undo", "Do the same for Alex")
+    // =========================================================================
+    if (/^(?:undo(?:\s+(?:(?:the\s+)?(?:previous|last)\s+change|that))?|revert(?:\s+that)?)$/i.test(cleanPrompt)) {
+      return {
+        intent: 'conversational',
+        thought: 'User requested undo of previous operation',
+        conversationalResponse: 'You can inspect and reverse recent administrative operations using the `/undo` command.',
+        isHighImpact: false
+      };
+    }
+
+    const sameForMatch = cleanPrompt.match(/^(?:do\s+)?(?:the\s+)?same\s+for\s+(<@!?\d+>|@?[\w.-]+)$/i);
+    if (sameForMatch) {
+      const newTarget = sameForMatch[1].replace(/^@/, '');
+      const lastAction = executionContext?.targetCache?.get('last_action');
+      if (lastAction && lastAction.action === 'change_nickname') {
+        return {
+          intent: 'change_nickname',
+          targetType: 'member',
+          targetRef: newTarget,
+          args: { targetMember: newTarget, nickname: lastAction.nickname },
+          isHighImpact: false,
+          thought: `Change ${newTarget}'s nickname to ${lastAction.nickname} (repeating previous change)`
+        };
+      }
+    }
 
     // =========================================================================
     // 1. DETERMINISTIC FAST PATH (0 LLM Calls, 0ms latency)
@@ -122,7 +197,7 @@ export class IntentRouter {
       cleanPrompt.match(/^(?:delete|purge|remove|clear)\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+messages?(?:\s+(?:from|in)\s+(this\s+channel|<#\d+>|#?[\w-]+))?$/i);
     if (deleteFromAuthorMatch) {
       const author = deleteFromAuthorMatch[1].replace(/^@/, '');
-      const ch = deleteFromAuthorMatch[2] ? (deleteFromAuthorMatch[2].toLowerCase().includes('this') ? 'current' : deleteFromAuthorMatch[2]) : 'current';
+      const ch = deleteFromAuthorMatch[2] ? (deleteFromAuthorMatch[2].toLowerCase().includes('this') ? 'current' : deleteFromAuthorMatch[2].replace(/^#/, '')) : 'current';
       logger.info('Routed through fast-path: purge messages by author', { author, channel: ch });
       return {
         intent: 'purge_messages',
@@ -152,10 +227,65 @@ export class IntentRouter {
 
     // =========================================================================
     // NICKNAME & MEMBER MANAGEMENT FAST-PATHS
+    // Supports:
+    // - "Change Alex's nick to Night Owl."
+    // - "Rename Alex to Night Owl on the server."
+    // - "I want Alex to show up as Night Owl."
+    // - "Make Alex's server nickname Night Owl."
+    // - "Make Alex's nick Night Owl."
     // =========================================================================
 
-    // 1. "change my nickname to Alex" / "rename me to Alex"
-    const myNickMatch = cleanPrompt.match(/^(?:change|set|rename|update)\s+(?:my\s+(?:server\s+)?nickname|me)\s+(?:to|as)\s+["']?([^"']+)["']?$/i);
+    // 1. "I want Alex to show up as Night Owl" / "want Alex to appear as Night Owl"
+    const wantShowUpMatch = cleanPrompt.match(/^(?:i\s+)?want\s+(<@!?\d+>|@?[\w.-]+)\s+to\s+(?:show\s+up|appear|be\s+displayed)\s+as\s+["']?([^"']+)["']?$/i);
+    if (wantShowUpMatch) {
+      const target = wantShowUpMatch[1].replace(/^@/, '');
+      const newNick = wantShowUpMatch[2].trim().replace(/^["']|["']$/g, '');
+      logger.info('Routed through fast-path: want member to show up as', { target, newNick });
+      return {
+        intent: 'change_nickname',
+        targetType: 'member',
+        targetRef: target,
+        args: { targetMember: target, nickname: newNick },
+        isHighImpact: false,
+        thought: `Change ${target}'s nickname to "${newNick}"`
+      };
+    }
+
+    // 2. "Make Alex's server nickname Night Owl" / "Make Alex's nick Night Owl" / "Make Alex show up as Night Owl"
+    const makeNickMatch = cleanPrompt.match(/^make\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+(?:server\s+)?(?:nickname|nick)\s+(?:be\s+|as\s+|to\s+be\s+)?["']?([^"']+)["']?$/i) ||
+      cleanPrompt.match(/^make\s+(<@!?\d+>|@?[\w.-]+)\s+(?:show\s+up|appear)\s+as\s+["']?([^"']+)["']?$/i);
+    if (makeNickMatch) {
+      const target = makeNickMatch[1].replace(/^@/, '');
+      const newNick = makeNickMatch[2].trim().replace(/^["']|["']$/g, '');
+      logger.info('Routed through fast-path: make member nick', { target, newNick });
+      return {
+        intent: 'change_nickname',
+        targetType: 'member',
+        targetRef: target,
+        args: { targetMember: target, nickname: newNick },
+        isHighImpact: false,
+        thought: `Change ${target}'s nickname to "${newNick}"`
+      };
+    }
+
+    // 3. "Rename Alex to Night Owl on the server"
+    const renameOnServerMatch = cleanPrompt.match(/^rename\s+(?:user\s+|member\s+)?(<@!?\d+>|@?[\w.-]+)\s+to\s+["']?([^"']+)["']?\s+(?:on|in)\s+(?:the|this)\s+server$/i);
+    if (renameOnServerMatch) {
+      const target = renameOnServerMatch[1].replace(/^@/, '');
+      const newNick = renameOnServerMatch[2].trim().replace(/^["']|["']$/g, '');
+      logger.info('Routed through fast-path: rename member on server', { target, newNick });
+      return {
+        intent: 'change_nickname',
+        targetType: 'member',
+        targetRef: target,
+        args: { targetMember: target, nickname: newNick },
+        isHighImpact: false,
+        thought: `Rename member ${target} to "${newNick}" on the server`
+      };
+    }
+
+    // 4. "change my nickname to Alex" / "rename me to Alex"
+    const myNickMatch = cleanPrompt.match(/^(?:change|set|rename|update)\s+(?:my\s+(?:server\s+)?(?:nickname|nick)|me)\s+(?:to|as)\s+["']?([^"']+)["']?$/i);
     if (myNickMatch) {
       const newNick = myNickMatch[1].trim();
       logger.info('Routed through fast-path: change my nickname', { newNick });
@@ -169,7 +299,7 @@ export class IntentRouter {
       };
     }
 
-    // 2. "rename Sarah to Sally" / "rename @Alex to Night Owl"
+    // 5. "rename Sarah to Sally" / "rename @Alex to Night Owl"
     const directRenameMemberMatch = cleanPrompt.match(/^rename\s+(?:user\s+|member\s+)?(<@!?\d+>|@?[\w.-]+)\s+to\s+["']?([^"']+)["']?$/i);
     if (directRenameMemberMatch) {
       const candidateTarget = directRenameMemberMatch[1].replace(/^@/, '');
@@ -187,12 +317,12 @@ export class IntentRouter {
       }
     }
 
-    // 3. "rename Sarah's nickname to Sally" / "change Alex's nickname to Night Owl" / "set nickname of Alex to Night Owl"
-    const memberNickMatch = cleanPrompt.match(/^(?:change|set|rename|update)\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+(?:server\s+)?nickname\s+(?:to|as)\s+["']?([^"']+)["']?$/i) ||
-      cleanPrompt.match(/^(?:change|set|rename|update)\s+(?:the\s+)?(?:server\s+)?nickname\s+(?:of|for)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:to|as)\s+["']?([^"']+)["']?$/i);
+    // 6. "rename Sarah's nickname to Sally" / "change Alex's nick to Night Owl" / "set nickname of Alex to Night Owl"
+    const memberNickMatch = cleanPrompt.match(/^(?:change|set|rename|update)\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+(?:server\s+)?(?:nickname|nick)\s+(?:to|as)\s+["']?([^"']+)["']?$/i) ||
+      cleanPrompt.match(/^(?:change|set|rename|update)\s+(?:the\s+)?(?:server\s+)?(?:nickname|nick)\s+(?:of|for)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:to|as)\s+["']?([^"']+)["']?$/i);
     if (memberNickMatch) {
       const target = memberNickMatch[1].replace(/^@/, '');
-      const newNick = memberNickMatch[2].trim();
+      const newNick = memberNickMatch[2].trim().replace(/^["']|["']$/g, '');
       logger.info('Routed through fast-path: change member nickname', { target, newNick });
       return {
         intent: 'change_nickname',
@@ -251,11 +381,13 @@ export class IntentRouter {
       };
     }
 
-    // 7. Profile Inspection: "inspect Alex's profile" / "who is Alex" / "view my profile" / "look up @Alex"
+    // 7. Profile Inspection: "inspect Alex's profile" / "who is Alex" / "view my profile" / "look up @Alex" / "I need details of user <@123>"
     const profileMatch = cleanPrompt.match(/^(?:inspect|view|show|check|get|display)\s+(?:(<@!?\d+>|@?[\w.-]+)['’]s|my)\s+(?:member\s+|user\s+)?profile$/i) ||
       cleanPrompt.match(/^(?:inspect|view|show|check|get|lookup|look\s+up)\s+(?:member|user|profile\s+(?:for|of))\s+(<@!?\d+>|@?[\w.-]+|me)$/i) ||
       cleanPrompt.match(/^(?:who\s+is)\s+(<@!?\d+>|@?[\w.-]+)$/i) ||
-      cleanPrompt.match(/^(?:lookup|look\s+up)\s+(<@!?\d+>|@?[\w.-]+)$/i);
+      cleanPrompt.match(/^(?:lookup|look\s+up)\s+(<@!?\d+>|@?[\w.-]+)$/i) ||
+      cleanPrompt.match(/^(?:(?:i\s+need|give\s+me|get|show)\s+)?(?:the\s+)?details\s+(?:of|for|on)\s+(?:user\s+|member\s+)?(<@!?\d+>|@?[\w.-]+|me)$/i) ||
+      cleanPrompt.match(/^(?:user\s+info|member\s+info)\s+(?:for\s+)?(<@!?\d+>|@?[\w.-]+|me)$/i);
     if (profileMatch) {
       const candidate = profileMatch[1] ? (profileMatch[1].toLowerCase() === 'me' ? 'me' : profileMatch[1].replace(/^@/, '')) : 'me';
       if (!/^channel$|^role$|^server$/i.test(candidate)) {
@@ -478,10 +610,10 @@ export class IntentRouter {
       };
     }
 
-    // F. "lock this channel" / "lock channel" / "lock <#id>"
-    const lockMatch = cleanPrompt.match(/^lock\s+(this\s+channel|here|<#\d+>|#?[\w-]+)$/i);
+    // F. "lock this channel" / "close this channel" / "lock down #general" / "freeze chat"
+    const lockMatch = cleanPrompt.match(/^(?:lock|close|lock\s*down|shut\s*down|freeze)\s+(this(?:\s+channel)?|here|<#\d+>|#?[\w-]+)$/i);
     if (lockMatch) {
-      const target = /this|here/i.test(lockMatch[1]) ? 'current' : lockMatch[1];
+      const target = /this|here/i.test(lockMatch[1]) ? 'current' : lockMatch[1].replace(/^#/, '');
       logger.info('Routed through fast-path: lock_channel', { target });
       return {
         intent: 'lock_channel',
@@ -493,10 +625,10 @@ export class IntentRouter {
       };
     }
 
-    // G. "unlock this channel" / "unlock channel" / "unlock <#id>"
-    const unlockMatch = cleanPrompt.match(/^unlock\s+(this\s+channel|here|<#\d+>|#?[\w-]+)$/i);
+    // G. "unlock this channel" / "open this channel" / "open up #general" / "unfreeze #general"
+    const unlockMatch = cleanPrompt.match(/^(?:unlock|open(?:\s+up)?|unfreeze)\s+(this(?:\s+channel)?|here|<#\d+>|#?[\w-]+)$/i);
     if (unlockMatch) {
-      const target = /this|here/i.test(unlockMatch[1]) ? 'current' : unlockMatch[1];
+      const target = /this|here/i.test(unlockMatch[1]) ? 'current' : unlockMatch[1].replace(/^#/, '');
       logger.info('Routed through fast-path: unlock_channel', { target });
       return {
         intent: 'unlock_channel',
@@ -508,11 +640,26 @@ export class IntentRouter {
       };
     }
 
-    // H. "slowmode <N>s" / "set slowmode to <N>s"
-    const slowmodeMatch = cleanPrompt.match(/^(?:set\s+)?slowmode\s+(?:to\s+)?(\d+)\s*(?:s|seconds?)?(?:\s+(?:on|in)\s+(this\s+channel|<#\d+>|#?[\w-]+))?$/i);
+    // H. "slowmode <N>s" / "set slowmode to <N>s" / "make general slower" / "slow down #general"
+    const slowmodeMatch = cleanPrompt.match(/^(?:set\s+)?slowmode\s+(?:to\s+)?(\d+)\s*(?:s|seconds?)?(?:\s+(?:on|in)\s+(this\s+channel|<#\d+>|#?[\w-]+))?$/i) ||
+      cleanPrompt.match(/^(?:make\s+(this\s+channel|<#\d+>|#?[\w-]+)\s+(?:slower|slow)|slow\s+down\s+(this\s+channel|<#\d+>|#?[\w-]+))(?:\s+(?:to\s+)?(\d+)\s*s?)?$/i) ||
+      cleanPrompt.match(/^(?:make\s+(this\s+channel|<#\d+>|#?[\w-]+)\s+(\d+)\s*s?\s+slowmode)$/i);
     if (slowmodeMatch) {
-      const seconds = parseInt(slowmodeMatch[1], 10);
-      const target = slowmodeMatch[2] ? (slowmodeMatch[2].includes('this') ? 'current' : slowmodeMatch[2]) : 'current';
+      let seconds = 10;
+      let target = 'current';
+      if (/slowmode\s+(?:to\s+)?(\d+)/i.test(cleanPrompt)) {
+        seconds = parseInt(cleanPrompt.match(/slowmode\s+(?:to\s+)?(\d+)/i)[1], 10);
+      } else if (/to\s+(\d+)\s*s?/i.test(cleanPrompt)) {
+        seconds = parseInt(cleanPrompt.match(/to\s+(\d+)\s*s?/i)[1], 10);
+      } else if (/(\d+)\s*s?\s+slowmode/i.test(cleanPrompt)) {
+        seconds = parseInt(cleanPrompt.match(/(\d+)\s*s?\s+slowmode/i)[1], 10);
+      }
+
+      const targetMatch = cleanPrompt.match(/(?:(?:on|in|make|down)\s+)(this(?:\s+channel)?|<#\d+>|#?[\w-]+)/i);
+      if (targetMatch && !/^\d+$/.test(targetMatch[1])) {
+        target = /this/i.test(targetMatch[1]) ? 'current' : targetMatch[1].replace(/^#/, '');
+      }
+
       logger.info('Routed through fast-path: set_channel_slowmode', { seconds, target });
       return {
         intent: 'set_channel_slowmode',
@@ -706,6 +853,50 @@ export class IntentRouter {
         args: { name },
         isHighImpact: false,
         thought: `Rename channel back to ${name}`
+      };
+    }
+
+    // T. Follow-up role rename: "rename that role to <name>" / "change that role's name to <name>"
+    const renameThatRoleMatch = cleanPrompt.match(/^(?:rename\s+that\s+role\s+(?:to\s+)?|change\s+that\s+role['’]s\s+name\s+to\s+)["']?([^"']+)["']?$/i);
+    if (renameThatRoleMatch) {
+      const newName = renameThatRoleMatch[1].trim();
+      logger.info('Routed through fast-path: rename that role', { newName });
+      return {
+        intent: 'edit_role',
+        targetType: 'role',
+        targetRef: 'that role',
+        args: { targetRole: 'that role', name: newName },
+        isHighImpact: false,
+        thought: `Rename that role to "${newName}"`
+      };
+    }
+
+    // U. Follow-up role recolor: "change its color to blue too" / "recolor it to blue" / "change its color to <color>"
+    const recolorRoleFollowupMatch = cleanPrompt.match(/^(?:change\s+its\s+color\s+to\s+|recolor\s+it\s+to\s+|set\s+its\s+color\s+to\s+)([#a-zA-Z0-9_\s-]+?)(?:\s+too)?$/i);
+    if (recolorRoleFollowupMatch) {
+      const rawColor = recolorRoleFollowupMatch[1].trim().replace(/^["']|["']$/g, '');
+      const resolvedColor = resolveColor(rawColor) || rawColor;
+      logger.info('Routed through fast-path: recolor that role', { resolvedColor });
+      return {
+        intent: 'edit_role',
+        targetType: 'role',
+        targetRef: 'that role',
+        args: { targetRole: 'that role', color: resolvedColor },
+        isHighImpact: false,
+        thought: `Change that role color to ${resolvedColor}`
+      };
+    }
+
+    // V. Follow-up delete created channel: "remove the channel you just created" / "delete the channel we just created"
+    if (/^(?:remove|delete)\s+(?:the\s+channel\s+(?:you|we)\s+just\s+created|that\s+channel)$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: delete created channel');
+      return {
+        intent: 'delete_channel',
+        targetType: 'channel',
+        targetRef: 'the channel we just created',
+        args: {},
+        isHighImpact: true,
+        thought: 'Delete the channel that was recently created'
       };
     }
 
