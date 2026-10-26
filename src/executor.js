@@ -276,8 +276,8 @@ export class Executor {
       }
 
       case 'assign_role': {
-        const memberRef = action.targetMember || action.targetMemberId || action.targetRef;
-        const roleRef = action.targetRole || action.targetRoleId || action.role || action.name;
+        const memberRef = action.targetMember || action.targetMemberId || (action.targetType === 'member' ? action.targetRef : null) || (action.targetRole ? null : action.targetRef) || action.targetRef;
+        const roleRef = action.targetRole || action.targetRoleId || action.role || action.name || (action.targetType === 'role' ? action.targetRef : null);
         const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
           invokingUser: invokingMember.user,
           resolveTarget: async (ref, type) => {
@@ -289,8 +289,8 @@ export class Executor {
       }
 
       case 'remove_role': {
-        const memberRef = action.targetMember || action.targetMemberId || action.targetRef;
-        const roleRef = action.targetRole || action.targetRoleId || action.role || action.name;
+        const memberRef = action.targetMember || action.targetMemberId || (action.targetType === 'member' ? action.targetRef : null) || (action.targetRole ? null : action.targetRef) || action.targetRef;
+        const roleRef = action.targetRole || action.targetRoleId || action.role || action.name || (action.targetType === 'role' ? action.targetRef : null);
         const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
           invokingUser: invokingMember.user,
           resolveTarget: async (ref, type) => {
@@ -998,11 +998,17 @@ export class Executor {
       case 'unlock_channel':
         return await Operations.unlockChannel(guild, intentObj.targetRef, executionContext);
 
-      case 'assign_role':
-        return await Operations.assignRole(guild, intentObj.targetRef || intentObj.args.targetMember, intentObj.args.targetRole || intentObj.args.role, executionContext);
+      case 'assign_role': {
+        const memberRef = intentObj.args?.targetMember || intentObj.args?.targetMemberId || intentObj.args?.member || (intentObj.targetType === 'member' ? intentObj.targetRef : null) || (intentObj.args?.targetRole || intentObj.args?.role ? null : intentObj.targetRef) || intentObj.targetRef;
+        const roleRef = intentObj.args?.targetRole || intentObj.args?.targetRoleId || intentObj.args?.role || (intentObj.targetType === 'role' ? intentObj.targetRef : null) || intentObj.targetRef;
+        return await Operations.assignRole(guild, memberRef, roleRef, executionContext);
+      }
 
-      case 'remove_role':
-        return await Operations.removeRole(guild, intentObj.targetRef || intentObj.args.targetMember, intentObj.args.targetRole || intentObj.args.role, executionContext);
+      case 'remove_role': {
+        const memberRef = intentObj.args?.targetMember || intentObj.args?.targetMemberId || intentObj.args?.member || (intentObj.targetType === 'member' ? intentObj.targetRef : null) || (intentObj.args?.targetRole || intentObj.args?.role ? null : intentObj.targetRef) || intentObj.targetRef;
+        const roleRef = intentObj.args?.targetRole || intentObj.args?.targetRoleId || intentObj.args?.role || (intentObj.targetType === 'role' ? intentObj.targetRef : null) || intentObj.targetRef;
+        return await Operations.removeRole(guild, memberRef, roleRef, executionContext);
+      }
 
       case 'create_channel':
         return await Operations.createChannel(guild, { name: intentObj.args.name, ...intentObj.args }, executionContext);

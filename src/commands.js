@@ -281,9 +281,14 @@ async function handleGoCommand(interaction) {
       interpreted.isHighImpact = repairedPlan.isHighImpact;
     } else if (repairedPlan.actions.length === 1) {
       delete interpreted.multiActions;
-      interpreted.intent = repairedPlan.actions[0].action;
-      interpreted.targetRef = repairedPlan.actions[0].targetRole || repairedPlan.actions[0].targetChannel || repairedPlan.actions[0].targetMember || repairedPlan.actions[0].targetRef;
-      interpreted.args = { ...repairedPlan.actions[0] };
+      const act = repairedPlan.actions[0];
+      interpreted.intent = act.action;
+      if (act.action === 'assign_role' || act.action === 'remove_role') {
+        interpreted.targetRef = act.targetMember || act.targetRole || act.targetRef;
+      } else {
+        interpreted.targetRef = act.targetRole || act.targetChannel || act.targetMember || act.targetRef;
+      }
+      interpreted.args = { ...act };
     }
 
     // Phase 2: Check if multi-step complex plan or single-step direct operation
@@ -850,9 +855,9 @@ async function handleDiagnoseCommand(interaction) {
   } catch (err) {
     logger.error('Error in /diagnose command', { error: err.message, stack: err.stack });
     const msg = `❌ **Diagnostic Error:** ${err.message}`;
-    if (interaction.deferred) {
+    if (interaction.deferred || interaction.replied) {
       await interaction.editReply({ content: msg, embeds: [], components: [] }).catch(() => {});
-    } else if (!interaction.replied) {
+    } else {
       await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
     }
   }

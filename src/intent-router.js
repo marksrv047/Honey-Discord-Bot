@@ -1307,8 +1307,9 @@ export class IntentRouter {
     }
 
     // N. Role Removal: "remove role X from Y" / "remove X from Y" / "remove Jordan from Moderator role"
-    const removeRoleFlex = cleanPrompt.match(/^(?:remove|take\s+away|strip|revoke)\s+role\s+(<@&?\d+>|@?[\w.-]+)\s+from\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
-      cleanPrompt.match(/^(?:remove|take\s+away|strip|revoke)\s+(?:the\s+)?@?([\w.-]+)\s+role\s+from\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
+    const removeRoleFlex =
+      cleanPrompt.match(/^(?:remove|take\s+away|strip|revoke)(?:\s+the)?\s+role\s+(<@&?\d+>|@?[\w.-]+)\s+from\s+(?:the\s+(?:user|member)\s+)?(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
+      cleanPrompt.match(/^(?:remove|take\s+away|strip|revoke)\s+(?:the\s+)?@?([\w.-]+)\s+role\s+from\s+(?:the\s+(?:user|member)\s+)?(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
       cleanPrompt.match(/^(?:remove|take\s+away|strip|revoke)\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+(?:the\s+)?@?([\w.-]+)\s+role(?:\s+(?:for|because)\s+(.+))?$/i) ||
       cleanPrompt.match(/^(?:remove|take\s+away|strip|revoke)\s+(<@!?\d+>|@?[\w.-]+)\s+from\s+(?:the\s+)?(?:role\s+)?(<@&?\d+>|@?[\w.-]+)(?:\s+role)?(?:\s+(?:for|because)\s+(.+))?$/i);
     if (removeRoleFlex) {
@@ -1316,11 +1317,11 @@ export class IntentRouter {
       const isMemberFirst = cleanPrompt.match(/^(?:remove|take\s+away|strip|revoke)\s+(<@!?\d+>|@?[\w.-]+)\s+from/i);
       let role, target;
       if (isReversed || isMemberFirst) {
-        target = removeRoleFlex[1].replace(/^[@!]/, '');
-        role = removeRoleFlex[2].replace(/^[@&]/, '');
+        target = removeRoleFlex[1].replace(/^[<@&!]+|[>]+$/g, '').trim();
+        role = removeRoleFlex[2].replace(/^[<@&!]+|[>]+$/g, '').trim();
       } else {
-        role = removeRoleFlex[1].replace(/^[@&]/, '');
-        target = removeRoleFlex[2].replace(/^[@!]/, '');
+        role = removeRoleFlex[1].replace(/^[<@&!]+|[>]+$/g, '').trim();
+        target = removeRoleFlex[2].replace(/^[<@&!]+|[>]+$/g, '').trim();
       }
       const reason = removeRoleFlex[3] ? removeRoleFlex[3].trim() : 'No reason provided';
       logger.info('Routed through fast-path: remove_role', { role, target, reason });
@@ -1335,15 +1336,18 @@ export class IntentRouter {
     }
 
     // O. Role Assignment (supports IDs, mentions, role names, and flexible phrasing)
-    const assignRoleFlex = cleanPrompt.match(/^(?:assign|give|grant|add)\s+role\s+(<@&?\d+>|@?[\w.-]+)\s+to\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
-      cleanPrompt.match(/^(?:assign|give|grant)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:the\s+)?role\s+(<@&?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
-      cleanPrompt.match(/^(?:assign|give|grant)\s+(?:the\s+)?@?([\w.-]+)\s+role\s+to\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
+    const assignRoleFlex =
+      cleanPrompt.match(/^(?:assign|give|grant|add)(?:\s+the)?\s+role\s+(<@&?\d+>|@?[\w.-]+)\s+to\s+(?:the\s+(?:user|member)\s+)?(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
+      cleanPrompt.match(/^(?:assign|give|grant|add)(?:\s+the)?\s+(?:user|member)?\s*(<@!?\d+>|@?[\w.-]+)\s+(?:the\s+)?role\s+(<@&?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
+      cleanPrompt.match(/^(?:assign|give|grant)\s+(?:the\s+)?@?([\w.-]+)\s+role\s+to\s+(?:the\s+(?:user|member)\s+)?(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
       cleanPrompt.match(/^(?:assign|give|grant)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:the\s+)?@?([\w.-]+)\s+role(?:\s+(?:for|because)\s+(.+))?$/i) ||
       cleanPrompt.match(/^(?:add|give|assign)\s+role\s+(\d{17,20})\s+to\s+(\d{17,20})$/i);
     if (assignRoleFlex) {
-      const isRoleFirst = /^(?:assign|give|grant|add)\s+role/i.test(cleanPrompt);
-      const role = (isRoleFirst ? assignRoleFlex[1] : assignRoleFlex[2]).replace(/^[@&]/, '');
-      const target = (isRoleFirst ? assignRoleFlex[2] : assignRoleFlex[1]).replace(/^[@!]/, '');
+      const isRoleFirst = /^(?:assign|give|grant|add)(?:\s+the)?\s+role/i.test(cleanPrompt);
+      const rawRole = isRoleFirst ? assignRoleFlex[1] : assignRoleFlex[2];
+      const rawTarget = isRoleFirst ? assignRoleFlex[2] : assignRoleFlex[1];
+      const role = rawRole.replace(/^[<@&!]+|[>]+$/g, '').trim();
+      const target = rawTarget.replace(/^[<@&!]+|[>]+$/g, '').trim();
       const reason = assignRoleFlex[3] ? assignRoleFlex[3].trim() : 'No reason provided';
       logger.info('Routed through fast-path: assign_role', { role, target, reason });
       return {

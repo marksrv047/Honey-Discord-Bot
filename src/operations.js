@@ -233,8 +233,35 @@ export class Operations {
   /**
    * Assigns a role to a member.
    */
-  static async assignRole(guild, memberRef, roleRef, context) {
-    const member = await context.resolveTarget(memberRef, 'member');
+  static async assignRole(guild, memberRef, roleRef, context = {}) {
+    const cleanMemberRef = typeof memberRef === 'string' ? memberRef.replace(/^[<@&!]+|[>]+$/g, '').trim() : memberRef;
+    const cleanRoleRef = typeof roleRef === 'string' ? roleRef.replace(/^[<@&!]+|[>]+$/g, '').trim() : roleRef;
+
+    let member = typeof context?.resolveTarget === 'function'
+      ? await context.resolveTarget(cleanMemberRef, 'member')
+      : guild?.members?.cache?.find(m => m.id === cleanMemberRef || m.user?.username?.toLowerCase() === String(cleanMemberRef).toLowerCase());
+
+    let role = typeof context?.resolveTarget === 'function'
+      ? await context.resolveTarget(cleanRoleRef, 'role')
+      : guild?.roles?.cache?.find(r => r.id === cleanRoleRef || r.name?.toLowerCase() === String(cleanRoleRef).replace(/^@/, '').toLowerCase());
+
+    // Auto-swap detection: if member wasn't found as a member, but matches a role,
+    // and roleRef matches a member, the caller/LLM provided them in reversed order!
+    if (!member && cleanMemberRef && cleanRoleRef) {
+      const swappedRole = typeof context?.resolveTarget === 'function'
+        ? await context.resolveTarget(cleanMemberRef, 'role')
+        : guild?.roles?.cache?.find(r => r.id === cleanMemberRef || r.name?.toLowerCase() === String(cleanMemberRef).replace(/^@/, '').toLowerCase());
+
+      const swappedMember = typeof context?.resolveTarget === 'function'
+        ? await context.resolveTarget(cleanRoleRef, 'member')
+        : guild?.members?.cache?.find(m => m.id === cleanRoleRef || m.user?.username?.toLowerCase() === String(cleanRoleRef).toLowerCase());
+
+      if (swappedMember && swappedRole) {
+        member = swappedMember;
+        role = swappedRole;
+      }
+    }
+
     if (!member) {
       return { success: false, error: `Member "${memberRef}" not found`, action: 'assign_role' };
     }
@@ -242,7 +269,6 @@ export class Operations {
       return { success: false, error: member.clarificationQuestion, isAmbiguous: true, action: 'assign_role' };
     }
 
-    const role = await context.resolveTarget(roleRef, 'role');
     if (!role) {
       return { success: false, error: `Role "${roleRef}" not found`, action: 'assign_role' };
     }
@@ -258,13 +284,17 @@ export class Operations {
       return {
         success: true,
         action: 'assign_role',
-        details: `Member ${member.user.tag} already has role @${role.name} (idempotent no-op)`,
+        details: `Member ${member.user?.tag || member.displayName} already has role @${role.name} (idempotent no-op)`,
         verified: true,
-        resourceId: role.id
+        resourceId: role.id,
+        targetRoleId: role.id,
+        targetRoleName: role.name,
+        targetMemberId: member.id,
+        targetMemberTag: member.user?.tag || member.displayName
       };
     }
 
-    await member.roles.add(role, `Assigned via Honey Bot by ${context.invokingUser.tag}`);
+    await member.roles.add(role, `Assigned via Honey Bot by ${context?.invokingUser?.tag || 'moderator'}`);
 
     if (guild?.id && context?.executionId) {
       ActionLedger.recordAction(guild.id, context.executionId, {
@@ -286,17 +316,49 @@ export class Operations {
     return {
       success: true,
       action: 'assign_role',
-      details: `Assigned role @${role.name} to ${member.user.tag}`,
+      details: `Assigned role @${role.name} to ${member.user?.tag || member.displayName || member.id}`,
       verified: true,
-      resourceId: role.id
+      resourceId: role.id,
+      targetRoleId: role.id,
+      targetRoleName: role.name,
+      targetMemberId: member.id,
+      targetMemberTag: member.user?.tag || member.displayName,
+      roleId: role.id,
+      memberId: member.id
     };
   }
 
   /**
    * Removes a role from a member.
    */
-  static async removeRole(guild, memberRef, roleRef, context) {
-    const member = await context.resolveTarget(memberRef, 'member');
+  static async removeRole(guild, memberRef, roleRef, context = {}) {
+    const cleanMemberRef = typeof memberRef === 'string' ? memberRef.replace(/^[<@&!]+|[>]+$/g, '').trim() : memberRef;
+    const cleanRoleRef = typeof roleRef === 'string' ? roleRef.replace(/^[<@&!]+|[>]+$/g, '').trim() : roleRef;
+
+    let member = typeof context?.resolveTarget === 'function'
+      ? await context.resolveTarget(cleanMemberRef, 'member')
+      : guild?.members?.cache?.find(m => m.id === cleanMemberRef || m.user?.username?.toLowerCase() === String(cleanMemberRef).toLowerCase());
+
+    let role = typeof context?.resolveTarget === 'function'
+      ? await context.resolveTarget(cleanRoleRef, 'role')
+      : guild?.roles?.cache?.find(r => r.id === cleanRoleRef || r.name?.toLowerCase() === String(cleanRoleRef).replace(/^@/, '').toLowerCase());
+
+    // Auto-swap detection if reversed
+    if (!member && cleanMemberRef && cleanRoleRef) {
+      const swappedRole = typeof context?.resolveTarget === 'function'
+        ? await context.resolveTarget(cleanMemberRef, 'role')
+        : guild?.roles?.cache?.find(r => r.id === cleanMemberRef || r.name?.toLowerCase() === String(cleanMemberRef).replace(/^@/, '').toLowerCase());
+
+      const swappedMember = typeof context?.resolveTarget === 'function'
+        ? await context.resolveTarget(cleanRoleRef, 'member')
+        : guild?.members?.cache?.find(m => m.id === cleanRoleRef || m.user?.username?.toLowerCase() === String(cleanRoleRef).toLowerCase());
+
+      if (swappedMember && swappedRole) {
+        member = swappedMember;
+        role = swappedRole;
+      }
+    }
+
     if (!member) {
       return { success: false, error: `Member "${memberRef}" not found`, action: 'remove_role' };
     }
@@ -304,7 +366,6 @@ export class Operations {
       return { success: false, error: member.clarificationQuestion, isAmbiguous: true, action: 'remove_role' };
     }
 
-    const role = await context.resolveTarget(roleRef, 'role');
     if (!role) {
       return { success: false, error: `Role "${roleRef}" not found`, action: 'remove_role' };
     }
@@ -318,13 +379,17 @@ export class Operations {
       return {
         success: true,
         action: 'remove_role',
-        details: `Member ${member.user.tag} does not have role @${role.name} (idempotent no-op)`,
+        details: `Member ${member.user?.tag || member.displayName} does not have role @${role.name} (idempotent no-op)`,
         verified: true,
-        resourceId: role.id
+        resourceId: role.id,
+        targetRoleId: role.id,
+        targetRoleName: role.name,
+        targetMemberId: member.id,
+        targetMemberTag: member.user?.tag || member.displayName
       };
     }
 
-    await member.roles.remove(role, `Removed via Honey Bot by ${context.invokingUser.tag}`);
+    await member.roles.remove(role, `Removed via Honey Bot by ${context?.invokingUser?.tag || 'moderator'}`);
 
     if (guild?.id && context?.executionId) {
       ActionLedger.recordAction(guild.id, context.executionId, {
@@ -346,9 +411,15 @@ export class Operations {
     return {
       success: true,
       action: 'remove_role',
-      details: `Removed role @${role.name} from ${member.user.tag}`,
+      details: `Removed role @${role.name} from ${member.user?.tag || member.displayName || member.id}`,
       verified: true,
-      resourceId: role.id
+      resourceId: role.id,
+      targetRoleId: role.id,
+      targetRoleName: role.name,
+      targetMemberId: member.id,
+      targetMemberTag: member.user?.tag || member.displayName,
+      roleId: role.id,
+      memberId: member.id
     };
   }
 
