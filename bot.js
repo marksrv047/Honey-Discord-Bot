@@ -26,6 +26,7 @@ import { RoleMenuManager } from './src/role-menu.js';
 import { registerGatewayEventListeners } from './src/gateway-events.js';
 import { ActionLedger } from './src/recovery.js';
 import { MusicService } from './src/music-service.js';
+import { DashboardManager } from './src/dashboard.js';
 import { Logger } from './src/logger.js';
 
 const logger = new Logger('Bot');
@@ -223,6 +224,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isAutocomplete()) {
       await interaction.respond([]).catch(() => {});
       return;
+    }
+
+    // 2b. Handle Interactive Dashboard Components (Buttons, Select Menus, Modals)
+    if (interaction.customId?.startsWith('dash:')) {
+      const handled = await DashboardManager.handleInteraction(interaction);
+      if (handled) return;
     }
 
     // 3. Handle Persistent Ticket Buttons (Open Ticket / Close Ticket) & Confirmation Buttons

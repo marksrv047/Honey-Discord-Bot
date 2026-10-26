@@ -348,6 +348,17 @@ export class ActionLedger {
     return this.history.get(executionId) || [];
   }
 
+  static getHistory(guildId = 'default') {
+    const gLedger = this.getGuildLedger(guildId);
+    const all = [];
+    if (gLedger && typeof gLedger.values === 'function') {
+      for (const actions of gLedger.values()) {
+        all.push(...actions);
+      }
+    }
+    return all;
+  }
+
   static getActionById(actionId) {
     return this._recordsByActionId.get(actionId) || null;
   }

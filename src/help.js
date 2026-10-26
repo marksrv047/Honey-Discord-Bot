@@ -138,6 +138,26 @@ export class HelpManager {
       return HelpManager.getFullCatalogText();
     }
 
+    // 1b. Interactive Server Dashboard questions
+    if (/(?:dashboard|server\s+settings|config\s+center|how\s+do\s+i\s+open\s+the\s+dashboard|access\s+the\s+dashboard)/i.test(qLower)) {
+      return (
+        '**Honey Bot Server Dashboard & Configuration Center**\n\n' +
+        'You can access the interactive in-Discord server dashboard by running `/help` and clicking **"Open Server Dashboard"**, or by asking Honey Bot directly:\n' +
+        '• `/go prompt: Open the server dashboard`\n' +
+        '• `/help prompt: dashboard`\n\n' +
+        '**Dashboard Sections:**\n' +
+        '• **Overview** — Live operational health, gateway latency, bot uptime, and configuration completeness.\n' +
+        '• **Moderation** — Default timeout lengths, warning escalation thresholds, and kick/ban confirmation requirements.\n' +
+        '• **Roles & Access** — Configured operator roles, granted capability groups, and default-deny policies.\n' +
+        '• **Modlogs** — Destination audit channel, live event filters, and test delivery verification.\n' +
+        '• **Music & Voice** — Playback controls, now-playing track, and queue management.\n' +
+        '• **Task Queue** — Active running tasks, progress inspection, and task cancellation.\n' +
+        '• **Diagnostics** — Bot permissions, runtime errors, and recovery undo history.\n' +
+        '• **Capability Catalog** — Interactive categorized catalog of all supported bot operations.\n\n' +
+        '*All dashboard interactions are strictly deterministic, isolated per server, and require zero LLM tokens.*'
+      );
+    }
+
     // 2. Everything possible with /go
     if (/(?:everything\s+(?:i\s+can\s+do\s+with\s+)?\/go|what\s+can\s+i\s+do\s+with\s+\/go|what\s+can\s+\/go\s+do|show\s+me\s+everything\s+i\s+can\s+do\s+with\s+\/go)/i.test(qLower)) {
       const categories = CapabilityRegistry.getAllCategories();

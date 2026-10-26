@@ -87,6 +87,17 @@ export class IntentRouter {
     const cleanPrompt = trimmed.replace(/[.!?]+$/, '').trim();
 
     // =========================================================================
+    // 0a. DASHBOARD & SERVER SETTINGS
+    // =========================================================================
+    if (/^(?:open|show|view|display)?\s*(?:the\s+)?(?:server\s+)?(?:dashboard|settings|config(?:\s+center)?|control\s+panel)$/i.test(cleanPrompt)) {
+      return {
+        intent: 'open_dashboard',
+        thought: 'User requested server configuration dashboard',
+        isHighImpact: false
+      };
+    }
+
+    // =========================================================================
     // 0. UNSUPPORTED OPERATIONS & RESTRICTION PRE-FILTER
     // =========================================================================
     const unsupported = CapabilityRegistry.getExplanationForUnsupported(cleanPrompt);

@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { Planner } from './planner.js';
 import { Executor } from './executor.js';
 import { Verifier } from './verification.js';
@@ -21,6 +21,7 @@ import { TemporaryFeedback } from './temporary-feedback.js';
 import { HelpManager } from './help.js';
 import { DiagnosticService } from './diagnostic-service.js';
 import { CompletenessChecker } from './completeness-checker.js';
+import { DashboardManager } from './dashboard.js';
 import { Logger } from './logger.js';
 
 const logger = new Logger('Commands');
@@ -162,6 +163,13 @@ async function handleGoCommand(interaction) {
       return await interaction.editReply({
         content: '⚠️ Please provide an instruction for `/go` (e.g. `/go prompt: create #general`).'
       });
+    }
+
+    // Direct dashboard intent routing (0 Groq LLM calls)
+    const cleanPrompt = userPrompt.trim().toLowerCase();
+    if (/^(?:open\s+)?(?:server\s+)?(?:dashboard|settings|config(?:\s+center)?|control\s+panel)$/i.test(cleanPrompt)) {
+      isDone = true;
+      return await DashboardManager.openDashboard(interaction);
     }
 
     const guild = interaction.guild;
@@ -1010,16 +1018,30 @@ async function handleHelpCommand(interaction) {
 
     if (!prompt || !prompt.trim()) {
       const embed = HelpManager.createHelpEmbed();
+      const openDashRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('dash:open:overview')
+          .setLabel('Open Server Dashboard')
+          .setStyle(ButtonStyle.Primary)
+          .setEmoji('📊')
+      );
       if (interaction.deferred) {
         return await interaction.editReply({
           embeds: [embed],
+          components: [openDashRow],
           allowedMentions: ResponseService.getAllowedMentions()
         });
       }
       return await interaction.reply({
         embeds: [embed],
+        components: [openDashRow],
         allowedMentions: ResponseService.getAllowedMentions()
       });
+    }
+
+    // Direct dashboard routing via /help prompt: dashboard
+    if (/^(?:open\s+)?(?:server\s+)?(?:dashboard|settings|config(?:\s+center)?|control\s+panel)$/i.test(prompt.trim())) {
+      return await DashboardManager.openDashboard(interaction);
     }
 
     if (!interaction.deferred && !interaction.replied) {

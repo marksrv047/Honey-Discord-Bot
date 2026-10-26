@@ -766,6 +766,13 @@ export class Executor {
         return await Operations.listRoles(guild, invokingMember);
       }
 
+      case 'open_dashboard': {
+        return {
+          success: true,
+          details: 'Opened interactive server dashboard.'
+        };
+      }
+
       case 'send_announcement': {
         const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
           invokingUser: invokingMember.user,
