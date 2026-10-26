@@ -9,6 +9,7 @@ import { ActionLedger, RecoveryEngine, RecoveryRegistry, createErrorEmbed } from
 import { ExecutionContext } from './execution-context.js';
 import { IntentRouter } from './intent-router.js';
 import { TaskWorkflow } from './task-workflow.js';
+import { TaskQueue, TaskQueueState, TaskActionStatus } from './task-queue.js';
 import { validateConfig, config } from './config.js';
 import { SecurityGate, SecurityPolicyViolationError } from './security-gate.js';
 import { HealthCheckEngine } from './health-check.js';
@@ -302,9 +303,56 @@ async function handleGoCommand(interaction) {
         }
       }
 
-      const results = await Executor.executePlan(guild, plan, executionId, member);
+      // Enqueue task into persistent dependency-aware TaskQueue
+      const queuedTask = TaskQueue.createTask({
+        guildId: guild.id,
+        userId: interaction.user.id,
+        interactionId: interaction.id,
+        userPrompt,
+        plan,
+        actions: plan.actions,
+        isHighImpact: plan.isHighImpact,
+        correlationId: executionId
+      });
+
+      const executedTask = await TaskQueue.executeTask(queuedTask.taskId, {
+        guild,
+        member,
+        executor: Executor,
+        verifier: Verifier,
+        onProgress: async (progress) => {
+          if (progress.status === 'running' && progress.currentStep <= progress.totalSteps) {
+            const stepAction = progress.currentAction;
+            const actionTitle = stepAction?.title || stepAction?.action || `Step ${progress.currentStep}`;
+            const progressContent = `**Working on your request**\n• Step ${progress.currentStep} of ${progress.totalSteps}: ${actionTitle}...`;
+            try {
+              await interaction.editReply({
+                content: progressContent,
+                embeds: [],
+                components: []
+              });
+            } catch (err) {
+              if (err.code !== 10062 && err.code !== 10015) {
+                logger.warn('Progress update failed', { error: err.message });
+              }
+            }
+          }
+        }
+      });
+
       isDone = true;
       clearTimeout(timeoutGuard);
+
+      const results = executedTask.actions.map(act => ({
+        action: act.action,
+        status: act.status === TaskActionStatus.SUCCEEDED ? 'COMPLETED' : (act.status === TaskActionStatus.SKIPPED ? 'SKIPPED' : 'FAILED'),
+        verificationStatus: act.status === TaskActionStatus.SUCCEEDED ? 'passed' : 'failed',
+        intendedChange: `Execute ${act.action}`,
+        observedOutcome: act.result?.details || act.error || '',
+        verified: act.status === TaskActionStatus.SUCCEEDED,
+        details: act.result?.details || act.error || '',
+        target: act.target
+      }));
 
       // Centralized mod-log recording for multi-action plan
       for (const res of results) {

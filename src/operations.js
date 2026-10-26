@@ -2435,6 +2435,10 @@ export class Operations {
   // MUSIC & VOICE PLAYBACK OPERATIONS
   // =========================================================================
 
+  static async connectVoice(guild, channelName, context) {
+    return await MusicService.connectVoice(guild, channelName, context?.invokingMember);
+  }
+
   static async playMusic(guild, query, context) {
     return await MusicService.play(guild, context?.invokingMember, query);
   }

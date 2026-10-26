@@ -260,6 +260,134 @@ export class MusicService {
   }
 
   /**
+   * Retrieves or creates a subscription/player for the guild.
+   */
+  static getOrCreatePlayer(guildId) {
+    let sub = this.subscriptions.get(guildId);
+    if (!sub) {
+      sub = {
+        guildId,
+        audioPlayer: createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } }),
+        queue: [],
+        currentTrack: null
+      };
+      this.subscriptions.set(guildId, sub);
+    }
+    return sub;
+  }
+
+  /**
+   * Connects Honey Bot to a voice channel with permission checks and timeout bounds.
+   */
+  static async connectVoice(guild, channelNameOrId = null, member = null, timeoutMs = 5000) {
+    if (!guild) {
+      return { success: false, error: 'Valid guild context required to join voice channel.' };
+    }
+
+    let voiceChannel = null;
+    const channelsList = guild.channels?.cache
+      ? (typeof guild.channels.cache.values === 'function' ? Array.from(guild.channels.cache.values()) : (Array.isArray(guild.channels.cache) ? guild.channels.cache : []))
+      : [];
+
+    if (channelNameOrId) {
+      const cleanTarget = String(channelNameOrId).toLowerCase().trim().replace(/^#/, '');
+      voiceChannel = channelsList.find(c =>
+        (c.type === 2 || c.type === 'GUILD_VOICE' || c.isVoiceBased?.()) &&
+        (c.id === channelNameOrId || c.name.toLowerCase() === cleanTarget || c.name.toLowerCase().includes(cleanTarget))
+      );
+    }
+
+    if (!voiceChannel && member?.voice?.channel) {
+      voiceChannel = member.voice.channel;
+    }
+
+    if (!voiceChannel) {
+      return {
+        success: false,
+        error: channelNameOrId
+          ? `Could not find voice channel "${channelNameOrId}" in this server.`
+          : 'You must join a voice channel or specify a channel name (e.g. "/go prompt: Join General voice").'
+      };
+    }
+
+    const botMember = guild.members?.me;
+    if (botMember && typeof voiceChannel.permissionsFor === 'function') {
+      const perms = voiceChannel.permissionsFor(botMember);
+      if (!perms.has(PermissionFlagsBits.Connect)) {
+        return {
+          success: false,
+          error: `Bot is missing permission to connect to voice channel "${voiceChannel.name}". Please grant "Connect".`
+        };
+      }
+      if (!perms.has(PermissionFlagsBits.Speak)) {
+        return {
+          success: false,
+          error: `Bot is missing permission to speak in voice channel "${voiceChannel.name}". Please grant "Speak".`
+        };
+      }
+    }
+
+    let subscription = this.getSubscription(guild.id);
+    if (subscription) {
+      const connChannelId = subscription.voiceConnection?.joinConfig?.channelId;
+      if (connChannelId === voiceChannel.id) {
+        return {
+          success: true,
+          details: `Already connected to voice channel "${voiceChannel.name}".`,
+          channelId: voiceChannel.id
+        };
+      }
+      if (subscription.voiceConnection && typeof subscription.voiceConnection.rejoin === 'function') {
+        subscription.voiceConnection.rejoin({
+          channelId: voiceChannel.id,
+          selfDeaf: false,
+          selfMute: false
+        });
+      }
+      return {
+        success: true,
+        details: `Moved to voice channel "${voiceChannel.name}".`,
+        channelId: voiceChannel.id
+      };
+    }
+
+    try {
+      const connection = joinVoiceChannel({
+        channelId: voiceChannel.id,
+        guildId: guild.id,
+        adapterCreator: guild.voiceAdapterCreator
+      });
+
+      if (typeof entersState === 'function') {
+        try {
+          await Promise.race([
+            entersState(connection, VoiceConnectionStatus.Ready, timeoutMs),
+            new Promise((_, reject) => setTimeout(() => reject(new Error(`Voice connection timed out after ${timeoutMs}ms`)), timeoutMs))
+          ]);
+        } catch (stateErr) {
+          const isTimeout = stateErr.name === 'AbortError' || /aborted|timed?\s*out/i.test(stateErr.message);
+          const errMessage = isTimeout ? `Voice connection timed out after ${timeoutMs}ms` : stateErr.message;
+          logger.error('Voice connection state timeout', { error: errMessage });
+          try { connection.destroy(); } catch {}
+          throw new Error(errMessage);
+        }
+      }
+
+      subscription = new MusicSubscription(connection, null, guild.id);
+      this.subscriptions.set(guild.id, subscription);
+
+      return {
+        success: true,
+        details: `Connected to voice channel "${voiceChannel.name}".`,
+        channelId: voiceChannel.id
+      };
+    } catch (connErr) {
+      logger.error('Failed to establish voice connection', { error: connErr.message });
+      throw new Error(`Could not join voice channel: ${connErr.message}`);
+    }
+  }
+
+  /**
    * Resolves search query or URL into structured Track object
    */
   static async resolveTrack(query, requestedBy) {
@@ -300,10 +428,11 @@ export class MusicService {
               requestedBy: requestedBy?.tag || requestedBy?.id || 'User'
             };
           }
+          throw new Error(`Could not load media from YouTube URL: ${ytdlErr.message}`);
         }
       }
 
-      // Check SoundCloud or other direct URL
+      // Check SoundCloud URL
       if (/soundcloud\.com/i.test(trimmed)) {
         const scInfo = await play.soundcloud(trimmed).catch(() => null);
         if (scInfo) {
@@ -317,18 +446,24 @@ export class MusicService {
             requestedBy: requestedBy?.tag || requestedBy?.id || 'User'
           };
         }
+        throw new Error('Could not load track from SoundCloud URL.');
       }
 
-      // Direct audio URL
-      return {
-        title: trimmed.split('/').pop().replace(/[?#].*$/, '') || 'Direct Audio Stream',
-        url: trimmed,
-        duration: 'Live / Stream',
-        durationSec: 0,
-        thumbnail: null,
-        author: 'Online Stream',
-        requestedBy: requestedBy?.tag || requestedBy?.id || 'User'
-      };
+      // Direct audio URL validation (must end with audio extension)
+      if (/\.(mp3|wav|ogg|flac|m4a|aac|opus|m3u8)(?:[?#].*)?$/i.test(trimmed)) {
+        return {
+          title: trimmed.split('/').pop().replace(/[?#].*$/, '') || 'Direct Audio Stream',
+          url: trimmed,
+          duration: 'Live / Stream',
+          durationSec: 0,
+          thumbnail: null,
+          author: 'Online Stream',
+          requestedBy: requestedBy?.tag || requestedBy?.id || 'User'
+        };
+      }
+
+      // Unsupported media URL
+      throw new Error('Unsupported media source: Honey Bot supports YouTube, SoundCloud, and direct audio stream links (.mp3, .ogg, .wav).');
     }
 
     // Keyword Search

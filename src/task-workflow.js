@@ -1,6 +1,13 @@
 import crypto from 'crypto';
 import { TaskBudget, BudgetExceededError } from './budget.js';
 import { Logger } from './logger.js';
+export {
+  TaskQueue,
+  TaskQueueState,
+  TaskActionStatus,
+  InvalidStateTransitionError,
+  QueueOverloadError
+} from './task-queue.js';
 
 const logger = new Logger('TaskWorkflow');
 

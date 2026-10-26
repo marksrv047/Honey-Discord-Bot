@@ -21,7 +21,7 @@ export function checkUserAuthorization(member, actions = []) {
   const guild = member.guild;
 
   // 1. Server owner always has unconditional full authorization
-  if (guild.ownerId === member.id) {
+  if (guild.ownerId && member.id && guild.ownerId === member.id) {
     return { authorized: true };
   }
 

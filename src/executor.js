@@ -865,6 +865,56 @@ export class Executor {
         };
       }
 
+      case 'connect_voice': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
+        return await Operations.connectVoice(guild, action.targetChannel || action.channel, ctx);
+      }
+
+      case 'music_play': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
+        return await Operations.playMusic(guild, action.query || action.targetRef, ctx);
+      }
+
+      case 'music_pause': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
+        return await Operations.pauseMusic(guild, ctx);
+      }
+
+      case 'music_resume': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
+        return await Operations.resumeMusic(guild, ctx);
+      }
+
+      case 'music_skip': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
+        return await Operations.skipMusic(guild, ctx);
+      }
+
+      case 'music_stop': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
+        return await Operations.stopMusic(guild, ctx);
+      }
+
+      case 'music_queue': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
+        return await Operations.getMusicQueue(guild, ctx);
+      }
+
+      case 'music_nowplaying': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
+        return await Operations.getNowPlaying(guild, ctx);
+      }
+
+      case 'music_volume': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
+        return await Operations.setMusicVolume(guild, action.volume, ctx);
+      }
+
+      case 'music_leave': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
+        return await Operations.leaveVoice(guild, ctx);
+      }
+
       default:
         return { success: false, error: `Unknown action: ${action.action}` };
     }

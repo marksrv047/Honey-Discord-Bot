@@ -118,11 +118,15 @@ export function classifyDiscordError(err) {
     };
   }
 
-  if (code === 429 || message.includes('rate limit')) {
+  if (
+    code === 429 || code === 500 || code === 502 || code === 503 || code === 504 ||
+    message.includes('rate limit') || message.includes('Service Unavailable') ||
+    message.includes('ECONNRESET') || message.includes('ETIMEDOUT') || message.includes('socket hang up')
+  ) {
     return {
-      type: 'RATE_LIMIT',
+      type: code === 429 ? 'RATE_LIMIT' : 'NETWORK_ERROR',
       retryable: true,
-      userMessage: 'Discord rate limit hit. Request will backoff and retry safely.'
+      userMessage: 'Transient network or rate-limit issue. Request will backoff and retry safely.'
     };
   }
 

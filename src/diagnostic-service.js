@@ -5,6 +5,7 @@ import { Logger } from './logger.js';
 import { ActionLedger } from './recovery.js';
 import { ModLogService } from './mod-log.js';
 import { slashCommands } from './commands.js';
+import { TaskQueue, TaskQueueState } from './task-queue.js';
 
 const logger = new Logger('DiagnosticService');
 
@@ -156,6 +157,13 @@ export class DiagnosticService {
       return 'discord_connectivity';
     }
 
+    // 11. Task queue health, stuck tasks & queue overload
+    if (
+      /(task\s+queue|stuck\s+tasks?|queue\s+overload|queue\s+backlog|task\s+health|queue\s+status|tasks?\s+stuck|task\s+failures?)/i.test(clean)
+    ) {
+      return 'task_queue_health';
+    }
+
     return 'general_health';
   }
 
@@ -222,6 +230,9 @@ export class DiagnosticService {
 
         case 'discord_connectivity':
           return await this.diagnoseDiscordConnectivity(context, correlationId);
+
+        case 'task_queue_health':
+          return await this.diagnoseTaskQueueHealth(context, correlationId);
 
         case 'general_health':
         default:
@@ -830,6 +841,14 @@ export class DiagnosticService {
     // 4. Five commands registered
     const commandCount = slashCommands?.length ?? 5;
 
+    // 5. Task queue health
+    const allTasks = TaskQueue.loadAllTasks();
+    const now = Date.now();
+    const stuckTasks = Array.from(allTasks.values()).filter(t =>
+      (t.status === TaskQueueState.RUNNING || t.status === TaskQueueState.WAITING) &&
+      (now - (t.updatedAt || t.createdAt) > 60000)
+    );
+
     // Build concise, calm summary
     let summary = '';
     let status = DiagnosticStatus.HEALTHY;
@@ -840,12 +859,15 @@ export class DiagnosticService {
     } else if (modelCheck.status === 'failed') {
       status = DiagnosticStatus.DEGRADED;
       summary = `Honey Bot is connected to Discord, but the configured AI model (${provider}) is unreachable: ${modelCheck.error}.`;
+    } else if (stuckTasks.length > 0) {
+      status = DiagnosticStatus.DEGRADED;
+      summary = `Honey Bot execution queue has ${stuckTasks.length} stuck task(s) awaiting intervention.`;
     } else if (modlogPending > 0) {
       status = DiagnosticStatus.DEGRADED;
       summary = `Honey Bot is connected to Discord. The configured model is reachable, but moderation-log delivery is degraded. ${modlogPending} log ${modlogPending > 1 ? 'deliveries are' : 'delivery is'} pending.`;
     } else {
       status = DiagnosticStatus.HEALTHY;
-      summary = `Honey Bot is connected to Discord. The configured model (${provider}) is reachable and operational. All 5 top-level slash commands are registered.`;
+      summary = `Honey Bot is connected to Discord. The configured model (${provider}) is reachable and operational. All 5 top-level slash commands are registered. Task queue is healthy.`;
     }
 
     return {
@@ -858,9 +880,64 @@ export class DiagnosticService {
         isGatewayOnline,
         modelStatus: modelCheck.status,
         modlogPending,
-        commandCount
+        commandCount,
+        stuckTasks: stuckTasks.length
       },
       response: Logger.redactSecrets(summary),
+      correlationId
+    };
+  }
+
+  /**
+   * Diagnoses Task Queue health, stuck tasks, backlog, and persistence.
+   */
+  static async diagnoseTaskQueueHealth(context = {}, correlationId) {
+    const allTasks = TaskQueue.loadAllTasks();
+    const now = Date.now();
+    const taskList = Array.from(allTasks.values());
+
+    const activeTasks = taskList.filter(t =>
+      t.status === TaskQueueState.RUNNING ||
+      t.status === TaskQueueState.WAITING ||
+      t.status === TaskQueueState.QUEUED
+    );
+
+    const stuckTasks = taskList.filter(t =>
+      (t.status === TaskQueueState.RUNNING || t.status === TaskQueueState.WAITING) &&
+      (now - (t.updatedAt || t.createdAt) > 60000)
+    );
+
+    const completedTasks = taskList.filter(t => t.status === TaskQueueState.COMPLETED);
+    const failedTasks = taskList.filter(t => t.status === TaskQueueState.FAILED);
+    const partialTasks = taskList.filter(t => t.status === TaskQueueState.PARTIALLY_COMPLETED);
+
+    let status = DiagnosticStatus.HEALTHY;
+    let summary = '';
+
+    if (stuckTasks.length > 0) {
+      status = DiagnosticStatus.DEGRADED;
+      const stuckIds = stuckTasks.map(t => t.taskId).slice(0, 3).join(', ');
+      summary = `Task queue has ${stuckTasks.length} stuck task(s) exceeding 60s timeout (IDs: ${stuckIds}). Active: ${activeTasks.length}, Total: ${taskList.length}.`;
+    } else if (activeTasks.length >= TaskQueue._maxGlobalTasks) {
+      status = DiagnosticStatus.DEGRADED;
+      summary = `Task queue overload: ${activeTasks.length} active tasks reaching capacity limit (${TaskQueue._maxGlobalTasks}).`;
+    } else {
+      status = DiagnosticStatus.HEALTHY;
+      summary = `Task queue is operating normally. ${activeTasks.length} active, ${completedTasks.length} completed, ${partialTasks.length} partial, ${failedTasks.length} failed. 0 stuck tasks.`;
+    }
+
+    return {
+      task: 'task_queue_health',
+      status,
+      structured: {
+        component: 'task_queue',
+        totalTasks: taskList.length,
+        activeTasks: activeTasks.length,
+        stuckTasks: stuckTasks.length,
+        completedTasks: completedTasks.length,
+        failedTasks: failedTasks.length
+      },
+      response: summary,
       correlationId
     };
   }

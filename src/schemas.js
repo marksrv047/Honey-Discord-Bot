@@ -366,10 +366,17 @@ export const ExplainBotInstallationSchema = z.object({
   action: z.literal('explain_bot_installation')
 });
 
+export const ConnectVoiceSchema = z.object({
+  action: z.literal('connect_voice'),
+  targetChannel: z.string().min(1).optional(),
+  channel: z.string().optional()
+});
+
 export const MusicPlaySchema = z.object({
   action: z.literal('music_play'),
   query: z.string().min(1).optional(),
-  targetRef: z.string().optional()
+  targetRef: z.string().optional(),
+  targetChannel: z.string().optional()
 });
 
 export const MusicPauseSchema = z.object({
@@ -586,6 +593,7 @@ export const ActionSchema = z.discriminatedUnion('action', [
   LookupMemberSchema,
   GetBotInviteSchema,
   ExplainBotInstallationSchema,
+  ConnectVoiceSchema,
   MusicPlaySchema,
   MusicPauseSchema,
   MusicResumeSchema,

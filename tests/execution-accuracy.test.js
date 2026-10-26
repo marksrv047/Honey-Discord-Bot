@@ -29,12 +29,16 @@ test('Completeness: Multi-property role request extracts distinct operations for
   assert.deepStrictEqual(check.repairedPlan.actions[0], {
     action: 'edit_role',
     targetRole: 'Moderator',
-    name: 'Community Moderator'
+    name: 'Community Moderator',
+    id: 'step_1',
+    dependsOn: []
   });
   assert.deepStrictEqual(check.repairedPlan.actions[1], {
     action: 'edit_role',
     targetRole: 'Community Moderator',
-    color: '#8B0000'
+    color: '#8B0000',
+    id: 'step_2',
+    dependsOn: []
   });
 });
 
