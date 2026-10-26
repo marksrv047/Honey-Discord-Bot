@@ -31,6 +31,7 @@ export class Executor {
       update_server_banner: 1,
       update_server_settings: 1,
       create_role: 2,
+      create_category: 3, // Categories before regular channels
       create_channel_category: 3, // Categories before regular channels
       create_channel: 4,
       edit_role: 5,
@@ -319,14 +320,32 @@ export class Executor {
         const parentCategoryName = action.category || action.parentCategory || action.parent;
         if (parentCategoryName && chType !== ChannelType.GuildCategory) {
           const cleanParent = String(parentCategoryName).toLowerCase().trim();
-          const category = guild.channels.cache.find(
+          let category = guild.channels.cache?.find?.(
             c => c.type === ChannelType.GuildCategory && (c.id === cleanParent || c.name?.toLowerCase() === cleanParent)
           );
+
+          // Fallback 1: Check ActionLedger for category created in this execution
+          if (!category && executionId) {
+            const history = ActionLedger.history?.get?.(executionId) || [];
+            const catEntry = history.find(e => (e.type === 'category' || e.action === 'create_category') && (e.id === cleanParent || e.name?.toLowerCase() === cleanParent));
+            if (catEntry) {
+              parentId = catEntry.id;
+            }
+          }
+
+          // Fallback 2: Check Discord API fetch if not in cache
+          if (!category && !parentId && typeof guild.channels?.fetch === 'function') {
+            try {
+              const allChannels = await guild.channels.fetch();
+              category = allChannels?.find?.(c => c && c.type === ChannelType.GuildCategory && (c.id === cleanParent || c.name?.toLowerCase() === cleanParent));
+            } catch (_) {}
+          }
+
           if (category) parentId = category.id;
         }
 
         // Check if channel already exists
-        const existing = guild.channels.cache.find(c => c.name?.toLowerCase() === channelName.toLowerCase() && (!parentId || c.parentId === parentId));
+        const existing = guild.channels.cache?.find?.(c => c.name?.toLowerCase() === channelName.toLowerCase() && (!parentId || c.parentId === parentId));
         if (existing) {
           return { success: true, details: `Channel #${existing.name} already exists (re-using existing)` };
         }
@@ -362,6 +381,10 @@ export class Executor {
           permissionOverwrites: overwrites.length > 0 ? overwrites : undefined,
           reason: `Created via /go agent by ${invokingMember?.user?.tag || invokingMember?.displayName || 'Admin'}`
         });
+
+        if (guild.channels?.cache && typeof guild.channels.cache.set === 'function') {
+          guild.channels.cache.set(channel.id, channel);
+        }
 
         ActionLedger.recordCreatedResource(executionId, 'channel', channel.id, channel.name);
         return { success: true, details: `Channel #${channel.name} created successfully` };
@@ -419,7 +442,11 @@ export class Executor {
           invokingUser: invokingMember?.user,
           executionId
         };
-        return await Operations.createCategory(guild, action, ctx);
+        const result = await Operations.createCategory(guild, action, ctx);
+        if (result.success && result.category && guild.channels?.cache && typeof guild.channels.cache.set === 'function') {
+          guild.channels.cache.set(result.category.id, result.category);
+        }
+        return result;
       }
 
       case 'rename_category': {

@@ -70,6 +70,7 @@ RULES:
 9. MULTIPLE ACTIONS & MULTI-ROLE DELETION:
    - When user asks to delete multiple roles (e.g. "delete roles A, B and C"): return multiActions: [ { action: "delete_role", targetRole: "A" }, { action: "delete_role", targetRole: "B" }, { action: "delete_role", targetRole: "C" } ]
    - When user asks to lock channel AND announce: return multiActions: [ { action: "lock_channel", targetChannel: "current" }, { action: "send_announcement", targetChannel: "current", message: "...", title: "Server Announcement", mentionEveryone: true } ]
+   - When user asks to create a category and add channels under it (e.g. "Create category Community and add general, memes under it"): return multiActions: [ { action: "create_category", name: "Community" }, { action: "create_channel", name: "general", category: "Community" }, { action: "create_channel", name: "memes", category: "Community" } ]
 10. CONTEXTUAL FOLLOW-UPS:
    - Resolve "that role", "its color", "the channel we just created", "do the same for X" using provided recentContext.
 11. Output raw JSON only. No markdown formatting.
@@ -672,6 +673,84 @@ export class IntentRouter {
         isHighImpact: false,
         thought: `Move channel #${chRef} into category "${catRef}"`
       };
+    }
+
+    // C8b. "Create a category Community and simultaneously add multiple channels under that specific category: general, memes, voice"
+    // Also: "Create a category & simultaneously add multiple channels under that specific category when asked to do so"
+    // Also: "Create a category Staff and add channels mod-chat, mod-logs, announcements under that category"
+    // Also: "Create category Gaming with channels lfg, clips, and voice"
+    if (/^create\s+(?:a\s+)?(?:new\s+)?(?:private\s+)?category\s*(?:&|and)\s*(?:simultaneously\s+)?(?:add|create)\s+multiple\s+channels\s+(?:under|in|into|inside)\s+(?:that|the)?\s*(?:specific\s+)?category(?:\s+when\s+asked(?:\s+to\s+do\s+so)?)?$/i.test(cleanPrompt) ||
+        /^create\s+(?:a\s+)?(?:new\s+)?(?:private\s+)?category\s*(?:&|and)\s*(?:simultaneously\s+)?(?:add|create)\s+multiple\s+channels$/i.test(cleanPrompt)) {
+      return {
+        intent: 'create_category',
+        targetType: 'category',
+        targetRef: 'unspecified',
+        args: {},
+        clarificationNeeded: 'Please specify the name of the category and the channels you would like to create under it (e.g. "Create a category Staff and add channels mod-chat, mod-logs, announcements under that category").',
+        isHighImpact: false,
+        thought: 'Clarification required: category name and channel list not specified'
+      };
+    }
+
+    const catWithChannelsMatch = cleanPrompt.match(/^create\s+(?:a\s+)?(?:new\s+)?(private\s+)?category\s+(?:called\s+|named\s+)?(["'#\w\s.-]+?)(?:\s*(?:&|and)\s*(?:simultaneously\s+)?(?:add|create)\s+(?:multiple\s+)?channels?(?:\s+(?:under|in|into|inside|to)\s+(?:that|the)?\s*(?:specific\s+)?category)?:?\s*|\s+with\s+(?:the\s+)?(?:following\s+)?channels?:?\s*|\s*(?:&|and)\s*(?:simultaneously\s+)?(?:add|create)\s+)(.+)$/i) ||
+      cleanPrompt.match(/^create\s+(?:a\s+)?(?:new\s+)?(private\s+)?(["'#\w\s.-]+?)\s+category(?:\s*(?:&|and)\s*(?:simultaneously\s+)?(?:add|create)\s+(?:multiple\s+)?channels?(?:\s+(?:under|in|into|inside|to)\s+(?:that|the)?\s*(?:specific\s+)?category)?:?\s*|\s+with\s+(?:the\s+)?(?:following\s+)?channels?:?\s*|\s*(?:&|and)\s*(?:simultaneously\s+)?(?:add|create)\s+)(.+)$/i);
+
+    if (catWithChannelsMatch) {
+      const isPrivate = Boolean(catWithChannelsMatch[1]);
+      let catName = catWithChannelsMatch[2].trim().replace(/^["']|["']$/g, '');
+      let channelsRaw = catWithChannelsMatch[3].trim();
+
+      if (catName && !/^(a|new|the|private|channel|channels)$/i.test(catName) && channelsRaw) {
+        channelsRaw = channelsRaw.replace(/(?:\s+(?:under|in|into|to|inside)\s+(?:that|the|this)?\s*(?:specific\s+)?category|\s+under\s+it|\s+in\s+it|\s+inside\s+it|\s+when\s+asked\s+to\s+do\s+so)+$/i, '').trim();
+        channelsRaw = channelsRaw.replace(/^(?:(?:the\s+)?(?:multiple\s+)?channels?:?\s*)/i, '').trim();
+
+        const channelParts = channelsRaw.split(/(?:,\s*(?:and\s+)?|\s+and\s+|;\s*|\n+|&\s*)/i).map(s => s.trim()).filter(Boolean);
+        const childActions = [];
+
+        for (const part of channelParts) {
+          let name = part.trim().replace(/^[:#•\-*]+|[:#•\-*]+$/g, '').trim();
+          if (!name) continue;
+
+          let type = 'GUILD_TEXT';
+          if (/^(?:voice\s+channel|voice\s+|vc\s+)/i.test(name) || /(?:\s+voice|\s+\(voice\))$/i.test(name) || /^voice$/i.test(name)) {
+            type = 'GUILD_VOICE';
+            name = name.replace(/^(?:voice\s+channel|voice\s+|vc\s+)/i, '').replace(/(?:\s+voice|\s+\(voice\))$/i, '').trim() || 'voice';
+          } else if (/^(?:announcement\s+channel|announcements?\s+)/i.test(name) || /(?:\s+announcement|\s+\(announcement\))$/i.test(name)) {
+            type = 'GUILD_ANNOUNCEMENT';
+            name = name.replace(/^(?:announcement\s+channel|announcements?\s+)/i, '').replace(/(?:\s+announcement|\s+\(announcement\))$/i, '').trim();
+          }
+
+          name = name.replace(/(?:\s+channel|\s+channels)$/i, '').replace(/^(?:channel\s+)/i, '').trim();
+          name = name.replace(/^["']|["']$/g, '').trim();
+
+          if (name.length > 0 && !/^(?:multiple|specific|channels?)$/i.test(name)) {
+            const finalName = type === 'GUILD_TEXT' ? name.toLowerCase().replace(/\s+/g, '-') : name;
+            childActions.push({
+              action: 'create_channel',
+              name: finalName,
+              category: catName,
+              type,
+              isPrivate
+            });
+          }
+        }
+
+        if (childActions.length > 0) {
+          return {
+            intent: 'complex_plan',
+            multiActions: [
+              {
+                action: 'create_category',
+                name: catName,
+                isPrivate
+              },
+              ...childActions
+            ],
+            isHighImpact: false,
+            thought: `Create category "${catName}" and simultaneously add ${childActions.length} channels (${childActions.map(c => c.name).join(', ')}) under it`
+          };
+        }
+      }
     }
 
     // C9. "Create a Support category" / "Create a private Staff category"

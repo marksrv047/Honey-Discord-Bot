@@ -345,6 +345,65 @@ export class CompletenessChecker {
       }
     }
 
+    // C0. Category + Multiple Channels: "Create a category Community and simultaneously add multiple channels under that specific category: general, memes, voice"
+    // Also: "Create a category Staff and add channels mod-chat, mod-logs, announcements under that category"
+    const catMultiMatch = prompt.match(/^create\s+(?:a\s+)?(?:new\s+)?(private\s+)?category\s+(?:called\s+|named\s+)?(["'#\w\s.-]+?)(?:\s*(?:&|and)\s*(?:simultaneously\s+)?(?:add|create)\s+(?:multiple\s+)?channels?(?:\s+(?:under|in|into|inside|to)\s+(?:that|the)?\s*(?:specific\s+)?category)?:?\s*|\s+with\s+(?:the\s+)?(?:following\s+)?channels?:?\s*|\s*(?:&|and)\s*(?:simultaneously\s+)?(?:add|create)\s+)(.+)$/i) ||
+      prompt.match(/^create\s+(?:a\s+)?(?:new\s+)?(private\s+)?(["'#\w\s.-]+?)\s+category(?:\s*(?:&|and)\s*(?:simultaneously\s+)?(?:add|create)\s+(?:multiple\s+)?channels?(?:\s+(?:under|in|into|inside|to)\s+(?:that|the)?\s*(?:specific\s+)?category)?:?\s*|\s+with\s+(?:the\s+)?(?:following\s+)?channels?:?\s*|\s*(?:&|and)\s*(?:simultaneously\s+)?(?:add|create)\s+)(.+)$/i);
+
+    if (catMultiMatch) {
+      const isPrivate = Boolean(catMultiMatch[1]);
+      const catName = catMultiMatch[2].trim().replace(/^["']|["']$/g, '');
+      let channelsRaw = catMultiMatch[3].trim();
+
+      if (catName && !/^(a|new|the|private|channel|channels)$/i.test(catName) && channelsRaw) {
+        channelsRaw = channelsRaw.replace(/(?:\s+(?:under|in|into|to|inside)\s+(?:that|the|this)?\s*(?:specific\s+)?category|\s+under\s+it|\s+in\s+it|\s+inside\s+it|\s+when\s+asked\s+to\s+do\s+so)+$/i, '').trim();
+        channelsRaw = channelsRaw.replace(/^(?:(?:the\s+)?(?:multiple\s+)?channels?:?\s*)/i, '').trim();
+
+        const channelParts = channelsRaw.split(/(?:,\s*(?:and\s+)?|\s+and\s+|;\s*|\n+|&\s*)/i).map(s => s.trim()).filter(Boolean);
+
+        // Ensure category creation action exists
+        const hasCat = actions.some(a => a.action === 'create_category' && a.name?.toLowerCase() === catName.toLowerCase());
+        if (!hasCat) {
+          actions.unshift({
+            action: 'create_category',
+            name: catName,
+            isPrivate
+          });
+        }
+
+        for (const part of channelParts) {
+          let name = part.trim().replace(/^[:#•\-*]+|[:#•\-*]+$/g, '').trim();
+          if (!name) continue;
+
+          let type = 'GUILD_TEXT';
+          if (/^(?:voice\s+channel|voice\s+|vc\s+)/i.test(name) || /(?:\s+voice|\s+\(voice\))$/i.test(name) || /^voice$/i.test(name)) {
+            type = 'GUILD_VOICE';
+            name = name.replace(/^(?:voice\s+channel|voice\s+|vc\s+)/i, '').replace(/(?:\s+voice|\s+\(voice\))$/i, '').trim() || 'voice';
+          } else if (/^(?:announcement\s+channel|announcements?\s+)/i.test(name) || /(?:\s+announcement|\s+\(announcement\))$/i.test(name)) {
+            type = 'GUILD_ANNOUNCEMENT';
+            name = name.replace(/^(?:announcement\s+channel|announcements?\s+)/i, '').replace(/(?:\s+announcement|\s+\(announcement\))$/i, '').trim();
+          }
+
+          name = name.replace(/(?:\s+channel|\s+channels)$/i, '').replace(/^(?:channel\s+)/i, '').trim();
+          name = name.replace(/^["']|["']$/g, '').trim();
+
+          if (name.length > 0 && !/^(?:multiple|specific|channels?)$/i.test(name)) {
+            const finalName = type === 'GUILD_TEXT' ? name.toLowerCase().replace(/\s+/g, '-') : name;
+            const hasCh = actions.some(a => a.action === 'create_channel' && a.name?.toLowerCase() === finalName.toLowerCase() && (!a.category || a.category.toLowerCase() === catName.toLowerCase()));
+            if (!hasCh) {
+              actions.push({
+                action: 'create_channel',
+                name: finalName,
+                category: catName,
+                type,
+                isPrivate
+              });
+            }
+          }
+        }
+      }
+    }
+
     // C. Category + Channel + Permissions: "Create a private Support category, add a ticket channel, and give the Support Team access"
     const catAndChMatch = prompt.match(/^create\s+(?:a\s+)?(?:(private)\s+)?([a-zA-Z0-9_\s-]+?)\s+category(?:,\s*(?:and\s+)?|\s+and\s+)(?:add|create)\s+(?:a\s+)?(?:(private)\s+)?([a-zA-Z0-9_\s-]+?)\s+channel(?:(?:\s+in\s+it)?)(?:,\s*(?:and\s+)?|\s+and\s+)(?:give|grant)\s+(?:the\s+)?([a-zA-Z0-9_\s-]+?)\s+(?:role\s+)?access/i);
     if (catAndChMatch) {

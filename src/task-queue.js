@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { ChannelType } from 'discord.js';
 import { Logger } from './logger.js';
 import { ModLogService } from './mod-log.js';
 import { classifyDiscordError } from './recovery.js';
@@ -678,18 +679,48 @@ export class TaskQueue {
       }
     }
 
+    // Check Category Creation
+    if (action === 'create_category') {
+      const targetCatName = args?.name || args?.categoryName || args?.category || args?.targetCategory;
+      if (targetCatName) {
+        const existing = channelsList.find(
+          c => c.type === ChannelType.GuildCategory && c.name?.toLowerCase() === String(targetCatName).toLowerCase()
+        );
+        if (existing) {
+          return {
+            success: true,
+            details: `Category "${existing.name}" already exists (idempotent reuse)`,
+            channelId: existing.id
+          };
+        }
+      }
+    }
+
     // Check Channel Creation
-    const targetChannelName = args?.name || args?.channelName || args?.channel || args?.categoryName || args?.category;
-    if ((action === 'create_channel' || action === 'create_category') && targetChannelName) {
-      const existing = channelsList.find(
-        c => c.name?.toLowerCase() === String(targetChannelName).toLowerCase()
-      );
-      if (existing) {
-        return {
-          success: true,
-          details: `Channel "${existing.name}" already exists (idempotent reuse)`,
-          channelId: existing.id
-        };
+    if (action === 'create_channel') {
+      const targetChannelName = args?.name || args?.channelName || args?.channel || args?.targetChannel;
+      if (targetChannelName) {
+        const parentCatName = args?.category || args?.parentCategory || args?.parent;
+        const existing = channelsList.find(c => {
+          if (c.type === ChannelType.GuildCategory) return false;
+          if (c.name?.toLowerCase() !== String(targetChannelName).toLowerCase()) return false;
+          if (parentCatName) {
+            const cleanParent = String(parentCatName).toLowerCase().trim();
+            const parentCat = channelsList.find(p => p.type === ChannelType.GuildCategory && (p.id === cleanParent || p.name?.toLowerCase() === cleanParent));
+            if (parentCat) {
+              return c.parentId === parentCat.id;
+            }
+            return false;
+          }
+          return true;
+        });
+        if (existing) {
+          return {
+            success: true,
+            details: `Channel "${existing.name}" already exists (idempotent reuse)`,
+            channelId: existing.id
+          };
+        }
       }
     }
 

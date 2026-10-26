@@ -652,9 +652,25 @@ export class Operations {
     let parentId = null;
     const parentCategory = options.category || options.parentCategory || options.parent;
     if (parentCategory && chType !== ChannelType.GuildCategory) {
-      const cat = typeof context?.resolveTarget === 'function' 
+      let cat = typeof context?.resolveTarget === 'function' 
         ? await context.resolveTarget(parentCategory, 'channel')
-        : guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && (c.id === parentCategory || c.name?.toLowerCase() === String(parentCategory).toLowerCase()));
+        : guild.channels?.cache?.find?.(c => c.type === ChannelType.GuildCategory && (c.id === parentCategory || c.name?.toLowerCase() === String(parentCategory).toLowerCase()));
+      
+      // Fallback 1: check ActionLedger for category created in this execution
+      if (!cat && context?.executionId) {
+        const history = ActionLedger.history?.get?.(context.executionId) || [];
+        const catEntry = history.find(e => (e.type === 'category' || e.action === 'create_category') && (e.id === parentCategory || e.name?.toLowerCase() === String(parentCategory).toLowerCase()));
+        if (catEntry) parentId = catEntry.id;
+      }
+
+      // Fallback 2: check guild.channels.fetch if not found
+      if (!cat && !parentId && typeof guild.channels?.fetch === 'function') {
+        try {
+          const allChannels = await guild.channels.fetch();
+          cat = allChannels?.find?.(c => c && c.type === ChannelType.GuildCategory && (c.id === parentCategory || c.name?.toLowerCase() === String(parentCategory).toLowerCase()));
+        } catch (_) {}
+      }
+
       if (cat && cat.type === ChannelType.GuildCategory) parentId = cat.id;
     }
 
@@ -683,6 +699,10 @@ export class Operations {
       rateLimitPerUser: options.slowmodeSeconds || 0,
       reason: `Created via Honey Bot by ${context?.invokingUser?.tag || 'moderator'}`
     });
+
+    if (guild.channels?.cache && typeof guild.channels.cache.set === 'function') {
+      guild.channels.cache.set(channel.id, channel);
+    }
 
     if (context?.executionId) {
       ActionLedger.recordCreatedResource(context.executionId, 'channel', channel.id, channel.name, guild.id);
@@ -1704,6 +1724,10 @@ export class Operations {
       permissionOverwrites: overwrites.length > 0 ? overwrites : undefined,
       reason: `Created category via Honey Bot by ${context?.invokingUser?.tag || 'moderator'}`
     });
+
+    if (guild.channels?.cache && typeof guild.channels.cache.set === 'function') {
+      guild.channels.cache.set(category.id, category);
+    }
 
     if (context?.executionId) {
       ActionLedger.recordCreatedResource(context.executionId, 'category', category.id, category.name, guild.id);
