@@ -294,7 +294,7 @@ export class TaskQueue {
         id: act.id || `step_${index + 1}`,
         action: act.action,
         title: act.title || act.action,
-        args: { ...act },
+        args: { ...act, ...(act.args || {}) },
         target,
         dependsOn: Array.isArray(act.dependsOn) ? [...act.dependsOn] : [],
         status: TaskActionStatus.PENDING,

@@ -253,13 +253,13 @@ export class CompletenessChecker {
     // =========================================================================
 
     // A. Voice + Music: "Join the General voice channel and play this YouTube link: [URL]"
-    const voiceAndMusicMatch = prompt.match(/(?:join|connect\s+to)\s+(?:the\s+)?([a-zA-Z0-9_\s-]+?)\s+(?:voice(?:\s+channel)?|vc)\s+and\s+play\s+(?:(?:this|a)\s+)?(?:youtube\s+(?:link|video)|track|song|music)?\s*:?\s*(https?:\/\/[^\s]+|["'][^"']+["']|[a-zA-Z0-9_\s-]+)/i);
+    const voiceAndMusicMatch = prompt.match(/(?:join|connect(?:\s+to)?)\s+(?:the\s+)?(?:channel\s+|voice(?:\s+channel)?\s+|vc\s+)?["'“]?([^"'“\n]+?)["'”]?\s+and\s+play\s+(?:(?:this|a)\s+)?(?:youtube\s+(?:link|video)|track|song|music)?\s*:?\s*["'“]?(.+?)["'”]?$/i);
     if (voiceAndMusicMatch) {
-      const channelName = voiceAndMusicMatch[1].trim();
-      let mediaQuery = voiceAndMusicMatch[2].trim().replace(/^["']|["']$/g, '');
+      const channelName = voiceAndMusicMatch[1].trim().replace(/^["'“”`]+|["'“”`]+$/g, '');
+      let mediaQuery = (voiceAndMusicMatch[2] || '').trim().replace(/^["'“”`]+|["'“”`]+$/g, '');
       if (mediaQuery.startsWith(':')) mediaQuery = mediaQuery.slice(1).trim();
 
-      const hasVoice = actions.some(a => a.action === 'connect_voice');
+      const hasVoice = actions.some(a => a.action === 'connect_voice' || a.action === 'voice_join');
       const hasMusic = actions.some(a => a.action === 'music_play');
 
       if (!hasVoice) {
@@ -275,6 +275,16 @@ export class CompletenessChecker {
           query: mediaQuery,
           targetChannel: channelName.toLowerCase()
         });
+      } else {
+        // Ensure existing music_play action is bound to the actual media query, not channel name
+        for (const act of actions) {
+          if (act.action === 'music_play') {
+            if (!act.query || act.query === channelName || act.query === 'current') {
+              act.query = mediaQuery;
+              if (act.args) act.args.query = mediaQuery;
+            }
+          }
+        }
       }
     }
 
@@ -556,7 +566,7 @@ export class CompletenessChecker {
         const prev = result[j];
 
         // 1. Voice Connection -> Audio Playback dependency
-        if (prev.action === 'connect_voice' && current.action.startsWith('music_')) {
+        if ((prev.action === 'connect_voice' || prev.action === 'voice_join') && current.action.startsWith('music_')) {
           if (!current.dependsOn.includes(prev.id)) {
             current.dependsOn.push(prev.id);
           }

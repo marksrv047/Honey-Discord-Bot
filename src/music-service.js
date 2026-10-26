@@ -356,7 +356,7 @@ export class MusicService {
       if (subscription.voiceConnection && typeof subscription.voiceConnection.rejoin === 'function') {
         subscription.voiceConnection.rejoin({
           channelId: voiceChannel.id,
-          selfDeaf: false,
+          selfDeaf: true,
           selfMute: false
         });
       }
@@ -372,7 +372,7 @@ export class MusicService {
         channelId: voiceChannel.id,
         guildId: guild.id,
         adapterCreator: guild.voiceAdapterCreator,
-        selfDeaf: false,
+        selfDeaf: true,
         selfMute: false
       });
 
@@ -409,7 +409,8 @@ export class MusicService {
    * Resolves search query or URL into structured Track object
    */
   static async resolveTrack(query, requestedBy) {
-    const trimmed = String(query || '').trim();
+    const raw = String(query || '').trim();
+    const trimmed = raw.replace(/^["'“”`]+|["'“”`]+$/g, '').trim();
     if (!trimmed) {
       throw new Error('Search query or audio URL cannot be empty.');
     }
@@ -525,14 +526,20 @@ export class MusicService {
    * Main Play action: joins member's voice channel, resolves track, enqueues or plays immediately.
    */
   static async play(guild, member, query) {
-    if (!member?.voice?.channel) {
+    let subscription = this.getSubscription(guild.id);
+    let voiceChannel = member?.voice?.channel;
+
+    if (!voiceChannel && subscription?.voiceConnection) {
+      voiceChannel = guild.members?.me?.voice?.channel;
+    }
+
+    if (!voiceChannel) {
       return {
         success: false,
         error: 'You must join a voice channel before requesting music playback.'
       };
     }
 
-    const voiceChannel = member.voice.channel;
     const botMember = guild.members.me;
 
     // Verify bot permissions in voice channel
@@ -552,14 +559,14 @@ export class MusicService {
       }
     }
 
-    let subscription = this.getSubscription(guild.id);
-
     if (!subscription) {
       try {
         const connection = joinVoiceChannel({
           channelId: voiceChannel.id,
           guildId: guild.id,
-          adapterCreator: guild.voiceAdapterCreator
+          adapterCreator: guild.voiceAdapterCreator,
+          selfDeaf: true,
+          selfMute: false
         });
 
         subscription = new MusicSubscription(connection, null, guild.id);

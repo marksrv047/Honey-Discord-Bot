@@ -924,7 +924,8 @@ export class Executor {
 
       case 'music_play': {
         const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
-        return await Operations.playMusic(guild, action.query || action.targetRef, ctx);
+        const rawQuery = action.query || action.args?.query || (action.targetType !== 'channel' && action.targetRef !== 'current' ? action.targetRef : null) || action.target;
+        return await Operations.playMusic(guild, rawQuery, ctx);
       }
 
       case 'music_pause': {
@@ -1107,8 +1108,10 @@ export class Executor {
       case 'audit_server':
         return await Operations.auditServer(guild, executionContext);
 
-      case 'music_play':
-        return await Operations.playMusic(guild, intentObj.args.query || intentObj.targetRef, executionContext);
+      case 'music_play': {
+        const rawQuery = intentObj.args?.query || intentObj.query || (intentObj.targetType !== 'channel' && intentObj.targetRef !== 'current' ? intentObj.targetRef : null) || intentObj.target;
+        return await Operations.playMusic(guild, rawQuery, executionContext);
+      }
 
       case 'music_pause':
         return await Operations.pauseMusic(guild, executionContext);

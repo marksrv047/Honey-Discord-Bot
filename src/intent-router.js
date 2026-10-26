@@ -224,9 +224,40 @@ export class IntentRouter {
       };
     }
 
+    // V0. Voice connection + Music play combo fast-path
+    const voiceAndPlayMatch = cleanPrompt.match(/^(?:connect(?:\s+to)?|join)\s+(?:the\s+)?(?:channel\s+|voice\s+channel\s+|vc\s+)?["'“]?([^"'“\n]+?)["'”]?\s+and\s+play\s+(?:(?:this|a)\s+)?(?:song|music|track)?\s*:?\s*["'“]?(.+?)["'”]?$/i);
+    if (voiceAndPlayMatch) {
+      const channelName = voiceAndPlayMatch[1].trim().replace(/^["'“”`]+|["'“”`]+$/g, '');
+      const songQuery = voiceAndPlayMatch[2].trim().replace(/^["'“”`]+|["'“”`]+$/g, '');
+      logger.info('Routed through fast-path: voice_join + music_play combo', { channelName, songQuery });
+      return {
+        intent: 'complex_plan',
+        targetType: null,
+        targetRef: 'current',
+        args: {},
+        isHighImpact: false,
+        thought: `Connect to voice channel "${channelName}" and play music "${songQuery}"`,
+        multiActions: [
+          {
+            action: 'voice_join',
+            targetChannel: channelName,
+            targetRef: channelName,
+            channel: channelName,
+            args: { channel: channelName }
+          },
+          {
+            action: 'music_play',
+            query: songQuery,
+            targetRef: songQuery,
+            args: { query: songQuery }
+          }
+        ]
+      };
+    }
+
     // V1. Voice connection fast-path
     const voiceJoinMatch = cleanPrompt.match(/^(?:connect(?:\s+to)?|join)\s+(?:the\s+)?(?:voice\s+channel\s+)?["'“]?([^"'\n]+?)["'”]?$/i);
-    if (voiceJoinMatch && /(?:voice|channel|hangout|general|lounge|music|talk|chat|vc)/i.test(cleanPrompt)) {
+    if (voiceJoinMatch && !/\band\s+play\b/i.test(cleanPrompt) && /(?:voice|channel|hangout|general|lounge|music|talk|chat|vc)/i.test(cleanPrompt)) {
       const channelName = voiceJoinMatch[1].replace(/^(?:the\s+)?(?:voice\s+channel\s+)?/i, '').replace(/["'”]/g, '').trim();
       return {
         intent: 'voice_join',
@@ -1712,7 +1743,7 @@ export class IntentRouter {
     // M1. "play <query / URL>" / "play song <query>"
     const musicPlayMatch = cleanPrompt.match(/^(?:play(?:\s+(?:song|music|track))?|stream(?:\s+music)?)\s+(.+)$/i);
     if (musicPlayMatch) {
-      const query = musicPlayMatch[1].trim();
+      const query = musicPlayMatch[1].trim().replace(/^["'“”`]+|["'“”`]+$/g, '').trim();
       logger.info('Routed through fast-path: music_play', { query });
       return {
         intent: 'music_play',
