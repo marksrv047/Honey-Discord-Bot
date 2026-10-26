@@ -127,6 +127,266 @@ export class ResponseService {
   }
 
   /**
+   * Normalizes linebreaks and unescapes literal \n sequences.
+   */
+  static normalizeNewlines(str) {
+    if (!str || typeof str !== 'string') return '';
+    return str
+      .replace(/\\r\\n/g, '\n')
+      .replace(/\\n/g, '\n')
+      .replace(/\r\n/g, '\n');
+  }
+
+  /**
+   * Formats a collection of items as genuine, distinct Markdown bullet points.
+   * Never collapses list items into a single paragraph.
+   */
+  static renderBulletList(items = [], prefix = '• ') {
+    if (!Array.isArray(items)) return '';
+    const formatted = [];
+    for (const item of items) {
+      if (!item) continue;
+      if (typeof item === 'string') {
+        const text = ResponseService.normalizeNewlines(item).trim();
+        if (!text) continue;
+        if (/^[-*•●]\s+/.test(text)) {
+          formatted.push(text);
+        } else {
+          formatted.push(`${prefix}${text}`);
+        }
+      } else if (typeof item === 'object') {
+        const title = item.title || item.label || item.name || '';
+        const desc = item.description || item.value || item.text || '';
+        if (title && desc) {
+          formatted.push(`${prefix}**${title}** — ${desc}`);
+        } else if (title) {
+          formatted.push(`${prefix}**${title}**`);
+        } else if (desc) {
+          formatted.push(`${prefix}${desc}`);
+        }
+      }
+    }
+    return formatted.join('\n');
+  }
+
+  /**
+   * Formats ordered procedural steps with genuine newlines.
+   */
+  static renderNumberedList(items = []) {
+    if (!Array.isArray(items)) return '';
+    return items
+      .filter(Boolean)
+      .map((item, idx) => {
+        const text = typeof item === 'string' ? ResponseService.normalizeNewlines(item).trim() : String(item);
+        const clean = text.replace(/^\d+\.\s*/, '');
+        return `${idx + 1}. ${clean}`;
+      })
+      .join('\n');
+  }
+
+  /**
+   * Deterministic template for successful operations.
+   */
+  static formatOperationSuccess(options = {}) {
+    const title = options.title || 'Operation completed';
+    const lines = [`**${title}**`];
+    if (options.target) lines.push(`- **Target:** ${options.target}`);
+    if (options.change) lines.push(`- **Change:** ${options.change}`);
+    if (options.parameters) lines.push(`- **Parameters:** ${options.parameters}`);
+    if (options.scope) lines.push(`- **Scope:** ${options.scope}`);
+    lines.push(`- **Result:** ${options.outcome || options.result || 'Succeeded and verified'}`);
+    return lines.join('\n');
+  }
+
+  /**
+   * Deterministic template for failed operations.
+   */
+  static formatOperationFailure(options = {}) {
+    const title = options.title || 'Operation failed';
+    const lines = [`**${title}**`];
+    if (options.target) lines.push(`- **Target:** ${options.target}`);
+    if (options.attempted) lines.push(`- **Attempted:** ${options.attempted}`);
+    lines.push(`- **Reason:** ${options.reason || 'The bot lacks permission or encountered an unexpected issue.'}`);
+    if (options.partialSuccess) lines.push(`- **Partial progress:** ${options.partialSuccess}`);
+    if (options.nextStep) lines.push(`- **Next step:** ${options.nextStep}`);
+    return lines.join('\n');
+  }
+
+  /**
+   * Deterministic template for multi-step execution results.
+   */
+  static formatMultiStepResult(options = {}) {
+    const title = options.title || 'Operation results';
+    const steps = Array.isArray(options.steps) ? options.steps : [];
+    const lines = [`**${title}**`];
+
+    for (const step of steps) {
+      const isSuccess = step.status === 'COMPLETED' || step.status === 'passed' || step.success === true;
+      const statusLabel = isSuccess ? 'Succeeded' : (step.status === 'SKIPPED' ? 'Skipped' : 'Failed');
+      const actionText = step.details || step.action || step.description || '';
+      lines.push(`- **${statusLabel}:** ${actionText}`);
+      if (!isSuccess && step.reason) {
+        lines.push(`- **Reason:** ${step.reason}`);
+      }
+    }
+
+    if (options.summary) {
+      lines.push('');
+      lines.push(options.summary);
+    }
+    return lines.join('\n');
+  }
+
+  /**
+   * Deterministic template for system diagnostics.
+   */
+  static formatDiagnosticsReport(report = {}) {
+    const isHealthy = report.status === 'healthy';
+    const lines = ['**System diagnostics**'];
+    lines.push(`- **Overall status:** ${isHealthy ? 'Healthy' : (report.status === 'degraded' ? 'Degraded' : 'Issues detected')}`);
+
+    const checks = report.checks || {};
+    const totalChecks = Object.keys(checks).length;
+    const passed = Object.values(checks).filter(c => c.status === 'healthy' || c.status === 'passed').length;
+    const failed = Object.values(checks).filter(c => c.status === 'unhealthy' || c.status === 'failed').length;
+    const inconclusive = totalChecks - passed - failed;
+
+    lines.push(`- **Checks performed:** ${totalChecks} total checks (${passed} passed)`);
+
+    const issues = report.issues || [];
+    if (issues.length > 0) {
+      lines.push(`- **Issues found:** ${issues.join('; ')}`);
+    } else if (failed > 0) {
+      const failedNames = Object.entries(checks).filter(([, c]) => c.status !== 'healthy' && c.status !== 'passed').map(([k, c]) => `${k} (${c.details || 'failed'})`);
+      lines.push(`- **Issues found:** ${failedNames.join('; ')}`);
+    } else {
+      lines.push('- **Issues found:** None. All verified checks passed.');
+    }
+
+    if (report.recommendedFixes && report.recommendedFixes.length > 0) {
+      lines.push(`- **Recommended fixes:** ${report.recommendedFixes.join('; ')}`);
+    } else if (issues.length > 0 || failed > 0) {
+      lines.push('- **Recommended fixes:** Inspect Discord permissions and role hierarchy for failed items.');
+    }
+
+    if (inconclusive > 0) {
+      const incNames = Object.entries(checks).filter(([, c]) => c.status === 'inconclusive' || c.status === 'skipped').map(([k]) => k);
+      lines.push(`- **Checks that could not be completed:** ${incNames.join(', ')}`);
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Safely splits long Discord messages without breaking markdown code blocks or bullet lists.
+   */
+  static splitMessage(content, maxLength = 2000) {
+    if (!content || typeof content !== 'string') return [''];
+    const normalized = ResponseService.normalizeNewlines(content);
+    if (normalized.length <= maxLength) return [normalized];
+
+    const chunks = [];
+    let currentChunk = '';
+    let inCodeBlock = false;
+    let codeBlockLang = '';
+
+    const lines = normalized.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Track code block toggle
+      const codeBlockMatch = line.match(/^```(\w+)?/);
+      const isCodeFence = line.startsWith('```');
+
+      // Check if adding this line exceeds maxLength
+      const potentialAddition = (currentChunk ? '\n' : '') + line;
+      const willExceed = (currentChunk.length + potentialAddition.length + (inCodeBlock ? 4 : 0)) > maxLength;
+
+      if (willExceed && currentChunk.length > 0) {
+        if (inCodeBlock) {
+          currentChunk += '\n```';
+        }
+        chunks.push(currentChunk.trim());
+
+        if (inCodeBlock) {
+          currentChunk = '```' + codeBlockLang + '\n' + line;
+        } else {
+          currentChunk = line;
+        }
+      } else {
+        currentChunk += (currentChunk ? '\n' : '') + line;
+      }
+
+      if (isCodeFence) {
+        if (inCodeBlock) {
+          inCodeBlock = false;
+          codeBlockLang = '';
+        } else {
+          inCodeBlock = true;
+          codeBlockLang = codeBlockMatch ? codeBlockMatch[1] || '' : '';
+        }
+      }
+    }
+
+    if (currentChunk.trim().length > 0) {
+      chunks.push(currentChunk.trim());
+    }
+
+    return chunks.length > 0 ? chunks : [''];
+  }
+
+  /**
+   * Renders the authoritative Slash Command overview.
+   */
+  static formatSlashCommandOverview(registeredCommands = []) {
+    const lines = [
+      '**Registered Discord Slash Commands**',
+      'Honey Bot uses exactly five top-level slash commands for Discord interaction:',
+      ''
+    ];
+
+    for (const cmd of registeredCommands) {
+      const optReq = cmd.required ? 'required' : 'optional';
+      lines.push(`• **\`${cmd.command}\`** — ${cmd.description}`);
+      lines.push(`  *Usage:* \`${cmd.usage}\` (${optReq})`);
+      lines.push(`  *Example:* \`${cmd.example}\``);
+    }
+
+    lines.push('');
+    lines.push('**Natural-language operations via `/go`**');
+    lines.push('Administrative tasks (channel renames, member timeouts, role assignment, message purges) are capabilities invoked through the `/go` command, **not** separate slash commands.');
+    lines.push('Example: `/go prompt: Timeout Alex for 10 minutes for spamming.`');
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Renders capabilities for a specific category with natural language examples.
+   */
+  static formatCategoryCapabilities(categoryMeta = {}, capabilities = []) {
+    const lines = [
+      `**${categoryMeta.name || 'Capabilities'}**`,
+      categoryMeta.description || '',
+      ''
+    ];
+
+    if (!capabilities || capabilities.length === 0) {
+      lines.push('*No capabilities currently declared in this category.*');
+      return lines.join('\n');
+    }
+
+    for (const cap of capabilities) {
+      lines.push(`• **${cap.title}** — ${cap.description}`);
+      if (cap.goExample) {
+        lines.push(`  *Example:* \`${cap.goExample}\``);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
    * Generates a context-aware deterministic variation index (0, 1, 2)
    * based on execution context or details.
    */

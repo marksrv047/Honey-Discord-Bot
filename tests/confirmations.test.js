@@ -99,4 +99,37 @@ test('Confirmations: requestConfirmation handles undeferred interaction with rep
   assert.equal(replyCalled, true);
   assert.equal(confirmed, true);
 });
+test('Confirmations: formatActionTitle maps internal IDs to clean user-facing titles', () => {
+  assert.equal(ConfirmationManager.formatActionTitle('kick_member'), 'Kick member');
+  assert.equal(ConfirmationManager.formatActionTitle('ban_member'), 'Ban member');
+  assert.equal(ConfirmationManager.formatActionTitle('timeout_member'), 'Timeout member');
+  assert.equal(ConfirmationManager.formatActionTitle('delete_channel'), 'Delete channel');
+  assert.equal(ConfirmationManager.formatActionTitle('delete_category'), 'Delete category');
+  assert.equal(ConfirmationManager.formatActionTitle('purge_messages'), 'Purge messages');
+  assert.equal(ConfirmationManager.formatActionTitle('assign_role'), 'Assign role');
+  assert.equal(ConfirmationManager.formatActionTitle('remove_role'), 'Remove role');
+  assert.equal(ConfirmationManager.formatActionTitle('move_channel_to_category'), 'Move channel to category');
+});
 
+test('Confirmations: formatActionSummary formats extended operations cleanly', () => {
+  assert.equal(
+    ConfirmationManager.formatActionSummary({ action: 'delete_category', targetCategory: 'archive' }),
+    'Category `archive`'
+  );
+  assert.equal(
+    ConfirmationManager.formatActionSummary({ action: 'purge_messages', targetChannel: 'general', count: 50 }),
+    '50 messages in `general`'
+  );
+  assert.equal(
+    ConfirmationManager.formatActionSummary({ action: 'assign_role', targetRole: 'VIP', targetMember: 'Alex' }),
+    'Role `VIP` to `Alex`'
+  );
+  assert.equal(
+    ConfirmationManager.formatActionSummary({ action: 'remove_role', targetRole: 'VIP', targetMember: 'Alex' }),
+    'Role `VIP` from `Alex`'
+  );
+  assert.equal(
+    ConfirmationManager.formatActionSummary({ action: 'unban_member', targetMember: 'user_123' }),
+    'User `user_123`'
+  );
+});

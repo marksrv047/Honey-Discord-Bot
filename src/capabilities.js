@@ -1845,4 +1845,312 @@ export class CapabilityRegistry {
 
     return null;
   }
+
+  /**
+   * Returns metadata for the five officially registered Discord slash commands.
+   */
+  static getRegisteredSlashCommands() {
+    return REGISTERED_SLASH_COMMANDS;
+  }
+
+  /**
+   * Returns all supported capability categories with metadata and capability lists.
+   */
+  static getAllCategories() {
+    const categories = Object.values(CAPABILITY_CATEGORIES).sort((a, b) => a.order - b.order);
+    return categories.map(cat => ({
+      ...cat,
+      capabilities: CapabilityRegistry.getByCategory(cat.key).map(cap => CapabilityRegistry.toAuthoritative(cap))
+    }));
+  }
+
+  /**
+   * Formats a capability into an authoritative user-facing descriptor.
+   */
+  static toAuthoritative(cap) {
+    if (!cap) return null;
+    const catMeta = CAPABILITY_CATEGORIES[cap.category] || { name: cap.category, description: '' };
+    const title = cap.title || humanizeActionTitle(cap.action);
+    const primaryExample = cap.examples && cap.examples[0] ? cap.examples[0] : cap.action.replace(/_/g, ' ');
+    const isMutating = Boolean(
+      cap.isDestructive ||
+      cap.requiresConfirmation ||
+      !['READ_ONLY', 'INSPECT', 'AUDIT', 'SEARCH', 'LIST', 'LOOKUP'].includes(cap.riskLevel) &&
+      !['list_channels', 'list_roles', 'list_categories', 'inspect_category', 'inspect_nickname', 'lookup_member', 'search_messages', 'inspect_guild_policy', 'test_guild_policy', 'music_queue', 'music_nowplaying'].includes(cap.action)
+    );
+
+    return {
+      action: cap.action,
+      title,
+      description: cap.description,
+      category: cap.category,
+      categoryName: catMeta.name,
+      examples: cap.examples || [],
+      goExample: `/go prompt: ${primaryExample}`,
+      requiredBotPermissions: cap.requiredBotPermissions || [],
+      requiredUserPermissions: cap.requiredUserPermissions || [],
+      isMutating,
+      requiresConfirmation: Boolean(cap.requiresConfirmation || cap.riskLevel === 'HIGH' || cap.isDestructive),
+      isImplemented: cap.status === CapabilityStatus.IMPLEMENTED || !cap.status,
+      limitations: cap.discordLimitations || 'Subject to Discord rate limits and role hierarchy permissions.'
+    };
+  }
+
+  /**
+   * Searches capabilities by semantic relevance, keywords, and natural-language synonyms.
+   */
+  static searchCapabilities(query) {
+    if (!query) return [];
+    const qLower = String(query).toLowerCase().trim();
+
+    // Generic overarching capability inquiries should fall through to general help
+    if (/^(?:what\s+(?:are\s+your|can\s+you\s+do|capabilities)|capabilities\??|help\??|how\s+does\s+it\s+work\??)/i.test(qLower)) {
+      return [];
+    }
+
+    // 1. Check if query matches category directly
+    for (const cat of Object.values(CAPABILITY_CATEGORIES)) {
+      const catKeyLower = cat.key.toLowerCase();
+      const catNameLower = cat.name.toLowerCase();
+      if (qLower === catKeyLower || qLower === catNameLower || new RegExp(`\\b${catNameLower}\\b`, 'i').test(qLower)) {
+        return CapabilityRegistry.getByCategory(cat.key).map(c => CapabilityRegistry.toAuthoritative(c));
+      }
+    }
+
+    // 2. Direct single match
+    const single = CapabilityRegistry.findMatchingCapability(qLower);
+    if (single) {
+      return [CapabilityRegistry.toAuthoritative(single)];
+    }
+
+    // 3. Multi-word search across action, title, description, and synonyms
+    const stopWords = new Set([
+      'the', 'and', 'for', 'someone', 'user', 'member', 'with', 'from', 'you', 'your',
+      'can', 'how', 'what', 'show', 'tell', 'all', 'our', 'this', 'that', 'are', 'is',
+      'was', 'were', 'about', 'please', 'does', 'capabilities', 'capability', 'help'
+    ]);
+    const words = qLower
+      .split(/[\s'’.,!?-]+/)
+      .filter(w => w.length >= 3 && !stopWords.has(w));
+
+    if (words.length === 0) return [];
+
+    const matches = [];
+    for (const cap of Object.values(CAPABILITY_REGISTRY)) {
+      const auth = CapabilityRegistry.toAuthoritative(cap);
+      const text = `${auth.action} ${auth.title} ${auth.description} ${cap.synonyms?.join(' ') || ''}`.toLowerCase();
+      const matchCount = words.filter(w => {
+        const escaped = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+      }).length;
+      if (matchCount > 0) {
+        matches.push({ capability: auth, score: matchCount });
+      }
+    }
+
+    matches.sort((a, b) => b.score - a.score);
+    return matches.slice(0, 10).map(m => m.capability);
+  }
 }
+
+/**
+ * Clean human-readable titles for internal capability action IDs.
+ */
+export function humanizeActionTitle(actionId) {
+  if (!actionId) return 'Action';
+  const explicit = {
+    send_message: 'Send a message',
+    send_announcement: 'Post an announcement',
+    pin_message: 'Pin a message',
+    unpin_message: 'Unpin a message',
+    add_reaction: 'Add a reaction',
+    purge_messages: 'Purge messages',
+    search_messages: 'Search messages',
+    create_channel: 'Create a channel',
+    edit_channel: 'Edit a channel',
+    rename_channel: 'Rename a channel',
+    delete_channel: 'Delete a channel',
+    set_channel_slowmode: 'Set channel slowmode',
+    lock_channel: 'Lock a channel',
+    unlock_channel: 'Unlock a channel',
+    edit_channel_topic: 'Edit a channel topic',
+    move_channel_to_category: 'Move channel to category',
+    create_category: 'Create a category',
+    rename_category: 'Rename a category',
+    delete_category: 'Delete a category',
+    inspect_category: 'Inspect a category',
+    list_categories: 'List categories',
+    set_category_permission: 'Set category permissions',
+    sync_category_permissions: 'Sync category permissions',
+    inspect_category_sync: 'Inspect category permission sync',
+    create_role: 'Create a role',
+    edit_role: 'Edit a role',
+    delete_role: 'Delete a role',
+    assign_role: 'Assign a role',
+    remove_role: 'Remove a role',
+    change_nickname: 'Change a nickname',
+    remove_nickname: 'Remove a nickname',
+    inspect_nickname: 'Inspect member nickname',
+    lookup_member: 'Lookup member profile',
+    timeout_member: 'Timeout a member',
+    remove_timeout: 'Remove a timeout',
+    kick_member: 'Kick a member',
+    ban_member: 'Ban a member',
+    unban_member: 'Unban a user',
+    mute_member: 'Server mute a member',
+    unmute_member: 'Server unmute a member',
+    deafen_member: 'Server deafen a member',
+    undeafen_member: 'Server undeafen a member',
+    disconnect_member: 'Disconnect member from voice',
+    move_member_voice: 'Move member to voice channel',
+    music_play: 'Play music in voice',
+    music_pause: 'Pause music playback',
+    music_resume: 'Resume music playback',
+    music_skip: 'Skip current track',
+    music_stop: 'Stop music and disconnect',
+    music_queue: 'View song queue',
+    music_nowplaying: 'Show current track',
+    music_volume: 'Adjust music volume',
+    music_leave: 'Disconnect bot from voice',
+    setup_ticket_system: 'Setup ticket system',
+    audit_server: 'Audit server security',
+    list_channels: 'List server channels',
+    list_roles: 'List server roles',
+    configure_guild_policy: 'Configure server policy',
+    inspect_guild_policy: 'Inspect server policy',
+    test_guild_policy: 'Test server policy rules',
+    reset_guild_policy: 'Reset server policy'
+  };
+  if (explicit[actionId]) return explicit[actionId];
+  return String(actionId)
+    .replace(/_/g, ' ')
+    .replace(/^\w/, c => c.toUpperCase());
+}
+
+/**
+ * Authoritative category mapping for Honey Bot administration operations.
+ */
+export const CAPABILITY_CATEGORIES = {
+  CHANNELS: {
+    key: 'CHANNELS',
+    name: 'Channel management',
+    description: 'Create, rename, edit topics, lock/unlock, slowmode, and move channels.',
+    order: 1
+  },
+  CATEGORIES: {
+    key: 'CATEGORIES',
+    name: 'Category management',
+    description: 'Create, rename, delete categories, move channels into categories, and sync permissions.',
+    order: 2
+  },
+  ROLES: {
+    key: 'ROLES',
+    name: 'Role management and permissions',
+    description: 'Create, edit, delete, assign, and revoke roles; manage channel permission overwrites.',
+    order: 3
+  },
+  MEMBERS: {
+    key: 'MEMBERS',
+    name: 'Member management',
+    description: 'Change and remove nicknames, inspect member profiles, and view roles.',
+    order: 4
+  },
+  MODERATION: {
+    key: 'MODERATION',
+    name: 'Member moderation',
+    description: 'Timeout, remove timeouts, kick, ban, and unban members.',
+    order: 5
+  },
+  VOICE_MODERATION: {
+    key: 'VOICE_MODERATION',
+    name: 'Voice moderation',
+    description: 'Server-mute, deafen, disconnect, or move members in voice channels.',
+    order: 6
+  },
+  MESSAGING: {
+    key: 'MESSAGING',
+    name: 'Announcements, messaging & cleanup',
+    description: 'Post rich announcements, send direct messages, pin/unpin, and purge messages.',
+    order: 7
+  },
+  INTEGRATIONS: {
+    key: 'INTEGRATIONS',
+    name: 'Tickets and community tools',
+    description: 'Setup interactive ticket panels and onboarding tools.',
+    order: 8
+  },
+  MUSIC: {
+    key: 'MUSIC',
+    name: 'Music and voice audio',
+    description: 'Stream audio tracks, manage queue, pause, resume, skip, and adjust volume.',
+    order: 9
+  },
+  SERVER: {
+    key: 'SERVER',
+    name: 'Server inspection and audits',
+    description: 'Audit server security, list channels and roles, and check server configuration.',
+    order: 10
+  },
+  POLICY: {
+    key: 'POLICY',
+    name: 'Server policy & access control',
+    description: 'Configure guild-isolated operator roles, member exceptions, and allowed/denied capabilities.',
+    order: 11
+  }
+};
+
+/**
+ * Exactly five registered top-level Discord slash commands.
+ */
+export const REGISTERED_SLASH_COMMANDS = [
+  {
+    name: '/go',
+    command: '/go',
+    description: 'Natural-language execution of supported Discord actions.',
+    optionName: 'prompt',
+    optionType: 'string',
+    required: true,
+    usage: '/go prompt: <instruction>',
+    example: '/go prompt: Timeout Alex for 10 minutes for spamming.'
+  },
+  {
+    name: '/modlog',
+    command: '/modlog',
+    description: 'Natural-language configuration and management of moderation logging.',
+    optionName: 'prompt',
+    optionType: 'string',
+    required: true,
+    usage: '/modlog prompt: <instruction>',
+    example: '/modlog prompt: Set #staff-logs as the log channel and test it.'
+  },
+  {
+    name: '/diagnose',
+    command: '/diagnose',
+    description: 'Health checks, diagnostics, and supported safe repairs.',
+    optionName: 'prompt',
+    optionType: 'string',
+    required: false,
+    usage: '/diagnose [prompt: <problem>]',
+    example: '/diagnose'
+  },
+  {
+    name: '/undo',
+    command: '/undo',
+    description: 'Reversal of supported, reversible actions.',
+    optionName: 'prompt',
+    optionType: 'string',
+    required: false,
+    usage: '/undo [prompt: <what to undo>]',
+    example: '/undo'
+  },
+  {
+    name: '/help',
+    command: '/help',
+    description: 'An approachable explanation of Honey Bot and how to use it.',
+    optionName: 'prompt',
+    optionType: 'string',
+    required: false,
+    usage: '/help [prompt: <question>]',
+    example: '/help prompt: What moderation capabilities are supported?'
+  }
+];

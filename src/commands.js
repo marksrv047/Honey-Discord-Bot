@@ -978,10 +978,17 @@ async function handleHelpCommand(interaction) {
       await interaction.deferReply();
     }
     const answer = await HelpManager.answerQuestion(prompt);
+    const chunks = ResponseService.splitMessage(answer, 2000);
     await interaction.editReply({
-      content: answer,
+      content: chunks[0],
       allowedMentions: ResponseService.getAllowedMentions()
     });
+    for (let i = 1; i < chunks.length; i++) {
+      await interaction.followUp({
+        content: chunks[i],
+        allowedMentions: ResponseService.getAllowedMentions()
+      }).catch(() => {});
+    }
   } catch (err) {
     logger.error('Error in /help command', { error: err.message, stack: err.stack });
     const msg = `❌ **Help Error:** ${err.message}`;

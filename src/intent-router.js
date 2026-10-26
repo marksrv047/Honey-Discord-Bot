@@ -6,6 +6,7 @@ import { config } from './config.js';
 import { resolveColor } from './color-utils.js';
 import { CapabilityRegistry } from './capabilities.js';
 import { ActionLedger } from './recovery.js';
+import { HelpManager } from './help.js';
 
 const logger = new Logger('IntentRouter');
 
@@ -102,11 +103,21 @@ export class IntentRouter {
     // =========================================================================
     // 0b. CAPABILITY INQUIRIES & HELP QUESTIONS
     // =========================================================================
-    if (/^(?:what\s+can\s+you\s+do|what\s+are\s+your\s+capabilities|show\s+(?:all\s+)?capabilities|help\s+with\s+capabilities)$/i.test(cleanPrompt)) {
+    if (/^(?:what\s+can\s+you\s+do|what\s+are\s+your\s+capabilities|show\s+(?:all\s+)?capabilities|help\s+with\s+capabilities|what\s+can\s+honey\s+bot\s+do|list\s+capabilities)$/i.test(cleanPrompt)) {
+      const categories = CapabilityRegistry.getAllCategories();
+      const catBullets = categories.map(cat => {
+        const topOps = cat.capabilities.slice(0, 3).map(c => c.title).join(', ');
+        return `• **${cat.name}** – ${cat.description} (e.g. ${topOps})`;
+      }).join('\n');
+
       return {
         intent: 'conversational',
         thought: 'User asked for bot capabilities overview',
-        conversationalResponse: "I am Honey Bot, your Discord administration assistant. I can help you with:\n• **Channel Management** – Create, rename, edit topic, lock, unlock, set slowmode, and move channels.\n• **Role Management** – Create roles with colors, edit names/colors/hoist, assign and revoke roles.\n• **Member Moderation** – Inspect profiles, change/remove server nicknames, timeout, kick, and ban.\n• **Messaging & Announcements** – Broadcast rich announcements, send messages, pin/unpin, and purge messages.\n• **Music & Audio** – Stream tracks, manage queue, pause, resume, and adjust volume.\n\nYou can use natural English directly with `/go` (e.g. `/go Rename Alex to Night Owl`).",
+        conversationalResponse:
+          `I am Honey Bot, your Discord administration assistant. I can help you with:\n` +
+          catBullets +
+          `\n\nAll administrative actions are invoked using natural English via \`/go prompt: <instruction>\`.\n` +
+          `To view all operations for any area, use \`/help prompt: <topic>\`.`,
         isHighImpact: false
       };
     }
@@ -116,11 +127,12 @@ export class IntentRouter {
       const queriedAction = capabilityQuestionMatch[1].trim();
       const matchedCap = CapabilityRegistry.findMatchingCapability(queriedAction);
       if (matchedCap) {
-        const exampleText = matchedCap.examples?.length ? ` For example: \`/go ${matchedCap.examples[0]}\`` : '';
+        const auth = CapabilityRegistry.toAuthoritative(matchedCap);
+        const exampleText = auth.goExample ? ` For example: \`${auth.goExample}\`` : '';
         return {
           intent: 'conversational',
-          thought: `Answered capability question about ${matchedCap.action}`,
-          conversationalResponse: `Yes, I support **${matchedCap.action}** (${matchedCap.description.toLowerCase()}).${exampleText}`,
+          thought: `Answered capability question about ${auth.title}`,
+          conversationalResponse: `Yes, I support **${auth.title}** (\`${auth.action}\`: ${auth.description.toLowerCase()}).${exampleText}`,
           isHighImpact: false
         };
       }

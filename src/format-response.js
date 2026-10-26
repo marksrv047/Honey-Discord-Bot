@@ -26,7 +26,12 @@ export function cleanText(str) {
 export function formatRefinedResponse(text) {
   if (!text || typeof text !== 'string') return '';
 
-  let cleaned = text.trim();
+  // 0. Unescape literal \n or \r\n escape sequences
+  let cleaned = text
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n/g, '\n')
+    .trim();
 
   // 1. Strip leading emojis and cheesy introductory fluff (iteratively handles chained phrases)
   let prev = '';
@@ -47,13 +52,18 @@ export function formatRefinedResponse(text) {
   cleaned = cleaned.replace(/\s*[\u02CA\u02CB\u02CE\u02CF\u02D7\u208B\uFE63\uFF0D\u2212\u2014\-]+\s*:/g, ':');
 
   // 4. Ensure each bullet point begins on a fresh newline
-  // Matches any bullet (•, ●) preceded by non-newline characters
+  // Matches any bullet (•, ●, -, *) preceded by non-newline characters
   cleaned = cleaned.replace(/([^\n])\s*[•●]\s*/g, '$1\n• ');
+  cleaned = cleaned.replace(/([^\n])\s*[-*]\s+([A-Z0-9*#@])/g, '$1\n• $2');
+  cleaned = cleaned.replace(/([^\n])\s*(\d+\.)\s+([A-Z0-9*#@])/g, '$1\n$2 $3');
 
   // 5. Replace '@Role' at start of bullets with '**Role**' to prevent phantom Discord mentions
-  cleaned = cleaned.replace(/(?:^|\n)\s*[•●]\s*@([a-zA-Z0-9_\-]+)\b/g, '\n• **$1**');
+  cleaned = cleaned.replace(/(?:^|\n)\s*[•●\-*]\s*@([a-zA-Z0-9_\-]+)\b/g, '\n• **$1**');
 
-  // 6. Clean up spacing and multiple newlines
+  // 6. Ensure blank lines before headings if directly following text
+  cleaned = cleaned.replace(/([^\n])\n(\*\*[^*]+\*\*)/g, '$1\n\n$2');
+
+  // 7. Clean up spacing and multiple newlines
   cleaned = cleaned
     .split('\n')
     .map(line => line.trim())
@@ -391,7 +401,7 @@ export function formatMultiActionSummary(results) {
   }
 
   const firstFailure = results.find(r => r.status === 'FAILED' || r.status === 'failed' || r.status === 'MISMATCH');
-  const failureReason = firstFailure?.details || 'a permission or validation failure';
+  const failureReason = firstFailure?.reason || firstFailure?.error || firstFailure?.details || 'a permission or validation failure';
 
   return `Completed ${passed} of ${total} actions. The ${firstFailure?.action || 'subsequent'} update failed: ${cleanText(failureReason)}.`;
 }

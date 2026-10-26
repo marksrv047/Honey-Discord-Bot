@@ -156,7 +156,7 @@ export function checkUserAuthorization(member, actions = []) {
   }
 
   // 6. Strict Role Hierarchy check against Bot (for destructive/administrative actions)
-  const botMember = guild.members.me;
+  const botMember = guild.members?.me;
   if (botMember && hasAdminPerm) {
     const userRolePos = member.roles?.highest?.position ?? member.roles?.highest?.rawPosition ?? 0;
     const botRolePos = botMember.roles?.highest?.position ?? botMember.roles?.highest?.rawPosition ?? 0;

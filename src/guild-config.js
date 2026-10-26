@@ -481,6 +481,26 @@ export class GuildConfigService {
   }
 
   /**
+   * Updates authorization policy specifically for a guild.
+   */
+  static updatePolicy(guildId, policyUpdates = {}, actor = null) {
+    const current = this.getConfig(guildId);
+    const updatedPolicy = {
+      ...current.authorizationPolicy,
+      ...policyUpdates,
+      operatorRoles: {
+        ...(current.authorizationPolicy?.operatorRoles || {}),
+        ...(policyUpdates?.operatorRoles || {})
+      },
+      operatorMembers: {
+        ...(current.authorizationPolicy?.operatorMembers || {}),
+        ...(policyUpdates?.operatorMembers || {})
+      }
+    };
+    return this.saveConfig(guildId, { ...current, authorizationPolicy: updatedPolicy }, actor);
+  }
+
+  /**
    * Resets configuration for a guild to clean bootstrap defaults.
    */
   static resetConfig(guildId, actor = null) {
