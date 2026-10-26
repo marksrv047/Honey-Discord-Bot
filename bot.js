@@ -217,7 +217,7 @@ client.on(Events.MessageCreate, async (message) => {
 
   // 2. Mention response in chat
   if (message.mentions.has(client.user)) {
-    await message.reply(`Hello <@${message.author.id}>. I am Honey, a server administration assistant. Use \`/go <instruction>\` to execute server changes, or \`/audit\` for diagnostics.`).catch(() => {});
+    await message.reply(`Hello <@${message.author.id}>. I am Honey, a server administration assistant. Use \`/go <instruction>\` to execute server changes, or \`/diagnose\` for diagnostics.`).catch(() => {});
   }
 });
 

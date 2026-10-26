@@ -161,14 +161,20 @@ export class MusicSubscription {
       let stream;
       try {
         stream = await ytdl.download(track.url, {
-          filter: 'audioonly',
-          quality: 'lowestaudio',
+          filter: (format) => format.hasAudio && !format.hasVideo,
+          quality: 'highestaudio',
           highWaterMark: 1 << 25
         });
       } catch (ytdlErr) {
         logger.warn('ytdl download failed, attempting play-dl fallback', { error: ytdlErr.message });
         const playStream = await play.stream(track.url);
         stream = playStream.stream;
+      }
+
+      if (stream && typeof stream.on === 'function') {
+        stream.on('error', (streamErr) => {
+          logger.error('Audio stream error', { guildId: this.guildId, error: streamErr.message });
+        });
       }
 
       this.currentResource = createAudioResource(stream, {
@@ -365,7 +371,9 @@ export class MusicService {
       const connection = joinVoiceChannel({
         channelId: voiceChannel.id,
         guildId: guild.id,
-        adapterCreator: guild.voiceAdapterCreator
+        adapterCreator: guild.voiceAdapterCreator,
+        selfDeaf: false,
+        selfMute: false
       });
 
       if (typeof entersState === 'function') {

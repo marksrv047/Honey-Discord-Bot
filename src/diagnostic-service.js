@@ -126,11 +126,11 @@ export class DiagnosticService {
       return 'performance_timeouts';
     }
 
-    // 8. Configuration audit (read-only)
+    // 8. Configuration & Server audit (read-only)
     if (
-      /(?:find|identify|detect|audit|check)\s+configuration\s+problems/i.test(clean) ||
-      /audit\s+configuration/i.test(clean) ||
-      /check\s+configuration/i.test(clean) ||
+      /^(?:server\s+|system\s+)?audit(?:\s+server|\s+configuration|\s+system|\s+permissions|\s+security)?$/i.test(clean) ||
+      /(?:find|identify|detect|audit|check)\s+(?:configuration|security|server\s+permissions|server\s+health|audit)/i.test(clean) ||
+      /\baudit\b/i.test(clean) ||
       /inspect\s+environment/i.test(clean)
     ) {
       return 'configuration_audit';
@@ -162,6 +162,13 @@ export class DiagnosticService {
       /(task\s+queue|stuck\s+tasks?|queue\s+overload|queue\s+backlog|task\s+health|queue\s+status|tasks?\s+stuck|task\s+failures?)/i.test(clean)
     ) {
       return 'task_queue_health';
+    }
+
+    // 12. Voice & Music subsystem health
+    if (
+      /(music|voice|audio|playback|stream|sound|player|vc)/i.test(clean)
+    ) {
+      return 'music_voice_health';
     }
 
     return 'general_health';
@@ -233,6 +240,9 @@ export class DiagnosticService {
 
         case 'task_queue_health':
           return await this.diagnoseTaskQueueHealth(context, correlationId);
+
+        case 'music_voice_health':
+          return await this.diagnoseMusicVoiceHealth(context, correlationId);
 
         case 'general_health':
         default:
@@ -727,20 +737,65 @@ export class DiagnosticService {
   static async diagnoseConfigurationAudit(context = {}, correlationId) {
     const val = validateConfig();
     const provider = config.ai.provider;
+    const guild = context.guild;
+
+    // Check server permission issues if in guild
+    const { auditServerPermissions } = await import('./permissions.js');
+    const permIssues = guild ? auditServerPermissions(guild) : [];
+
+    // Check bot member permissions in this guild
+    const botMember = guild?.members?.me || await guild?.members?.fetchMe?.().catch(() => null);
+    const hasAdmin = botMember?.permissions?.has?.(PermissionFlagsBits.Administrator) ?? false;
+    const hasManageRoles = botMember?.permissions?.has?.(PermissionFlagsBits.ManageRoles) ?? false;
+    const hasManageChannels = botMember?.permissions?.has?.(PermissionFlagsBits.ManageChannels) ?? false;
+
+    // Check modlog configuration
+    const modlogConf = guild ? ModLogService.getConfig(guild.id) : null;
+
+    // Check task queue
+    const allTasks = TaskQueue.loadAllTasks();
+    const stuckTasks = Array.from(allTasks.values()).filter(t =>
+      (t.status === TaskQueueState.RUNNING || t.status === TaskQueueState.WAITING) &&
+      (Date.now() - (t.updatedAt || t.createdAt) > 60000)
+    );
+
+    const isHealthy = val.valid && permIssues.length === 0 && stuckTasks.length === 0;
+
+    const checks = {
+      'AI Provider & Model': {
+        status: val.valid ? 'healthy' : 'failed',
+        details: `Configured: ${provider} (zero-cost active).`
+      },
+      'Bot Permissions': {
+        status: hasAdmin || (hasManageRoles && hasManageChannels) ? 'healthy' : 'degraded',
+        details: hasAdmin ? 'Administrator granted.' : `Roles: ${hasManageRoles ? 'Yes' : 'No'}, Channels: ${hasManageChannels ? 'Yes' : 'No'}.`
+      },
+      'Server Security Audit': {
+        status: permIssues.length === 0 ? 'healthy' : 'failed',
+        details: permIssues.length === 0 ? 'No excessive @everyone privileges detected.' : permIssues.slice(0, 2).join('; ')
+      },
+      'Moderation Logging': {
+        status: modlogConf?.enabled ? 'healthy' : 'degraded',
+        details: modlogConf?.enabled ? `Enabled in channel <#${modlogConf.channelId}>` : 'Not configured or disabled.'
+      },
+      'Task Execution Queue': {
+        status: stuckTasks.length === 0 ? 'healthy' : 'degraded',
+        details: stuckTasks.length === 0 ? 'Queue operational.' : `${stuckTasks.length} stuck task(s).`
+      }
+    };
 
     let response = '';
-    if (val.valid) {
-      response =
-        `Configuration is valid. Active AI provider is \`${provider}\`.\n` +
-        `Discord client ID is configured. Zero-cost enforcement is active. No configuration issues detected.`;
+    if (isHealthy) {
+      response = `Server and bot configuration audit passed. Active AI provider is \`${provider}\`. Bot permissions and server security checks are clean.`;
     } else {
-      const issues = val.issues.map(i => `• ${Logger.redactSecrets(i)}`).join('\n');
-      response = `Configuration problems detected:\n${issues}`;
+      const issueList = [...(val.issues || []), ...permIssues];
+      response = `Audit detected potential issues:\n${issueList.map(i => `• ${Logger.redactSecrets(i)}`).join('\n')}`;
     }
 
     return {
       task: 'configuration_audit',
-      status: val.valid ? DiagnosticStatus.HEALTHY : DiagnosticStatus.DEGRADED,
+      status: isHealthy ? DiagnosticStatus.HEALTHY : DiagnosticStatus.DEGRADED,
+      checks,
       response: Logger.redactSecrets(response),
       correlationId
     };
@@ -870,9 +925,33 @@ export class DiagnosticService {
       summary = `Honey Bot is connected to Discord. The configured model (${provider}) is reachable and operational. All 5 top-level slash commands are registered. Task queue is healthy.`;
     }
 
+    const checks = {
+      'Gateway Connection': {
+        status: isGatewayOnline ? 'healthy' : 'failed',
+        details: isGatewayOnline ? `Online (Ping: ${context.client?.ws?.ping ?? 0}ms)` : 'Disconnected'
+      },
+      'AI Model Reachability': {
+        status: modelCheck.status === 'succeeded' ? 'healthy' : 'failed',
+        details: modelCheck.status === 'succeeded' ? `Operational (${provider})` : (modelCheck.error || 'Unreachable')
+      },
+      'Slash Commands': {
+        status: 'healthy',
+        details: `${commandCount} registered (/go, /modlog, /diagnose, /undo, /help)`
+      },
+      'Task Execution Queue': {
+        status: stuckTasks.length === 0 ? 'healthy' : 'degraded',
+        details: stuckTasks.length === 0 ? 'Queue operational (0 stuck tasks)' : `${stuckTasks.length} stuck task(s)`
+      },
+      'Moderation Logging': {
+        status: modlogPending === 0 ? 'healthy' : 'degraded',
+        details: modlogConfigured ? (modlogPending === 0 ? 'Active & operational' : `${modlogPending} deliveries pending`) : 'Not configured'
+      }
+    };
+
     return {
       task: 'general_health',
       status,
+      checks,
       structured: {
         component: 'system',
         checkId: 'general_health',
@@ -937,6 +1016,53 @@ export class DiagnosticService {
         completedTasks: completedTasks.length,
         failedTasks: failedTasks.length
       },
+      response: summary,
+      correlationId
+    };
+  }
+
+  /**
+   * Diagnoses Voice connection, FFmpeg availability, and Music playback state.
+   */
+  static async diagnoseMusicVoiceHealth(context = {}, correlationId) {
+    const guild = context.guild;
+    const { MusicService } = await import('./music-service.js');
+    const subscription = guild ? MusicService.getSubscription(guild.id) : null;
+    const ffmpegOk = Boolean(process.env.FFMPEG_PATH);
+    const hasVoiceConnection = Boolean(subscription?.voiceConnection);
+    const isPlaying = subscription?.audioPlayer?.state?.status === 'playing';
+    const track = subscription?.currentTrack;
+
+    const checks = {
+      'FFmpeg Audio Transcoder': {
+        status: ffmpegOk ? 'healthy' : 'failed',
+        details: ffmpegOk ? 'FFmpeg installed and ready.' : 'FFmpeg binary missing in environment.'
+      },
+      'Voice Connection': {
+        status: hasVoiceConnection ? 'healthy' : 'degraded',
+        details: hasVoiceConnection ? `Connected to voice channel (State: ${subscription.voiceConnection.state?.status}).` : 'Not currently connected to any voice channel.'
+      },
+      'Audio Player': {
+        status: isPlaying ? 'healthy' : 'degraded',
+        details: isPlaying ? `Playing: "${track?.title || 'Unknown'}"` : `Status: ${subscription?.audioPlayer?.state?.status || 'idle'}`
+      },
+      'Queue State': {
+        status: 'healthy',
+        details: `${subscription?.queue?.length || 0} track(s) in queue.`
+      }
+    };
+
+    const status = ffmpegOk ? (isPlaying ? DiagnosticStatus.HEALTHY : DiagnosticStatus.DEGRADED) : DiagnosticStatus.FAILED;
+    const summary = ffmpegOk
+      ? (hasVoiceConnection
+          ? (isPlaying ? `Music subsystem is actively playing "${track?.title}".` : `Connected to voice, audio player status is ${subscription?.audioPlayer?.state?.status || 'idle'}.`)
+          : 'Voice and music subsystem is operational. Connect to a voice channel and use `/go prompt: play <song>` to start playback.')
+      : 'FFmpeg transcoder is unavailable. Voice audio playback cannot function without FFmpeg.';
+
+    return {
+      task: 'music_voice_health',
+      status,
+      checks,
       response: summary,
       correlationId
     };

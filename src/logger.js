@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 export function redactSecrets(data) {
   if (typeof data === 'string') {
     return data
-      .replace(/(?:Bot|Bearer)\s+[A-Za-z0-9._-]+/gi, '[REDACTED_DISCORD_TOKEN]')
+      .replace(/(?:Bot|Bearer)\s+[A-Za-z0-9._-]{8,}/gi, '[REDACTED_DISCORD_TOKEN]')
       .replace(/AIzaSy[A-Za-z0-9_-]{20,60}/g, '[REDACTED_GEMINI_KEY]')
       .replace(/gsk_[A-Za-z0-9_-]{20,}/g, '[REDACTED_GROQ_KEY]')
       .replace(/(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}/g, '[REDACTED_TOKEN]');
