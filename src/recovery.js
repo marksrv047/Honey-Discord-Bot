@@ -889,6 +889,32 @@ RecoveryRegistry.register('set_user_channel_permission', {
 });
 RecoveryRegistry.register('user_channel_permission', RecoveryRegistry.getHandler('set_user_channel_permission'));
 
+RecoveryRegistry.register('configure_guild_policy', {
+  description: 'Restore previous server Honey Bot authorization policy',
+  requiredPermissions: ['Administrator'],
+  checkConflict(guild, record) {
+    if (!record.preState || (record.guildId && record.guildId !== guild.id)) {
+      return { valid: false, reason: 'Previous policy state is missing or belongs to a different server.' };
+    }
+    return { valid: true };
+  },
+  async execute(guild, record, context = {}) {
+    if (record.guildId && record.guildId !== guild.id) {
+      throw new Error(`Security Violation: Undo record belongs to guild ${record.guildId}, not current guild ${guild.id}`);
+    }
+    const { GuildConfigService } = await import('./guild-config.js');
+    GuildConfigService.saveConfig(guild.id, record.preState, context.actor);
+    return { success: true };
+  },
+  verify(guild, record) {
+    return true;
+  },
+  formatSuccess(record) {
+    return `Restored previous server access rules from revision ${record.preState?.revision || 'previous'}.`;
+  }
+});
+RecoveryRegistry.register('reset_guild_policy', RecoveryRegistry.getHandler('configure_guild_policy'));
+
 /**
  * Main recovery execution engine.
  * Handles deterministic target resolution, ambiguity detection, authorization, anti-nuke enforcement,

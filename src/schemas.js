@@ -424,10 +424,54 @@ export const InspectMemberModerationSchema = z.object({
   targetMember: z.string().min(1)
 });
 
+export const ConfigureGuildPolicySchema = z.object({
+  action: z.literal('configure_guild_policy'),
+  role: z.string().optional(),
+  targetRole: z.string().optional(),
+  member: z.string().optional(),
+  targetMember: z.string().optional(),
+  allow: z.array(z.string()).optional(),
+  deny: z.array(z.string()).optional(),
+  capabilities: z.array(z.string()).optional(),
+  denyCapabilities: z.array(z.string()).optional(),
+  removeCapabilities: z.array(z.string()).optional(),
+  revokeRole: z.boolean().optional(),
+  revokeMember: z.boolean().optional(),
+  adminOnly: z.boolean().optional(),
+  policyAdmins: z.object({
+    roles: z.array(z.string()).optional(),
+    members: z.array(z.string()).optional()
+  }).optional()
+});
+
+export const InspectGuildPolicySchema = z.object({
+  action: z.literal('inspect_guild_policy'),
+  role: z.string().optional(),
+  targetRole: z.string().optional()
+});
+
+export const TestGuildPolicySchema = z.object({
+  action: z.literal('test_guild_policy'),
+  role: z.string().optional(),
+  targetRole: z.string().optional(),
+  member: z.string().optional(),
+  targetMember: z.string().optional(),
+  targetAction: z.string().optional(),
+  capability: z.string().optional()
+});
+
+export const ResetGuildPolicySchema = z.object({
+  action: z.literal('reset_guild_policy')
+});
+
 /**
  * Discriminated union of all supported actions
  */
 export const ActionSchema = z.discriminatedUnion('action', [
+  ConfigureGuildPolicySchema,
+  InspectGuildPolicySchema,
+  TestGuildPolicySchema,
+  ResetGuildPolicySchema,
   UpdateServerNameSchema,
   UpdateServerDescriptionSchema,
   UpdateServerIconSchema,

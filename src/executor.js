@@ -567,6 +567,38 @@ export class Executor {
         return await Operations.inspectMemberModeration(guild, action.targetMember || action.targetRef, ctx);
       }
 
+      case 'configure_guild_policy': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          executionId
+        };
+        return await Operations.configureGuildPolicy(guild, action, ctx);
+      }
+
+      case 'inspect_guild_policy': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          executionId
+        };
+        return await Operations.inspectGuildPolicy(guild, ctx);
+      }
+
+      case 'test_guild_policy': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          executionId
+        };
+        return await Operations.testGuildPolicy(guild, action, ctx);
+      }
+
+      case 'reset_guild_policy': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          executionId
+        };
+        return await Operations.resetGuildPolicy(guild, ctx);
+      }
+
       case 'change_nickname': {
         const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
           invokingUser: invokingMember.user,

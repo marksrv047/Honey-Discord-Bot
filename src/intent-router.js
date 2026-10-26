@@ -18,7 +18,7 @@ You are the Discord Administration Intent Interpreter.
 Analyze the user instruction and interaction context. Return ONLY a single raw JSON object matching this schema:
 {
   "thought": "Brief interpretation of intent",
-  "intent": "rename_channel" | "edit_channel_topic" | "set_channel_slowmode" | "lock_channel" | "unlock_channel" | "create_channel" | "delete_channel" | "create_role" | "edit_role" | "delete_role" | "assign_role" | "remove_role" | "change_nickname" | "remove_nickname" | "inspect_nickname" | "timeout_member" | "remove_timeout" | "kick_member" | "ban_member" | "unban_member" | "setup_ticket_system" | "audit_server" | "list_channels" | "list_roles" | "send_announcement" | "send_message" | "purge_messages" | "search_messages" | "music_play" | "music_pause" | "music_resume" | "music_skip" | "music_stop" | "music_queue" | "music_nowplaying" | "music_volume" | "music_leave" | "conversational" | "unsupported" | "complex_plan",
+  "intent": "rename_channel" | "edit_channel_topic" | "set_channel_slowmode" | "lock_channel" | "unlock_channel" | "create_channel" | "delete_channel" | "create_role" | "edit_role" | "delete_role" | "assign_role" | "remove_role" | "change_nickname" | "remove_nickname" | "inspect_nickname" | "timeout_member" | "remove_timeout" | "kick_member" | "ban_member" | "unban_member" | "setup_ticket_system" | "audit_server" | "list_channels" | "list_roles" | "send_announcement" | "send_message" | "purge_messages" | "search_messages" | "music_play" | "music_pause" | "music_resume" | "music_skip" | "music_stop" | "music_queue" | "music_nowplaying" | "music_volume" | "music_leave" | "configure_guild_policy" | "inspect_guild_policy" | "test_guild_policy" | "reset_guild_policy" | "conversational" | "unsupported" | "complex_plan",
   "targetType": "channel" | "role" | "member" | "server" | null,
   "targetRef": "current" | string (ID, name, or mention, e.g. "current", "<#123>", "<@123>", "VIP", "announce"),
   "args": {
@@ -157,6 +157,228 @@ export class IntentRouter {
     // =========================================================================
     // 1. DETERMINISTIC FAST PATH (0 LLM Calls, 0ms latency)
     // =========================================================================
+
+    // =========================================================================
+    // GUILD ACCESS & POLICY MANAGEMENT FAST-PATHS
+    // =========================================================================
+
+    // P1. Reset server access policy to default
+    if (/^(?:reset\s+(?:this\s+server['’]s\s+)?(?:bot\s+access\s+configuration|access\s+rules|authorization\s+policy|bot\s+settings)(?:\s+to\s+(?:its\s+)?defaults?)?|reset\s+(?:guild|server)\s+policy)$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: reset_guild_policy');
+      return {
+        intent: 'reset_guild_policy',
+        targetType: 'server',
+        targetRef: 'current',
+        args: {},
+        isHighImpact: true,
+        thought: "Reset server's bot access configuration to default policy"
+      };
+    }
+
+    // P2. Inspect active policy / authorized roles
+    if (/^(?:show\s+(?:me\s+)?(?:the\s+)?(?:roles\s+currently\s+authorized|authorized\s+roles|roles\s+allowed)\s+to\s+(?:operate|use)\s+(?:honey\s+bot|the\s+bot)(?:\s+in\s+this\s+server)?|who\s+(?:can|is\s+allowed\s+to)\s+(?:use|operate)\s+(?:honey\s+bot|the\s+bot)|show\s+(?:server\s+|guild\s+)?(?:bot\s+)?(?:access\s+rules|authorization\s+policy)|check\s+whether\s+this\s+server['’]s\s+access\s+rules\s+are\s+configured\s+correctly|check\s+this\s+server['’]s\s+authorization\s+policy(?:\s+for\s+conflicts)?|what\s+can\s+each\s+configured\s+role\s+do|who\s+can\s+change\s+(?:the\s+)?bot['’]s\s+access\s+policy|is\s+this\s+server\s+using\s+its\s+own\s+stored\s+configuration\??|show\s+roles\s+authorized\s+to\s+operate\s+honey\s+bot)$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: inspect_guild_policy');
+      return {
+        intent: 'inspect_guild_policy',
+        targetType: 'server',
+        targetRef: 'current',
+        args: {
+          checkConflicts: /conflict|correctly/i.test(cleanPrompt)
+        },
+        isHighImpact: false,
+        thought: 'Inspect guild access policy and authorized roles'
+      };
+    }
+
+    // P3. Configure admin-only policy changes
+    if (/^(?:configure\s+this\s+server\s+so\s+)?only\s+administrators\s+can\s+change\s+(?:honey\s+bot['’]s|the\s+bot['’]s)\s+access\s+rules$/i.test(cleanPrompt) ||
+        /^(?:make|set)\s+(?:bot\s+)?access\s+rules\s+admin(?:\s+only|-only)$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: set_admin_only policy');
+      return {
+        intent: 'configure_guild_policy',
+        targetType: 'server',
+        targetRef: 'current',
+        args: {
+          operation: 'set_admin_only',
+          setAdminOnly: true
+        },
+        isHighImpact: false,
+        thought: "Configure server so only administrators can change Honey Bot's access rules"
+      };
+    }
+
+    // P4. Dry-run test policy: "Would a member with the Moderator and Event Manager roles be allowed to ban someone in this server?"
+    const testPolicyMatch = cleanPrompt.match(/^(?:would\s+(?:a\s+member\s+with\s+(?:the\s+)?)?|test\s+if\s+)(?:the\s+)?(?:role\s+)?@?([a-zA-Z0-9_\s-]+?)(?:\s+(?:and\s+@?([a-zA-Z0-9_\s-]+?))?\s+roles?)?\s+(?:be\s+allowed\s+to|can)\s+(.+?)(?:\s+in\s+this\s+server)?\??$/i);
+    if (testPolicyMatch && !/^(create|delete|rename|timeout|kick|ban|unban|lock|unlock)\b/i.test(cleanPrompt)) {
+      const role1 = testPolicyMatch[1].trim().replace(/^@/, '');
+      const role2 = testPolicyMatch[2]?.trim().replace(/^@/, '');
+      const actionText = testPolicyMatch[3].trim().toLowerCase();
+      let mappedCap = 'moderation';
+      if (/ban/i.test(actionText)) mappedCap = 'ban_members';
+      else if (/kick/i.test(actionText)) mappedCap = 'kick_members';
+      else if (/timeout|mute/i.test(actionText)) mappedCap = 'timeout_member';
+      else if (/inspect/i.test(actionText)) mappedCap = 'inspect_members';
+      else if (/channel/i.test(actionText)) mappedCap = 'manage_channels';
+      else if (/role/i.test(actionText)) mappedCap = 'manage_roles';
+
+      logger.info('Routed through fast-path: test_guild_policy', { role1, role2, mappedCap });
+      return {
+        intent: 'test_guild_policy',
+        targetType: 'server',
+        targetRef: 'current',
+        args: {
+          targetRole: role1,
+          targetRoles: role2 ? [role1, role2] : [role1],
+          capability: mappedCap,
+          targetAction: mappedCap
+        },
+        isHighImpact: false,
+        thought: `Test if role ${role1} is permitted to ${mappedCap}`
+      };
+    }
+
+    // P5. Revoke capability from role: "Remove the Moderator role's permission to ban members here"
+    const revokeCapMatch = cleanPrompt.match(/^(?:remove|revoke)\s+(?:the\s+)?(?:role\s+)?@?([a-zA-Z0-9_\s-]+?)['’]?s?\s+(?:permission\s+to|capability\s+to)\s+(.+?)(?:\s+here|\s+in\s+this\s+server)?$/i);
+    if (revokeCapMatch) {
+      const role = revokeCapMatch[1].trim().replace(/^@/, '');
+      const capText = revokeCapMatch[2].trim().toLowerCase();
+      let removeCap = 'ban_members';
+      if (/ban/i.test(capText)) removeCap = 'ban_members';
+      else if (/kick/i.test(capText)) removeCap = 'kick_members';
+      else if (/timeout/i.test(capText)) removeCap = 'moderate_members';
+      else if (/inspect/i.test(capText)) removeCap = 'inspect_members';
+      else if (/channel/i.test(capText)) removeCap = 'manage_channels';
+      else if (/role/i.test(capText)) removeCap = 'manage_roles';
+
+      logger.info('Routed through fast-path: removeRoleCapability', { role, removeCap });
+      return {
+        intent: 'configure_guild_policy',
+        targetType: 'role',
+        targetRef: role,
+        args: {
+          operation: 'remove_capability',
+          targetRole: role,
+          removeCapabilities: [removeCap]
+        },
+        isHighImpact: false,
+        thought: `Remove capability ${removeCap} from role ${role}`
+      };
+    }
+
+    // P6. Role authorization with allow and deny: "Let the Support Team inspect members but not kick or ban anyone"
+    const allowWithDenyMatch = cleanPrompt.match(/^(?:let|allow)\s+(?:the\s+)?(?:role\s+)?@?([a-zA-Z0-9_\s-]+?)\s+(?:role\s+)?(?:to\s+)?inspect\s+members\s+but\s+not\s+(?:kick|ban)(?:\s+or\s+(?:kick|ban))?(?:\s+anyone|\s+members)?(?:\s+here|\s+in\s+this\s+server)?$/i);
+    if (allowWithDenyMatch) {
+      const role = allowWithDenyMatch[1].trim().replace(/^@/, '');
+      logger.info('Routed through fast-path: allow role with explicit denies', { role });
+      return {
+        intent: 'configure_guild_policy',
+        targetType: 'role',
+        targetRef: role,
+        args: {
+          operation: 'authorize_role',
+          targetRole: role,
+          capabilities: ['inspect_members'],
+          denyCapabilities: ['kick_members', 'ban_members']
+        },
+        isHighImpact: false,
+        thought: `Allow role ${role} to inspect members with hard denial on kick and ban`
+      };
+    }
+
+    // P7. Role authorization with single capability: "Allow the Event Manager role to manage event channels, but nothing else"
+    const singleCapMatch = cleanPrompt.match(/^(?:allow|let)\s+(?:the\s+)?(?:role\s+)?@?([a-zA-Z0-9_\s-]+?)\s+(?:role\s+)?to\s+manage\s+(?:event\s+)?channels(?:,\s*but\s+nothing\s+else)?(?:\s+here|\s+in\s+this\s+server)?$/i);
+    if (singleCapMatch) {
+      const role = singleCapMatch[1].trim().replace(/^@/, '');
+      logger.info('Routed through fast-path: allow single capability', { role });
+      return {
+        intent: 'configure_guild_policy',
+        targetType: 'role',
+        targetRef: role,
+        args: {
+          operation: 'authorize_role',
+          targetRole: role,
+          capabilities: ['manage_channels']
+        },
+        isHighImpact: false,
+        thought: `Allow role ${role} to manage channels`
+      };
+    }
+
+    // P8. Allow role to use honey bot / execute moderation actions:
+    // "Allow the Moderator role to use Honey Bot in this server"
+    // "Only Admin and Senior Moderator roles can execute moderation actions here"
+    const allowRoleMatch = cleanPrompt.match(/^(?:allow|grant)\s+(?:the\s+)?(?:role\s+)?@?([a-zA-Z0-9_\s-]+?)\s+(?:role\s+)?to\s+(?:use\s+(?:honey\s+bot|the\s+bot)|execute\s+moderation\s+actions)(?:\s+in\s+this\s+server|\s+here)?$/i) ||
+      cleanPrompt.match(/^(?:only\s+admin\s+and\s+)?@?([a-zA-Z0-9_\s-]+?)\s+(?:and\s+@?([a-zA-Z0-9_\s-]+?)\s+)?roles?\s+can\s+execute\s+moderation\s+actions(?:\s+here|\s+in\s+this\s+server)?$/i);
+    if (allowRoleMatch) {
+      const role = (allowRoleMatch[2] || allowRoleMatch[1]).trim().replace(/^@/, '');
+      logger.info('Routed through fast-path: allow role moderation/bot', { role });
+      return {
+        intent: 'configure_guild_policy',
+        targetType: 'role',
+        targetRef: role,
+        args: {
+          operation: 'authorize_role',
+          targetRole: role,
+          capabilities: ['moderation']
+        },
+        isHighImpact: false,
+        thought: `Authorize role ${role} to execute moderation actions`
+      };
+    }
+
+    // P9. Revoke role completely
+    const revokeRoleMatch = cleanPrompt.match(/^(?:revoke|remove)\s+(?:the\s+)?(?:role\s+)?@?([a-zA-Z0-9_\s-]+?)(?:\s+role)?\s+(?:from\s+(?:using\s+(?:honey\s+bot|the\s+bot)|authorized\s+roles)|access)(?:\s+in\s+this\s+server|\s+here)?$/i);
+    if (revokeRoleMatch) {
+      const role = revokeRoleMatch[1].trim().replace(/^@/, '');
+      logger.info('Routed through fast-path: revoke role access', { role });
+      return {
+        intent: 'configure_guild_policy',
+        targetType: 'role',
+        targetRef: role,
+        args: {
+          operation: 'revoke_role',
+          targetRole: role,
+          revokeRole: true
+        },
+        isHighImpact: false,
+        thought: `Revoke role ${role} authorization`
+      };
+    }
+
+    // P10. Member authorization / revocation
+    const memberPolicyMatch = cleanPrompt.match(/^(?:allow|let)\s+(?:member\s+)?(<@!?\d+>|@?[\w.-]+)\s+(?:to\s+)?(?:use\s+\/go\s+for\s+)?read-only\s+inspections/i);
+    if (memberPolicyMatch) {
+      const member = memberPolicyMatch[1].replace(/^@/, '');
+      return {
+        intent: 'configure_guild_policy',
+        targetType: 'member',
+        targetRef: member,
+        args: {
+          operation: 'authorize_member',
+          targetMember: member,
+          capabilities: ['inspection']
+        },
+        isHighImpact: false,
+        thought: `Grant member ${member} read-only inspection access`
+      };
+    }
+
+    const revokeMemberMatch = cleanPrompt.match(/^revoke\s+(?:member\s+)?(<@!?\d+>|@?[\w.-]+)['’]?s?\s+special\s+bot\s+access/i);
+    if (revokeMemberMatch) {
+      const member = revokeMemberMatch[1].replace(/^@/, '');
+      return {
+        intent: 'configure_guild_policy',
+        targetType: 'member',
+        targetRef: member,
+        args: {
+          operation: 'revoke_member',
+          targetMember: member,
+          revokeMember: true
+        },
+        isHighImpact: false,
+        thought: `Revoke member ${member} special access`
+      };
+    }
 
     // Multi-step: "rename the <target> role to <name> and change its color to <color>"
     const renameAndRecolorRoleMatch = cleanPrompt.match(/^(?:rename|change\s+(?:the\s+)?name\s+of)\s+(?:the\s+)?(?:role\s+)?@?([\w\s.-]+?)\s+(?:role\s+)?to\s+([a-zA-Z0-9_\s-]+?)\s+and\s+(?:(?:set|change|update)\s+(?:its\s+|the\s+)?color\s+(?:to|as)?|recolor\s+(?:it\s+to)?)\s+([#a-zA-Z0-9_\s-]+?)(?:[,\s]+(?:and\s+)?(?:enable\s+display\s+separately|display\s+separately|hoist\s*(?:it|role)?))?$/i);

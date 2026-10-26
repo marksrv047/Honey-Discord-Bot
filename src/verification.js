@@ -345,6 +345,22 @@ export class Verifier {
           };
         }
 
+        case 'configure_guild_policy':
+        case 'reset_guild_policy': {
+          const { GuildConfigService } = await import('./guild-config.js');
+          const conf = GuildConfigService.getConfig(guild.id);
+          const verified = Boolean(conf && conf.guildId === guild.id);
+          return {
+            action: actionObj.action,
+            status: verified ? 'COMPLETED' : 'FAILED',
+            verificationStatus: verified ? VerificationStatus.PASSED : VerificationStatus.FAILED,
+            intendedChange: 'Update server Honey Bot authorization policy',
+            observedOutcome: verified ? `Server access policy verified at revision ${conf.revision}` : 'Config validation failed',
+            verified,
+            details: executionResult.details || 'Server access rules updated'
+          };
+        }
+
         default:
           return {
             action: actionObj.action,

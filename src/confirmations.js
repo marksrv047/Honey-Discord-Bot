@@ -139,6 +139,10 @@ export class ConfirmationManager {
         return `panel in \`#${action.channelName || 'tickets'}\``;
       case 'audit_server':
         return `scope: ${action.scope || 'all'}`;
+      case 'configure_guild_policy':
+        return `(${action.operation || 'update'}${action.targetRole ? ` role: @${action.targetRole}` : ''}${action.targetMember ? ` member: ${action.targetMember}` : ''})`;
+      case 'reset_guild_policy':
+        return `(reset to server default access rules)`;
       default:
         return '';
     }

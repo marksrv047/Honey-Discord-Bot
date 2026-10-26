@@ -8,6 +8,7 @@ import { Logger } from './logger.js';
 import { MemberResolver } from './member-resolver.js';
 import { ModLogService } from './mod-log.js';
 import { WarningManager } from './warnings.js';
+import { GuildConfigService } from './guild-config.js';
 
 const logger = new Logger('Operations');
 
@@ -2283,6 +2284,312 @@ export class Operations {
       details: `User <@${targetId}> unbanned.`,
       verified: true,
       resourceId: targetId
+    };
+  }
+
+  static async configureGuildPolicy(guild, updates, context = {}) {
+    const actor = context.invokingUser || { id: 'unknown', tag: 'Administrator' };
+    const actorMember = context.invokingMember || (context.invokingUser ? guild.members?.cache?.get(context.invokingUser.id) : null);
+
+    if (actorMember) {
+      const { checkPolicyAdminAuthorization } = await import('./permissions.js');
+      const auth = checkPolicyAdminAuthorization(actorMember);
+      if (!auth.authorized) {
+        return {
+          success: false,
+          error: `Unauthorized: ${auth.reason}`,
+          action: 'configure_guild_policy'
+        };
+      }
+    }
+
+    const preConfig = GuildConfigService.getConfig(guild.id);
+    let resolvedRole = null;
+    let resolvedMember = null;
+
+    // Resolve Role if provided
+    const rawRole = updates.role || updates.targetRole;
+    if (rawRole) {
+      const cleanRoleId = String(rawRole).replace(/[<@&>]/g, '').trim();
+      const roleNameQuery = String(rawRole).replace(/^@/, '').toLowerCase();
+
+      const roleCollection = guild.roles?.cache ? Array.from(guild.roles.cache.values()) : [];
+      const matchingRoles = roleCollection.filter(r =>
+        r.id === cleanRoleId ||
+        r.id === rawRole ||
+        r.name?.toLowerCase() === roleNameQuery
+      );
+
+      if (matchingRoles.length > 1 && !/^\d{17,20}$/.test(cleanRoleId)) {
+        return {
+          success: false,
+          error: `Multiple roles matched "${rawRole}" (${matchingRoles.map(r => `@${r.name} [ID: ${r.id}]`).join(', ')}). Please specify the exact role ID to avoid ambiguity.`,
+          action: 'configure_guild_policy'
+        };
+      }
+
+      resolvedRole = matchingRoles[0] || null;
+
+      if (!resolvedRole) {
+        return {
+          success: false,
+          error: `Role "${rawRole}" not found in this server. Please specify an existing role name or role ID.`,
+          action: 'configure_guild_policy'
+        };
+      }
+    }
+
+    // Resolve Member if provided
+    const rawMember = updates.member || updates.targetMember;
+    if (rawMember) {
+      const cleanMemberId = String(rawMember).replace(/[<@!>]/g, '').trim();
+      resolvedMember = guild.members?.cache?.find(m =>
+        m.id === cleanMemberId ||
+        m.id === rawMember ||
+        m.user?.username?.toLowerCase() === String(rawMember).toLowerCase() ||
+        m.displayName?.toLowerCase() === String(rawMember).toLowerCase()
+      );
+
+      if (!resolvedMember && !/^\d{17,20}$/.test(cleanMemberId)) {
+        return {
+          success: false,
+          error: `Member "${rawMember}" not found in this server.`,
+          action: 'configure_guild_policy'
+        };
+      }
+    }
+
+    let savedConfig = null;
+    let summary = '';
+
+    if (updates.adminOnly !== undefined) {
+      savedConfig = GuildConfigService.setAdminOnlyPolicyChanges(guild.id, updates.adminOnly, actor);
+      summary = `Configured Honey Bot policy: Only administrators may change access rules: ${updates.adminOnly}`;
+    } else if (updates.policyAdmins) {
+      savedConfig = GuildConfigService.setPolicyAdmins(guild.id, updates.policyAdmins, actor);
+      summary = `Updated Honey Bot policy administrators for this server.`;
+    } else if (resolvedRole) {
+      if (updates.revokeRole) {
+        savedConfig = GuildConfigService.revokeRole(guild.id, resolvedRole.id, actor);
+        summary = `Revoked Honey Bot authorization for role @${resolvedRole.name}.`;
+      } else if (updates.removeCapabilities && updates.removeCapabilities.length > 0) {
+        savedConfig = GuildConfigService.removeRoleCapability(guild.id, resolvedRole.id, updates.removeCapabilities, actor);
+        summary = `Removed capabilities (${updates.removeCapabilities.join(', ')}) from role @${resolvedRole.name}.`;
+      } else {
+        const caps = updates.capabilities || updates.allow || [];
+        const denyCaps = updates.denyCapabilities || updates.deny || [];
+        savedConfig = GuildConfigService.authorizeRole(guild.id, {
+          roleId: resolvedRole.id,
+          roleName: resolvedRole.name,
+          capabilities: caps,
+          denyCapabilities: denyCaps
+        }, actor);
+
+        const allowText = caps.length > 0 ? `Allowed: ${caps.join(', ')}` : 'No explicit grants';
+        const denyText = denyCaps.length > 0 ? ` | Denied: ${denyCaps.join(', ')}` : '';
+        summary = `Updated Honey Bot authorization for role @${resolvedRole.name}: ${allowText}${denyText}.`;
+      }
+    } else if (resolvedMember || rawMember) {
+      const mId = resolvedMember ? resolvedMember.id : String(rawMember).replace(/[<@!>]/g, '');
+      const mTag = resolvedMember?.user?.tag || resolvedMember?.displayName || mId;
+
+      if (updates.revokeMember) {
+        savedConfig = GuildConfigService.revokeMember(guild.id, mId, actor);
+        summary = `Revoked member exception for ${mTag}.`;
+      } else {
+        const caps = updates.capabilities || updates.allow || [];
+        const denyCaps = updates.denyCapabilities || updates.deny || [];
+        savedConfig = GuildConfigService.authorizeMember(guild.id, {
+          memberId: mId,
+          memberTag: mTag,
+          capabilities: caps,
+          denyCapabilities: denyCaps
+        }, actor);
+        summary = `Updated member exception for ${mTag}.`;
+      }
+    } else {
+      return {
+        success: false,
+        error: 'Please specify a target role or member to configure Honey Bot access policy.',
+        action: 'configure_guild_policy'
+      };
+    }
+
+    // Record to ActionLedger for recovery
+    ActionLedger.recordAction(guild.id, context.executionId || 'exec_policy', {
+      actionId: `policy_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+      action: 'configure_guild_policy',
+      type: 'configure_guild_policy',
+      guildId: guild.id,
+      actor: actor.tag || actor.id,
+      preState: preConfig,
+      postState: savedConfig,
+      details: summary,
+      timestamp: new Date().toISOString()
+    });
+
+    return {
+      success: true,
+      action: 'configure_guild_policy',
+      details: summary,
+      revision: savedConfig.revision,
+      verified: true
+    };
+  }
+
+  static async inspectGuildPolicy(guild, context = {}) {
+    const config = GuildConfigService.getConfig(guild.id);
+    const policy = config.authorizationPolicy || {};
+    const rolesMap = policy.operatorRoles || {};
+    const membersMap = policy.operatorMembers || {};
+    const policyAdmins = policy.policyAdmins || { roles: [], members: [] };
+
+    const roleEntries = Object.values(rolesMap);
+    const memberEntries = Object.values(membersMap);
+
+    const orphanRoles = [];
+    const formattedRoles = [];
+
+    for (const r of roleEntries) {
+      const liveRole = guild.roles?.cache?.get(r.roleId);
+      if (!liveRole) {
+        orphanRoles.push(`• **@${r.roleName}** (ID: \`${r.roleId}\` - *Deleted from server*)`);
+      } else {
+        const allows = r.capabilities?.length > 0 ? r.capabilities.join(', ') : 'none';
+        const denys = r.denyCapabilities?.length > 0 ? ` (Denied: ${r.denyCapabilities.join(', ')})` : '';
+        formattedRoles.push(`• <@&${r.roleId}> (\`${r.roleName}\`): ${allows}${denys}`);
+      }
+    }
+
+    const formattedMembers = memberEntries.map(m => {
+      const allows = m.capabilities?.length > 0 ? m.capabilities.join(', ') : 'none';
+      const denys = m.denyCapabilities?.length > 0 ? ` (Denied: ${m.denyCapabilities.join(', ')})` : '';
+      return `• <@${m.memberId}> (${m.memberTag}): ${allows}${denys}`;
+    });
+
+    let details = `**Honey Bot Access Policy for ${guild.name}** (Revision ${config.revision})\n\n`;
+
+    if (formattedRoles.length > 0) {
+      details += `**Authorized Roles (${formattedRoles.length}):**\n${formattedRoles.join('\n')}\n\n`;
+    } else {
+      details += `**Authorized Roles:** None explicitly configured (server administrators have default access).\n\n`;
+    }
+
+    if (formattedMembers.length > 0) {
+      details += `**Member Exceptions (${formattedMembers.length}):**\n${formattedMembers.join('\n')}\n\n`;
+    }
+
+    if (orphanRoles.length > 0) {
+      details += `⚠️ **Orphan Configured Roles (${orphanRoles.length}):**\n${orphanRoles.join('\n')}\n\n`;
+    }
+
+    const adminPolicyText = policy.adminOnlyPolicyChanges !== false
+      ? 'Strictly Server Administrators (and Guild Owner)'
+      : `Policy Admins (${policyAdmins.roles.length} roles, ${policyAdmins.members.length} members)`;
+    details += `**Who can change access rules:** ${adminPolicyText}`;
+
+    const embed = new EmbedBuilder()
+      .setTitle(`🛡️ Honey Bot Access Rules — ${guild.name}`)
+      .setDescription(details.slice(0, 4000))
+      .setColor(0x3498DB)
+      .setFooter({ text: `Guild ID: ${guild.id} • Revision: ${config.revision}` });
+
+    return {
+      success: true,
+      action: 'inspect_guild_policy',
+      details,
+      embed,
+      config
+    };
+  }
+
+  static async testGuildPolicy(guild, query = {}, context = {}) {
+    const rawRole = query.role || query.targetRole;
+    const rawMember = query.member || query.targetMember;
+    const targetAction = query.targetAction || query.action || query.capability || 'moderation';
+
+    let resolvedRole = null;
+    let resolvedMember = null;
+
+    if (rawRole) {
+      const cleanId = String(rawRole).replace(/[<@&>]/g, '').trim();
+      resolvedRole = guild.roles?.cache?.find(r => r.id === cleanId || r.name?.toLowerCase() === String(rawRole).replace(/^@/, '').toLowerCase());
+    }
+
+    if (rawMember) {
+      const cleanId = String(rawMember).replace(/[<@!>]/g, '').trim();
+      resolvedMember = guild.members?.cache?.find(m => m.id === cleanId || m.user?.username?.toLowerCase() === String(rawMember).toLowerCase());
+    }
+
+    if (!resolvedRole && !resolvedMember) {
+      return {
+        success: false,
+        error: 'Please specify which role or member to test (e.g. "Would Moderator role be allowed to ban?").',
+        action: 'test_guild_policy'
+      };
+    }
+
+    // Build synthetic mock member if testing a role alone
+    let testMember = resolvedMember;
+    if (!testMember && resolvedRole) {
+      testMember = {
+        id: 'simulated_member',
+        displayName: `Simulated [${resolvedRole.name}]`,
+        guild,
+        roles: {
+          cache: new Map([[resolvedRole.id, resolvedRole]]),
+          highest: resolvedRole
+        },
+        permissions: {
+          has: (flag) => resolvedRole.permissions?.has ? resolvedRole.permissions.has(flag) : false
+        }
+      };
+    }
+
+    const { checkUserAuthorization } = await import('./permissions.js');
+    const auth = checkUserAuthorization(testMember, [{ action: targetAction }]);
+
+    const subject = resolvedRole ? `Role @${resolvedRole.name}` : `Member ${testMember.displayName}`;
+    let resultMessage = '';
+
+    if (auth.authorized) {
+      resultMessage = `✅ **Allowed:** ${subject} **IS AUTHORIZED** to perform "${targetAction}" in this server under current access policy.`;
+    } else {
+      resultMessage = `🛑 **Denied:** ${subject} **IS NOT AUTHORIZED** to perform "${targetAction}" in this server.\n*Reason:* ${auth.reason}`;
+    }
+
+    return {
+      success: true,
+      action: 'test_guild_policy',
+      details: resultMessage,
+      authorized: auth.authorized,
+      reason: auth.reason
+    };
+  }
+
+  static async resetGuildPolicy(guild, context = {}) {
+    const actor = context.invokingUser || { id: 'unknown', tag: 'Administrator' };
+    const preConfig = GuildConfigService.getConfig(guild.id);
+    const reset = GuildConfigService.resetConfig(guild.id, actor);
+
+    ActionLedger.recordAction(guild.id, context.executionId || 'exec_reset', {
+      actionId: `reset_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+      action: 'reset_guild_policy',
+      type: 'reset_guild_policy',
+      guildId: guild.id,
+      actor: actor.tag || actor.id,
+      preState: preConfig,
+      postState: reset,
+      details: 'Reset server access rules to default bootstrap policy',
+      timestamp: new Date().toISOString()
+    });
+
+    return {
+      success: true,
+      action: 'reset_guild_policy',
+      details: `Reset Honey Bot access configuration for this server to defaults (Revision ${reset.revision}). Only Server Administrators can now operate the bot.`,
+      revision: reset.revision,
+      verified: true
     };
   }
 }
