@@ -19,6 +19,7 @@ import { ActionLedger } from './recovery.js';
 import { DiagnosticService, DiagnosticStatus } from './diagnostic-service.js';
 import { CapabilityRegistry } from './capabilities.js';
 import { SETTINGS_CATALOG, getSettingById } from './dashboard-catalog.js';
+import { ExperienceStore } from './experience-store.js';
 import { Logger } from './logger.js';
 
 const logger = new Logger('DashboardManager');
@@ -48,6 +49,7 @@ export const DASHBOARD_PAGES = [
   { id: 'music', label: 'Music & Voice', emoji: '🎵', description: 'Voice playback state & queue controls' },
   { id: 'queue', label: 'Task Queue', emoji: '⚡', description: 'Active tasks, history & cancellations' },
   { id: 'diagnostics', label: 'Diagnostics', emoji: '🩺', description: 'Health checks, API latency & recovery' },
+  { id: 'learning', label: 'Continuous Learning', emoji: '🧠', description: 'Experience records, success rate & dataset export' },
   { id: 'settings', label: 'All Settings', emoji: '⚙️', description: 'Authoritative server settings catalog' },
   { id: 'catalog', label: 'Capability Catalog', emoji: '📖', description: 'Real commands vs /go capabilities' }
 ];
@@ -124,6 +126,9 @@ export class DashboardManager {
         break;
       case 'diagnostics':
         ({ embed, extraRows } = await this._renderDiagnosticsPage(guild, access));
+        break;
+      case 'learning':
+        ({ embed, extraRows } = await this._renderLearningPage(guild, access));
         break;
       case 'settings':
         ({ embed, extraRows } = await this._renderSettingsPage(guild, access, options.catalogCategory));
@@ -566,7 +571,7 @@ export class DashboardManager {
         {
           name: 'Connection State',
           value: isConnected
-            ? `• **Connected Channel:** <#${voiceChannelId}>\n• **Player State:** ${isPaused ? 'Paused ⏸️' : 'Playing ▶️'}`
+            ? `• **Connected Channel:** <#${voiceChannelId}>\n• **Player State:** ${isPaused ? 'Paused ⏸️' : 'Playing ▶️'}\n• **Volume:** ${Math.round((sub?.volume ?? 1.0) * 100)}%\n• **Loop Mode:** \`${sub?.loopMode || 'off'}\``
             : '• **Status:** Disconnected / Idle',
           inline: true
         },
@@ -600,7 +605,26 @@ export class DashboardManager {
           .setLabel('Disconnect 🚪')
           .setStyle(ButtonStyle.Danger)
       );
-      extraRows.push(controlsRow);
+
+      const loopLabel = sub?.loopMode === 'track' ? '🔁 Track' : (sub?.loopMode === 'queue' ? '🔁 Queue' : '➡️ Off');
+      const queueRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('dash:music:loop')
+          .setLabel(`Loop: ${loopLabel}`)
+          .setStyle(sub?.loopMode !== 'off' ? ButtonStyle.Primary : ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId('dash:music:shuffle')
+          .setLabel('Shuffle 🔀')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(queueLength <= 1),
+        new ButtonBuilder()
+          .setCustomId('dash:music:clear')
+          .setLabel('Clear Queue 🗑️')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(queueLength === 0)
+      );
+
+      extraRows.push(controlsRow, queueRow);
     }
 
     return { embed, extraRows };
@@ -820,6 +844,74 @@ export class DashboardManager {
     );
 
     return { embed, extraRows: [paginationRow] };
+  }
+
+  /**
+   * 12. Continuous Learning & Reliability Page
+   */
+  static async _renderLearningPage(guild, access) {
+    const metrics = ExperienceStore.getGuildMetrics(guild.id);
+
+    const embed = new EmbedBuilder()
+      .setTitle(`Continuous Learning & Reliability — ${guild.name}`)
+      .setDescription(
+        `Honey Bot's persistent experience recording and evaluation system.\n` +
+        `Learns from verified interaction outcomes and user feedback without modifying runtime prompts unverified.`
+      )
+      .setColor(DASH_COLORS.PRIMARY)
+      .addFields(
+        {
+          name: 'Execution Statistics',
+          value: `• **Total Recorded Operations:** ${metrics.totalExecutions}\n• **Verified Success Rate:** ${metrics.successRate}%\n• **Avg Engine Latency:** ${metrics.averageLatencyMs}ms`,
+          inline: true
+        },
+        {
+          name: 'User Satisfaction',
+          value: `• **Helpful (👍):** ${metrics.positiveFeedback}\n• **Issues Reported (👎):** ${metrics.negativeFeedback}\n• **Quality Ratio:** ${metrics.positiveFeedback + metrics.negativeFeedback > 0 ? Math.round((metrics.positiveFeedback / (metrics.positiveFeedback + metrics.negativeFeedback)) * 100) : 100}%`,
+          inline: true
+        }
+      );
+
+    const failureKeys = Object.keys(metrics.failureBreakdown);
+    if (failureKeys.length > 0) {
+      const breakdownLines = failureKeys.map(k => `• \`${k}\`: ${metrics.failureBreakdown[k]} occurrence(s)`);
+      embed.addFields({
+        name: 'Failure Taxonomies & Classifications',
+        value: breakdownLines.join('\n').slice(0, 1024),
+        inline: false
+      });
+    } else {
+      embed.addFields({
+        name: 'Failure Taxonomies & Classifications',
+        value: '• No failure classifications recorded in this server.',
+        inline: false
+      });
+    }
+
+    if (metrics.recentFailures.length > 0) {
+      const recentLines = metrics.recentFailures.map((f, i) => `\`${i + 1}.\` "${f.prompt.slice(0, 40)}" — \`${f.category}\``);
+      embed.addFields({
+        name: 'Recent Identified Issues',
+        value: recentLines.join('\n').slice(0, 1024),
+        inline: false
+      });
+    }
+
+    embed.setFooter({ text: 'Inference Provider: Groq (zero-cost) • Export evaluation dataset using the button below' });
+
+    const extraRows = [];
+    if (access.canView) {
+      const exportRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('dash:learning:export')
+          .setLabel('Export Evaluation Dataset (JSONL)')
+          .setEmoji('📦')
+          .setStyle(ButtonStyle.Secondary)
+      );
+      extraRows.push(exportRow);
+    }
+
+    return { embed, extraRows };
   }
 
   // =========================================================================
@@ -1047,6 +1139,9 @@ export class DashboardManager {
         else if (cmd === 'skip') sub.skip();
         else if (cmd === 'stop') sub.stop();
         else if (cmd === 'leave') sub.destroy();
+        else if (cmd === 'shuffle') sub.shuffleQueue();
+        else if (cmd === 'clear') sub.clearQueue();
+        else if (cmd === 'loop') sub.setLoopMode(sub.loopMode === 'off' ? 'track' : (sub.loopMode === 'track' ? 'queue' : 'off'));
 
         const payload = await this.buildDashboardPayload(guild, member, user, 'music');
         await interaction.update(payload);
@@ -1069,6 +1164,17 @@ export class DashboardManager {
           await interaction.reply({ content: `⚠️ Task \`${taskId}\` is no longer active or cannot be cancelled.`, ephemeral: true });
         }
 
+        return true;
+      }
+
+      // 13. Continuous Learning Evaluation Dataset Export
+      if (actionType === 'learning' && parts[2] === 'export') {
+        const dataset = ExperienceStore.exportEvaluationDataset({ guildId: guild.id });
+        const sample = dataset.slice(0, 2);
+        await interaction.reply({
+          content: `📦 **Continuous Learning Dataset Export:**\n• Total Quality-Filtered Records: **${dataset.length}**\n• Format: **ChatML JSONL** (anonymized for offline evaluation & fine-tuning)\n• Provider: Groq free tier is configured for zero-cost runtime inference.\n\n\`\`\`json\n${JSON.stringify(sample, null, 2).slice(0, 1500)}\n\`\`\``,
+          ephemeral: true
+        });
         return true;
       }
 

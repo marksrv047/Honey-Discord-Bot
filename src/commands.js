@@ -22,12 +22,31 @@ import { HelpManager } from './help.js';
 import { DiagnosticService } from './diagnostic-service.js';
 import { CompletenessChecker } from './completeness-checker.js';
 import { DashboardManager } from './dashboard.js';
+import { ExperienceStore } from './experience-store.js';
 import { Logger } from './logger.js';
 
 const logger = new Logger('Commands');
 const planner = new Planner();
 const intentRouter = new IntentRouter();
 const modlogInterpreter = new ModlogInterpreter();
+
+/**
+ * Builds user feedback action row for continuous learning.
+ */
+export function buildFeedbackRow(executionId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`feedback:up:${executionId}`)
+      .setLabel('Helpful')
+      .setEmoji('👍')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`feedback:down:${executionId}`)
+      .setLabel('Report Issue')
+      .setEmoji('👎')
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
 
 /**
  * Exactly five top-level slash command definitions for Discord registration.
@@ -398,12 +417,31 @@ async function handleGoCommand(interaction) {
         }).catch(() => {});
       }
 
+      const allSucceeded = results.every(r => r.verified);
+      const someSucceeded = results.some(r => r.verified);
+      const multiOutcome = allSucceeded ? 'succeeded' : (someSucceeded ? 'partially_completed' : 'failed');
+
       const reportEmbed = Verifier.generateReportEmbed(plan, results, executionId);
       const summaryText = formatMultiActionSummary(results);
+      const feedbackRow = buildFeedbackRow(executionId);
+
+      ExperienceStore.recordExecution({
+        executionId,
+        guildId: guild.id,
+        userId: interaction.user.id,
+        userPrompt,
+        normalizedIntent: 'multi_action',
+        plan,
+        capabilities: plan.actions.map(a => a.action),
+        outcome: multiOutcome,
+        verificationEvidence: summaryText,
+        latencyMs: Date.now() - (executionContext.startTime || Date.now())
+      });
+
       return await interaction.editReply({
         content: summaryText,
         embeds: [reportEmbed],
-        components: [],
+        components: [feedbackRow],
         allowedMentions: ResponseService.getAllowedMentions()
       });
     }
@@ -523,6 +561,20 @@ async function handleGoCommand(interaction) {
     }
 
     if (!opResult.success) {
+      ExperienceStore.recordExecution({
+        executionId,
+        guildId: guild.id,
+        userId: interaction.user.id,
+        userPrompt,
+        normalizedIntent: interpreted.intent,
+        plan: { actions: [actionObj] },
+        capabilities: [interpreted.intent],
+        outcome: 'failed',
+        errorMessage: opResult.error,
+        verificationEvidence: opResult.error,
+        latencyMs: Date.now() - (executionContext.startTime || Date.now())
+      });
+
       if (opResult.isAmbiguous) {
         return await interaction.editReply({
           content: `❓ **Clarification Needed:**\n${opResult.error}\n\n*Please specify the user ID or exact mention.*`,
@@ -531,7 +583,8 @@ async function handleGoCommand(interaction) {
         });
       }
       const errorEmbed = createErrorEmbed(new Error(opResult.error || 'Operation failed'), executionId);
-      return await interaction.editReply({ content: '', embeds: [errorEmbed], components: [] });
+      const feedbackRow = buildFeedbackRow(executionId);
+      return await interaction.editReply({ content: '', embeds: [errorEmbed], components: [feedbackRow] });
     }
 
     // Format concise outcome message (premium minimal UX with verified smart mentions)
@@ -542,11 +595,25 @@ async function handleGoCommand(interaction) {
       name: interpreted.args?.name
     });
 
+    ExperienceStore.recordExecution({
+      executionId,
+      guildId: guild.id,
+      userId: interaction.user.id,
+      userPrompt,
+      normalizedIntent: interpreted.intent,
+      plan: { actions: [actionObj] },
+      capabilities: [interpreted.intent],
+      outcome: 'succeeded',
+      verificationEvidence: outcomeMessage,
+      latencyMs: Date.now() - (executionContext.startTime || Date.now())
+    });
+
     const resultEmbeds = opResult.embeds || (opResult.embed ? [opResult.embed] : []);
+    const feedbackRow = buildFeedbackRow(executionId);
     const replyMsg = await interaction.editReply({
       content: outcomeMessage,
       embeds: resultEmbeds,
-      components: [],
+      components: [feedbackRow],
       allowedMentions: ResponseService.getAllowedMentions()
     }).catch(async (editErr) => {
       // If the interaction message was deleted in a bulk purge, post directly to channel

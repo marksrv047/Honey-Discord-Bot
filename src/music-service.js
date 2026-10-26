@@ -56,6 +56,55 @@ export function buildProgressBar(currentSec, totalSec, barLength = 15) {
 }
 
 /**
+ * Intelligent similarity ranking scoring for music search results.
+ * Prioritizes exact title and artist matches, official releases, and penalizes covers/parodies.
+ */
+export function scoreTrack(query, track) {
+  const q = String(query || '').toLowerCase().trim();
+  const title = String(track.title || track.name || '').toLowerCase();
+  const author = String(track.author?.name || track.channel?.name || track.author || '').toLowerCase();
+
+  let score = 0;
+
+  // Exact title match
+  if (title === q) score += 100;
+  else if (title.includes(q)) score += 50;
+
+  // Word-level matching
+  const qWords = q.split(/[\s-]+/).filter(w => w.length > 2);
+  let matchedWords = 0;
+  for (const w of qWords) {
+    if (title.includes(w)) matchedWords++;
+    if (author.includes(w)) score += 20;
+  }
+  score += (matchedWords / Math.max(1, qWords.length)) * 40;
+
+  // Artist match bonus
+  if (author && (q.includes(author) || author.includes(q))) {
+    score += 35;
+  }
+
+  // Official channel bonus
+  if (track.author?.verified || track.badges?.includes('Official Artist Channel') || /official\s+(audio|video|lyric)/i.test(title)) {
+    score += 25;
+  }
+
+  // Penalize covers, karaoke, and slowed versions unless requested
+  if (!/cover/i.test(q) && /cover\b/i.test(title)) score -= 30;
+  if (!/remix/i.test(q) && /remix\b/i.test(title)) score -= 20;
+  if (!/karaoke/i.test(q) && /karaoke\b/i.test(title)) score -= 40;
+  if (!/slowed/i.test(q) && /slowed\b/i.test(title)) score -= 25;
+  if (!/live/i.test(q) && /live\b/i.test(title)) score -= 15;
+
+  return score;
+}
+
+export function rankTracks(query, tracks) {
+  if (!Array.isArray(tracks) || tracks.length <= 1) return tracks || [];
+  return [...tracks].sort((a, b) => scoreTrack(query, b) - scoreTrack(query, a));
+}
+
+/**
  * MusicSubscription manages per-guild voice connection, player, and queue state.
  */
 export class MusicSubscription {
@@ -238,6 +287,27 @@ export class MusicSubscription {
       this.currentResource.volume.setVolume(this.volume);
     }
     return Math.round(this.volume * 100);
+  }
+
+  shuffleQueue() {
+    for (let i = this.queue.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [this.queue[i], this.queue[j]] = [this.queue[j], this.queue[i]];
+    }
+    return this.queue.length;
+  }
+
+  clearQueue() {
+    const count = this.queue.length;
+    this.queue = [];
+    return count;
+  }
+
+  setLoopMode(mode) {
+    if (['off', 'track', 'queue'].includes(mode)) {
+      this.loopMode = mode;
+    }
+    return this.loopMode;
   }
 
   destroy() {
@@ -485,11 +555,12 @@ export class MusicService {
       throw new Error('Unsupported media source: Honey Bot supports YouTube, SoundCloud, and direct audio stream links (.mp3, .ogg, .wav).');
     }
 
-    // Keyword Search
+    // Keyword Search with intelligent artist + title similarity ranking
     try {
-      const results = await ytdl.search(trimmed);
-      if (Array.isArray(results) && results.length > 0) {
-        const item = results[0];
+      const rawResults = await ytdl.search(trimmed);
+      if (Array.isArray(rawResults) && rawResults.length > 0) {
+        const ranked = rankTracks(trimmed, rawResults);
+        const item = ranked[0];
         return {
           title: item.title,
           url: item.url,
@@ -504,10 +575,11 @@ export class MusicService {
       logger.warn('ytdl search error, attempting play-dl search fallback', { error: ytdlSearchErr.message });
     }
 
-    // Fallback to play-dl search
-    const playResults = await play.search(trimmed, { limit: 1 }).catch(() => []);
+    // Fallback to play-dl search with ranking
+    const playResults = await play.search(trimmed, { limit: 5 }).catch(() => []);
     if (playResults && playResults.length > 0) {
-      const pItem = playResults[0];
+      const rankedPlay = rankTracks(trimmed, playResults);
+      const pItem = rankedPlay[0];
       return {
         title: pItem.title,
         url: pItem.url,
@@ -817,6 +889,94 @@ export class MusicService {
     return {
       success: true,
       details: 'Disconnected from voice channel.'
+    };
+  }
+
+  /**
+   * Shuffles remaining tracks in the queue
+   */
+  static async shuffle(guild) {
+    const sub = this.getSubscription(guild.id);
+    if (!sub) {
+      return { success: false, error: 'Honey Bot is not connected to a voice channel in this server.' };
+    }
+    const count = sub.shuffleQueue();
+    return {
+      success: true,
+      details: `Shuffled ${count} track(s) in queue.`
+    };
+  }
+
+  /**
+   * Clears all pending tracks in the queue
+   */
+  static async clearQueue(guild) {
+    const sub = this.getSubscription(guild.id);
+    if (!sub) {
+      return { success: false, error: 'Honey Bot is not connected to a voice channel in this server.' };
+    }
+    const count = sub.clearQueue();
+    return {
+      success: true,
+      details: `Cleared ${count} pending track(s) from the queue.`
+    };
+  }
+
+  /**
+   * Updates playback loop mode ('off' | 'track' | 'queue')
+   */
+  static async setLoopMode(guild, mode) {
+    const sub = this.getSubscription(guild.id);
+    if (!sub) {
+      return { success: false, error: 'Honey Bot is not connected to a voice channel in this server.' };
+    }
+    const updated = sub.setLoopMode(mode);
+    return {
+      success: true,
+      details: `Loop mode set to "${updated}".`,
+      loopMode: updated
+    };
+  }
+
+  /**
+   * Generates comprehensive audio and voice subsystem diagnostics
+   */
+  static getDiagnostics(guildId) {
+    const sub = this.getSubscription(guildId);
+    const ffmpegOk = Boolean(process.env.FFMPEG_PATH || ffmpegPath);
+
+    if (!sub) {
+      return {
+        connected: false,
+        ffmpegAvailable: ffmpegOk,
+        ffmpegPath: process.env.FFMPEG_PATH || ffmpegPath || 'Not found',
+        playerStatus: 'idle',
+        voiceStatus: 'disconnected',
+        currentTrack: null,
+        queueLength: 0,
+        volume: 100,
+        loopMode: 'off'
+      };
+    }
+
+    const state = sub.audioPlayer.state.status;
+    const connState = sub.voiceConnection.state.status;
+
+    return {
+      connected: connState === 'ready',
+      ffmpegAvailable: ffmpegOk,
+      ffmpegPath: process.env.FFMPEG_PATH || ffmpegPath || 'Not found',
+      playerStatus: state,
+      voiceStatus: connState,
+      currentTrack: sub.currentTrack ? {
+        title: sub.currentTrack.title,
+        url: sub.currentTrack.url,
+        duration: sub.currentTrack.duration,
+        elapsed: sub.getElapsedSeconds()
+      } : null,
+      queueLength: sub.queue.length,
+      volume: Math.round(sub.volume * 100),
+      loopMode: sub.loopMode
     };
   }
 }

@@ -28,6 +28,7 @@ import { ActionLedger } from './src/recovery.js';
 import { MusicService } from './src/music-service.js';
 import { DashboardManager } from './src/dashboard.js';
 import { ChannelGuard } from './src/channel-guard.js';
+import { ExperienceStore } from './src/experience-store.js';
 import { Logger } from './src/logger.js';
 
 const logger = new Logger('Bot');
@@ -240,6 +241,33 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.customId?.startsWith('dash:')) {
       const handled = await DashboardManager.handleInteraction(interaction);
       if (handled) return;
+    }
+
+    // 2c. Handle Continuous Learning User Feedback Buttons
+    if (interaction.isButton() && interaction.customId?.startsWith('feedback:')) {
+      const parts = interaction.customId.split(':');
+      const rating = parts[1] === 'up' ? 'positive' : 'negative';
+      const execId = parts[2];
+
+      const res = ExperienceStore.recordFeedback(execId, {
+        rating,
+        userId: interaction.user.id
+      });
+
+      if (res.success) {
+        await interaction.reply({
+          content: rating === 'positive'
+            ? '✨ **Feedback Received:** Thank you! Honey Bot recorded this verified execution into continuous learning memory.'
+            : '📝 **Feedback Recorded:** Honey Bot logged this issue into its continuous learning failure taxonomy for reliability improvements.',
+          ephemeral: true
+        }).catch(() => {});
+      } else {
+        await interaction.reply({
+          content: '⚠️ This execution session has expired or is no longer in feedback memory.',
+          ephemeral: true
+        }).catch(() => {});
+      }
+      return;
     }
 
     // 3. Handle Persistent Ticket Buttons (Open Ticket / Close Ticket) & Confirmation Buttons
