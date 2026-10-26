@@ -19,15 +19,15 @@ You are the Discord Administration Intent Interpreter.
 Analyze the user instruction and interaction context. Return ONLY a single raw JSON object matching this schema:
 {
   "thought": "Brief interpretation of intent",
-  "intent": "rename_channel" | "edit_channel_topic" | "set_channel_slowmode" | "lock_channel" | "unlock_channel" | "create_channel" | "delete_channel" | "create_category" | "rename_category" | "delete_category" | "inspect_category" | "list_categories" | "move_channel_to_category" | "set_category_permission" | "sync_category_permissions" | "inspect_category_sync" | "create_role" | "edit_role" | "delete_role" | "assign_role" | "remove_role" | "change_nickname" | "remove_nickname" | "inspect_nickname" | "timeout_member" | "remove_timeout" | "kick_member" | "ban_member" | "unban_member" | "setup_ticket_system" | "audit_server" | "list_channels" | "list_roles" | "send_announcement" | "send_message" | "purge_messages" | "search_messages" | "music_play" | "music_pause" | "music_resume" | "music_skip" | "music_stop" | "music_queue" | "music_nowplaying" | "music_volume" | "music_leave" | "configure_guild_policy" | "inspect_guild_policy" | "test_guild_policy" | "reset_guild_policy" | "conversational" | "unsupported" | "complex_plan",
+  "intent": "open_dashboard" | "guard_channel" | "unguard_channel" | "list_guarded_channels" | "rename_channel" | "edit_channel_topic" | "set_channel_slowmode" | "lock_channel" | "unlock_channel" | "create_channel" | "delete_channel" | "create_category" | "rename_category" | "delete_category" | "inspect_category" | "list_categories" | "move_channel_to_category" | "set_category_permission" | "sync_category_permissions" | "inspect_category_sync" | "create_role" | "edit_role" | "delete_role" | "assign_role" | "remove_role" | "change_nickname" | "remove_nickname" | "inspect_nickname" | "timeout_member" | "remove_timeout" | "kick_member" | "ban_member" | "unban_member" | "setup_ticket_system" | "audit_server" | "list_channels" | "list_roles" | "send_announcement" | "send_message" | "purge_messages" | "search_messages" | "voice_join" | "music_play" | "music_pause" | "music_resume" | "music_skip" | "music_stop" | "music_queue" | "music_nowplaying" | "music_volume" | "music_leave" | "inspect_modlog" | "setup_modlog" | "configure_guild_policy" | "inspect_guild_policy" | "test_guild_policy" | "reset_guild_policy" | "conversational" | "unsupported" | "complex_plan",
   "targetType": "channel" | "role" | "member" | "server" | null,
   "targetRef": "current" | string (ID, name, or mention, e.g. "current", "<#123>", "<@123>", "VIP", "announce"),
   "args": {
     ... any arguments such as name, topic, seconds, durationMinutes, color, targetMember, targetRole, etc. ...
     "query": string (for music_play, e.g. "lofi beats" or "https://youtube.com/..."),
     "volume": number (for music_volume, 0 to 150),
-    "message": string (for send_announcement, e.g. "Happy Halloween! @everyone"),
-    "title": string (optional title for send_announcement),
+    "message": string (for send_announcement, extract the actual announcement details/text from prompt),
+    "title": string (optional title for send_announcement, e.g. "Server Announcement"),
     "mentionEveryone": boolean (true if user requested mentioning everyone),
     "content": string (for send_message),
     "count": number (for purge_messages)
@@ -49,7 +49,7 @@ RULES:
      • **Role/Item Name** – Direct description
      Never squash bullet points into a single continuous paragraph.
 4. ANNOUNCEMENTS & MESSAGES:
-   - If user asks to write/post an announcement: intent: "send_announcement", targetType: "channel", targetRef: "announce", args: { message: "...", title: "📢 Announcement", mentionEveryone: true }
+   - If user asks to post an announcement: intent: "send_announcement", targetType: "channel", targetRef: "current" (or target channel), args: { message: "...", title: "Server Announcement", mentionEveryone: true }. Extract the specific subject/message requested.
    - If user asks to send a message: intent: "send_message", targetType: "channel", args: { content: "...", mentionEveryone: boolean }
 5. BULK DELETE / PURGE VS SEARCH:
    - "Delete N messages in #ch": intent: "purge_messages", targetType: "channel", args: { count: N }
@@ -59,9 +59,17 @@ RULES:
    - "close this channel" / "lock down" -> intent: "lock_channel"
    - "open this channel" / "unlock" -> intent: "unlock_channel"
    - "I want Alex to show up as Night Owl" -> intent: "change_nickname", targetType: "member", targetRef: "Alex", args: { targetMember: "Alex", nickname: "Night Owl" }
-7. CONTEXTUAL FOLLOW-UPS:
+7. VOICE CHANNELS:
+   - "connect to voice channel X", "join voice X": intent: "voice_join", targetType: "channel", targetRef: "X", args: { channel: "X" }
+8. MODERATION LOGS:
+   - "what is the modlog channel", "where is the modlog channel", "state the modlog channel", "modlog status": intent: "inspect_modlog".
+   - "set up modlog", "setup modlog": intent: "setup_modlog", targetRef: "mod-logs".
+9. MULTIPLE ACTIONS & MULTI-ROLE DELETION:
+   - When user asks to delete multiple roles (e.g. "delete roles A, B and C"): return multiActions: [ { action: "delete_role", targetRole: "A" }, { action: "delete_role", targetRole: "B" }, { action: "delete_role", targetRole: "C" } ]
+   - When user asks to lock channel AND announce: return multiActions: [ { action: "lock_channel", targetChannel: "current" }, { action: "send_announcement", targetChannel: "current", message: "...", title: "Server Announcement", mentionEveryone: true } ]
+10. CONTEXTUAL FOLLOW-UPS:
    - Resolve "that role", "its color", "the channel we just created", "do the same for X" using provided recentContext.
-8. Output raw JSON only. No markdown formatting.
+11. Output raw JSON only. No markdown formatting.
 `;
 
 /**
@@ -89,7 +97,11 @@ export class IntentRouter {
     // =========================================================================
     // 0a. DASHBOARD & SERVER SETTINGS
     // =========================================================================
-    if (/^(?:open|show|view|display)?\s*(?:the\s+)?(?:server\s+)?(?:dashboard|settings|config(?:\s+center)?|control\s+panel)$/i.test(cleanPrompt)) {
+    if (
+      /^(?:open|show|view|display|launch|get)?\s*(?:the\s+)?(?:server\s+|bot\s+|admin\s+|interactive\s+)?(?:dashboard|settings|config(?:\s+center)?|control\s+panel)$/i.test(cleanPrompt) ||
+      /^(?:bot|server)\s+dashboard$/i.test(cleanPrompt) ||
+      /^dashboard$/i.test(cleanPrompt)
+    ) {
       return {
         intent: 'open_dashboard',
         thought: 'User requested server configuration dashboard',
@@ -180,6 +192,92 @@ export class IntentRouter {
     // =========================================================================
     // 1. DETERMINISTIC FAST PATH (0 LLM Calls, 0ms latency)
     // =========================================================================
+
+    // M1. Modlog inspection and status fast-path
+    if (
+      /^(?:what(?:'s|\s+is)|where\s+is|show|state|which\s+channel\s+is|check|view|display)\s+(?:the\s+)?(?:current\s+)?(?:mod[- ]?log|moderation\s+log)(?:\s+(?:channel|config|status))?/i.test(cleanPrompt) ||
+      /^(?:is\s+)?(?:the\s+)?(?:mod[- ]?log|moderation\s+log)\s+(?:setup|set\s+up|configured|enabled|active)\??$/i.test(cleanPrompt) ||
+      /^(?:mod[- ]?log|moderation\s+log)\s+status$/i.test(cleanPrompt) ||
+      /^state\s+it\s+dwn$/i.test(cleanPrompt)
+    ) {
+      return {
+        intent: 'inspect_modlog',
+        targetType: 'channel',
+        targetRef: 'current',
+        args: {},
+        isHighImpact: false,
+        thought: 'Inspect or state current modlog channel configuration'
+      };
+    }
+
+    // M2. Modlog setup fast-path
+    if (/^(?:set\s*up|setup|create|initialize|enable)\s+(?:a\s+|the\s+)?(?:mod[- ]?logs?|moderation\s+logs?)(?:\s+channel)?(?:\s+(?:called|named|in|to)\s+(#?[\w-]+))?$/i.test(cleanPrompt)) {
+      const chMatch = cleanPrompt.match(/(?:called|named|in|to)\s+(#?[\w-]+)/i);
+      const targetCh = chMatch ? chMatch[1].replace(/^#/, '') : 'mod-logs';
+      return {
+        intent: 'setup_modlog',
+        targetType: 'channel',
+        targetRef: targetCh,
+        args: { channel: targetCh },
+        isHighImpact: false,
+        thought: `Setup modlog channel named "${targetCh}"`
+      };
+    }
+
+    // V1. Voice connection fast-path
+    const voiceJoinMatch = cleanPrompt.match(/^(?:connect(?:\s+to)?|join)\s+(?:the\s+)?(?:voice\s+channel\s+)?["'“]?([^"'\n]+?)["'”]?$/i);
+    if (voiceJoinMatch && /(?:voice|channel|hangout|general|lounge|music|talk|chat|vc)/i.test(cleanPrompt)) {
+      const channelName = voiceJoinMatch[1].replace(/^(?:the\s+)?(?:voice\s+channel\s+)?/i, '').replace(/["'”]/g, '').trim();
+      return {
+        intent: 'voice_join',
+        targetType: 'channel',
+        targetRef: channelName,
+        args: { channel: channelName },
+        isHighImpact: false,
+        thought: `Connect to voice channel "${channelName}"`
+      };
+    }
+
+    // G1. Guard / Honeypot Channel fast-paths
+    if (
+      /^(?:guard|protect)(?:\s+this(?:\s+channel)?|\s+channel|\s+<#\d+>|\s+#?[\w-]+)?$/i.test(cleanPrompt) ||
+      /^(?:set(?:\s+up)?\s+)?(?:this\s+channel\s+as\s+|channel\s+as\s+)?(?:guarded|honeypot|protected)(?:\s+(this(?:\s+channel)?|<#\d+>|#?[\w-]+))?$/i.test(cleanPrompt)
+    ) {
+      const match = cleanPrompt.match(/(?:guard|protect|channel|as\s+(?:guarded|honeypot))\s+(this(?:\s+channel)?|<#\d+>|#?[\w-]+)/i);
+      const targetCh = match ? (/this/i.test(match[1]) ? 'current' : match[1].replace(/^#/, '')) : 'current';
+      return {
+        intent: 'guard_channel',
+        targetType: 'channel',
+        targetRef: targetCh,
+        args: { channel: targetCh },
+        isHighImpact: false,
+        thought: `Guard channel ${targetCh} against unauthorized messages and spam`
+      };
+    }
+
+    if (/^(?:unguard|unprotect|remove\s+guard\s+from)(?:\s+(this(?:\s+channel)?|<#\d+>|#?[\w-]+))?$/i.test(cleanPrompt)) {
+      const match = cleanPrompt.match(/(?:unguard|unprotect|from)\s+(this(?:\s+channel)?|<#\d+>|#?[\w-]+)/i);
+      const targetCh = match ? (/this/i.test(match[1]) ? 'current' : match[1].replace(/^#/, '')) : 'current';
+      return {
+        intent: 'unguard_channel',
+        targetType: 'channel',
+        targetRef: targetCh,
+        args: { channel: targetCh },
+        isHighImpact: false,
+        thought: `Remove guard from channel ${targetCh}`
+      };
+    }
+
+    if (/^(?:list|show|view|which)\s+(?:all\s+)?(?:guarded|protected|honeypot)\s+channels$/i.test(cleanPrompt)) {
+      return {
+        intent: 'list_guarded_channels',
+        targetType: 'server',
+        targetRef: 'current',
+        args: {},
+        isHighImpact: false,
+        thought: 'List all guarded channels in server'
+      };
+    }
 
     // =========================================================================
     // GUILD ACCESS & POLICY MANAGEMENT FAST-PATHS

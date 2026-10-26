@@ -1,4 +1,5 @@
 import { ChannelType } from 'discord.js';
+import { ModLogService } from './mod-log.js';
 
 /**
  * Strips potential prompt-injection patterns from server text fields.
@@ -61,6 +62,20 @@ export async function getGuildStateSnapshot(guild) {
   // 3. Guild Boost Tier
   const boostTier = guild.premiumTier;
 
+  // 4. ModLog Configuration
+  let modlog = { configured: false, enabled: false, channelId: null, channelName: null };
+  try {
+    const modlogConf = ModLogService.getConfig(guild.id);
+    if (modlogConf && modlogConf.channelId) {
+      modlog = {
+        configured: true,
+        enabled: Boolean(modlogConf.enabled),
+        channelId: modlogConf.channelId,
+        channelName: modlogConf.channelName || null
+      };
+    }
+  } catch {}
+
   return {
     guild: {
       id: guild.id,
@@ -70,6 +85,7 @@ export async function getGuildStateSnapshot(guild) {
       hasBannerSupport: boostTier >= 2,
       ownerId: guild.ownerId,
     },
+    modlog,
     roles,
     categories,
     channels

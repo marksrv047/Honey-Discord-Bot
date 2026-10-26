@@ -69,8 +69,11 @@ export class ModlogInterpreter {
       };
     }
 
-    if (/(?:set\s*up|create|initialize)\s+(?:the\s+)?(?:mod[- ]?logs?|moderation\s+logs?)(?:\s+channel)?(?:\s+in\s+this\s+server)?/i.test(cleanPrompt) ||
-        /create\s+(?:a\s+)?(?:mod[- ]?logs?|moderation\s+logs?)\s+channel/i.test(cleanPrompt)) {
+    if (
+      /^(?:set\s*up|setup|initialize)(?:\s+(?:a\s+|the\s+)?(?:mod[- ]?logs?|moderation\s+logs?|it)?(?:\s+channel)?(?:\s+for\s+this\s+server)?)?$/i.test(cleanPrompt) ||
+      /(?:set\s*up|create|initialize)\s+(?:the\s+|a\s+)?(?:mod[- ]?logs?|moderation\s+logs?)(?:\s+channel)?(?:\s+in\s+this\s+server)?/i.test(cleanPrompt) ||
+      /create\s+(?:a\s+)?(?:mod[- ]?logs?|moderation\s+logs?)\s+channel/i.test(cleanPrompt)
+    ) {
       const channelMatch = cleanPrompt.match(/(?:called|named|to|in)\s+(#?[\w-]+)/i);
       const specifiedName = channelMatch ? channelMatch[1].replace(/^#/, '') : 'mod-logs';
       return {
@@ -181,9 +184,19 @@ export class ModlogInterpreter {
     }
 
     // 8. Configuration with channel
-    const configMatch = cleanPrompt.match(/(?:set|use|make|move\s+(?:moderation\s+)?(?:the\s+)?logs\s+to|switch\s+to|change\s+(?:the\s+)?log\s+channel\s+to)\s+(this(?:\s+channel)?|here|<#\d+>|#?[\w-]+)(?:\s+(?:as|for)\s+(?:the\s+)?(?:mod[- ]?log|moderation\s+log|moderation\s+reports)(?:\s+channel)?)?(?:[,\s]+(?:and|then)\s+(?:test|verify)\s+it(?:\s+and\s+tell\s+me\s+whether\s+everything\s+works)?)?/i);
+    const configMatch = cleanPrompt.match(/(?:set(?!\s+up\b)|use|make|move\s+(?:moderation\s+)?(?:the\s+)?logs\s+to|switch\s+to|change\s+(?:the\s+)?log\s+channel\s+to)\s+(this(?:\s+channel)?|here|<#\d+>|#?[\w-]+)(?:\s+(?:as|for)\s+(?:the\s+)?(?:mod[- ]?log|moderation\s+log|moderation\s+reports)(?:\s+channel)?)?(?:[,\s]+(?:and|then)\s+(?:test|verify)\s+it(?:\s+and\s+tell\s+me\s+whether\s+everything\s+works)?)?/i);
     if (configMatch) {
-      const channelRef = /this|here/i.test(configMatch[1]) ? 'current' : configMatch[1];
+      const rawTarget = configMatch[1];
+      if (/^(?:up|the|a|an|it)$/i.test(rawTarget)) {
+        return {
+          intent: 'setup_logging',
+          targetChannel: 'mod-logs',
+          createIfMissing: true,
+          testAfterConfig: true,
+          clarificationQuestion: null
+        };
+      }
+      const channelRef = /this|here/i.test(rawTarget) ? 'current' : rawTarget;
       const testRequested = /(?:test|verify|whether\s+everything\s+works|for\s+moderation\s+reports)/i.test(cleanPrompt);
       return {
         intent: 'configure_channel',

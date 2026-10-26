@@ -216,16 +216,33 @@ async function handleGoCommand(interaction) {
       });
     }
 
+    // Check if user requested the server dashboard
+    if (interpreted.intent === 'open_dashboard') {
+      isDone = true;
+      clearTimeout(timeoutGuard);
+      const dashboardPayload = await DashboardManager.buildDashboardPayload(guild, member, interaction.user, 'overview');
+      return await interaction.editReply({
+        content: '',
+        embeds: dashboardPayload.embeds || [],
+        components: dashboardPayload.components || []
+      });
+    }
+
     // Check if conversational / greeting / advice
     if (interpreted.conversationalResponse) {
       isDone = true;
       clearTimeout(timeoutGuard);
       const refinedContent = formatRefinedResponse(interpreted.conversationalResponse);
-      return await interaction.editReply({
-        content: refinedContent,
+      const chunks = ResponseService.splitMessage(refinedContent, 2000);
+      await interaction.editReply({
+        content: chunks[0] || '',
         embeds: [],
         components: []
       });
+      for (let i = 1; i < chunks.length; i++) {
+        await interaction.followUp({ content: chunks[i] }).catch(() => {});
+      }
+      return;
     }
 
     // Phase 1.5: Deterministic Request-Completeness & Target-Safety Gate

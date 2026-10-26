@@ -291,10 +291,20 @@ export class MusicService {
 
     if (channelNameOrId) {
       const cleanTarget = String(channelNameOrId).toLowerCase().trim().replace(/^#/, '');
-      voiceChannel = channelsList.find(c =>
-        (c.type === 2 || c.type === 'GUILD_VOICE' || c.isVoiceBased?.()) &&
-        (c.id === channelNameOrId || c.name.toLowerCase() === cleanTarget || c.name.toLowerCase().includes(cleanTarget))
-      );
+      const normalize = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const normTarget = normalize(cleanTarget);
+
+      voiceChannel = channelsList.find(c => {
+        if (!c.isVoiceBased?.() && c.type !== 2 && c.type !== 'GUILD_VOICE') return false;
+        if (c.id === channelNameOrId) return true;
+        const normName = normalize(c.name);
+        return (
+          c.name?.toLowerCase() === cleanTarget ||
+          c.name?.toLowerCase().includes(cleanTarget) ||
+          cleanTarget.includes(c.name?.toLowerCase()) ||
+          (normTarget.length >= 3 && (normName === normTarget || normName.includes(normTarget) || normTarget.includes(normName)))
+        );
+      });
     }
 
     if (!voiceChannel && member?.voice?.channel) {

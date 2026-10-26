@@ -27,6 +27,7 @@ import { registerGatewayEventListeners } from './src/gateway-events.js';
 import { ActionLedger } from './src/recovery.js';
 import { MusicService } from './src/music-service.js';
 import { DashboardManager } from './src/dashboard.js';
+import { ChannelGuard } from './src/channel-guard.js';
 import { Logger } from './src/logger.js';
 
 const logger = new Logger('Bot');
@@ -203,9 +204,18 @@ client.once(Events.ClientReady, (readyClient) => {
   ActionLedger.loadAllHistory(readyClient);
 });
 
-// Event: Mention response in chat
+// Event: Message handling (ChannelGuard auto-moderation & mention response)
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
+
+  // 1. ChannelGuard: Intercept unauthorized messages or spam in guarded/honeypot channels
+  try {
+    await ChannelGuard.handleMessage(message, client);
+  } catch (err) {
+    logger.error('Error in ChannelGuard.handleMessage', { error: err.message });
+  }
+
+  // 2. Mention response in chat
   if (message.mentions.has(client.user)) {
     await message.reply(`Hello <@${message.author.id}>. I am Honey, a server administration assistant. Use \`/go <instruction>\` to execute server changes, or \`/audit\` for diagnostics.`).catch(() => {});
   }

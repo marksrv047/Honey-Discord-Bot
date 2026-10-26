@@ -135,20 +135,20 @@ export function formatSingleOutcome(intentOrAction, opResult, details = {}) {
     }
 
     case 'send_announcement': {
-      const chSnowflake = extractSnowflake(details.targetChannelId || details.resourceId) || extractSnowflake(details.targetRef);
+      const chSnowflake = extractSnowflake(details.channelId || details.targetChannelId) || extractSnowflake(details.targetRef);
       if (chSnowflake) {
         return `Announcement posted in <#${chSnowflake}>.`;
       }
-      const ch = (details.targetRef || details.channel || 'announcements').replace(/^#/, '');
+      const ch = (details.targetRef || details.channelName || details.channel || 'announcements').replace(/^#/, '');
       return `Announcement posted in #${ch}.`;
     }
 
     case 'send_message': {
-      const chSnowflake = extractSnowflake(details.targetChannelId || details.resourceId) || extractSnowflake(details.targetRef);
+      const chSnowflake = extractSnowflake(details.channelId || details.targetChannelId) || extractSnowflake(details.targetRef);
       if (chSnowflake) {
         return `Message posted in <#${chSnowflake}>.`;
       }
-      const ch = (details.targetRef || details.channel || 'channel').replace(/^#/, '');
+      const ch = (details.targetRef || details.channelName || details.channel || 'channel').replace(/^#/, '');
       return `Message posted in #${ch}.`;
     }
 

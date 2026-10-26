@@ -623,9 +623,10 @@ export class TaskQueue {
     const channelsList = guild.channels?.cache ? (guild.channels.cache.values ? Array.from(guild.channels.cache.values()) : (Array.isArray(guild.channels.cache) ? guild.channels.cache : [])) : [];
 
     // Check Role Creation
-    if (action === 'create_role' && args.name) {
+    const targetRoleName = args?.name || args?.roleName || args?.role || args?.targetRole;
+    if (action === 'create_role' && targetRoleName) {
       const existing = rolesList.find(
-        r => r.name.toLowerCase() === args.name.toLowerCase()
+        r => r.name?.toLowerCase() === String(targetRoleName).toLowerCase()
       );
       if (existing) {
         return {
@@ -637,9 +638,10 @@ export class TaskQueue {
     }
 
     // Check Channel Creation
-    if ((action === 'create_channel' || action === 'create_category') && args.name) {
+    const targetChannelName = args?.name || args?.channelName || args?.channel || args?.categoryName || args?.category;
+    if ((action === 'create_channel' || action === 'create_category') && targetChannelName) {
       const existing = channelsList.find(
-        c => c.name.toLowerCase() === args.name.toLowerCase()
+        c => c.name?.toLowerCase() === String(targetChannelName).toLowerCase()
       );
       if (existing) {
         return {

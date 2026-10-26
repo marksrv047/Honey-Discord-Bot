@@ -567,21 +567,29 @@ export class Operations {
   /**
    * Creates a channel.
    */
-  static async createChannel(guild, options, context) {
+  static async createChannel(guild, options = {}, context = {}) {
     let chType = ChannelType.GuildText;
-    if (options.type === 'GUILD_VOICE' || options.type === 'VOICE') chType = ChannelType.GuildVoice;
-    if (options.type === 'GUILD_CATEGORY' || options.type === 'CATEGORY') chType = ChannelType.GuildCategory;
-    if (options.type === 'GUILD_ANNOUNCEMENT') chType = ChannelType.GuildAnnouncement;
+    if (options.type === 'GUILD_VOICE' || options.type === 'VOICE' || options.type === 'voice') chType = ChannelType.GuildVoice;
+    if (options.type === 'GUILD_CATEGORY' || options.type === 'CATEGORY' || options.type === 'category') chType = ChannelType.GuildCategory;
+    if (options.type === 'GUILD_ANNOUNCEMENT' || options.type === 'announcement') chType = ChannelType.GuildAnnouncement;
+
+    const channelName = String(options.name || options.channelName || options.channel || options.targetChannel || options.target || '').trim();
+    if (!channelName) {
+      return { success: false, error: 'Channel name is required.', action: 'create_channel' };
+    }
 
     let parentId = null;
-    if (options.category && chType !== ChannelType.GuildCategory) {
-      const cat = await context.resolveTarget(options.category, 'channel');
+    const parentCategory = options.category || options.parentCategory || options.parent;
+    if (parentCategory && chType !== ChannelType.GuildCategory) {
+      const cat = typeof context?.resolveTarget === 'function' 
+        ? await context.resolveTarget(parentCategory, 'channel')
+        : guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && (c.id === parentCategory || c.name?.toLowerCase() === String(parentCategory).toLowerCase()));
       if (cat && cat.type === ChannelType.GuildCategory) parentId = cat.id;
     }
 
     // Idempotency: check if channel with same name and category already exists in cache
     const existing = findInCache(guild.channels?.cache, c => 
-      c.name.toLowerCase() === options.name.toLowerCase() && 
+      c.name?.toLowerCase() === channelName.toLowerCase() && 
       (parentId ? c.parentId === parentId : true)
     );
     if (existing) {
@@ -590,70 +598,90 @@ export class Operations {
         action: 'create_channel',
         details: `Channel #${existing.name} already exists (re-using existing)`,
         verified: true,
-        resourceId: existing.id
+        resourceId: existing.id,
+        channelId: existing.id,
+        channelName: existing.name
       };
     }
 
     const channel = await guild.channels.create({
-      name: options.name,
+      name: channelName,
       type: chType,
       parent: parentId,
       topic: options.topic,
       rateLimitPerUser: options.slowmodeSeconds || 0,
-      reason: `Created via Honey Bot by ${context.invokingUser.tag}`
+      reason: `Created via Honey Bot by ${context?.invokingUser?.tag || 'moderator'}`
     });
 
-    ActionLedger.recordCreatedResource(context.executionId, 'channel', channel.id, channel.name, guild.id);
+    if (context?.executionId) {
+      ActionLedger.recordCreatedResource(context.executionId, 'channel', channel.id, channel.name, guild.id);
+    }
 
     return {
       success: true,
       action: 'create_channel',
       details: `Channel #${channel.name} created successfully`,
       verified: true,
-      resourceId: channel.id
+      resourceId: channel.id,
+      channelId: channel.id,
+      channelName: channel.name
     };
   }
 
   /**
    * Creates a role.
    */
-  static async createRole(guild, options, context) {
-    const existing = findInCache(guild.roles?.cache, r => r.name.toLowerCase() === options.name.toLowerCase());
+  static async createRole(guild, options = {}, context = {}) {
+    const roleName = String(options.name || options.roleName || options.role || options.targetRole || options.target || '').trim();
+    if (!roleName) {
+      return { success: false, error: 'Role name is required.', action: 'create_role' };
+    }
+
+    const existing = findInCache(guild.roles?.cache, r => r.name?.toLowerCase() === roleName.toLowerCase());
     if (existing) {
       return {
         success: true,
         action: 'create_role',
         details: `Role @${existing.name} already exists (re-using existing)`,
         verified: true,
-        resourceId: existing.id
+        resourceId: existing.id,
+        roleId: existing.id,
+        roleName: existing.name
       };
     }
 
+    const resolvedColor = resolveColor(options.color || options.hexColor || options.hex) || '#99AAB5';
     const role = await guild.roles.create({
-      name: options.name,
-      color: options.color || '#99AAB5',
+      name: roleName,
+      color: resolvedColor,
       hoist: Boolean(options.hoist),
       mentionable: Boolean(options.mentionable),
       permissions: options.permissions || [],
-      reason: `Created via Honey Bot by ${context.invokingUser.tag}`
+      reason: `Created via Honey Bot by ${context?.invokingUser?.tag || 'moderator'}`
     });
 
-    ActionLedger.recordCreatedResource(context.executionId, 'role', role.id, role.name, guild.id);
+    if (context?.executionId) {
+      ActionLedger.recordCreatedResource(context.executionId, 'role', role.id, role.name, guild.id);
+    }
 
     return {
       success: true,
       action: 'create_role',
       details: `Role @${role.name} created`,
       verified: true,
-      resourceId: role.id
+      resourceId: role.id,
+      roleId: role.id,
+      roleName: role.name
     };
   }
 
   /**
    * Deletes a channel (high-impact / destructive).
    */
-  static async deleteChannel(guild, channelRef, context) {
-    const channel = await context.resolveTarget(channelRef, 'channel');
+  static async deleteChannel(guild, channelRef, context = {}) {
+    const channel = typeof context?.resolveTarget === 'function'
+      ? await context.resolveTarget(channelRef, 'channel')
+      : guild.channels.cache.find(c => c.id === channelRef || c.name?.toLowerCase() === String(channelRef).replace(/^#/, '').toLowerCase());
     if (!channel) {
       return {
         success: true,
@@ -664,7 +692,7 @@ export class Operations {
     }
 
     const name = channel.name;
-    await channel.delete(`Deleted via Honey Bot by ${context.invokingUser.tag}`);
+    await channel.delete(`Deleted via Honey Bot by ${context?.invokingUser?.tag || 'moderator'}`);
     return {
       success: true,
       action: 'delete_channel',
@@ -675,32 +703,53 @@ export class Operations {
   }
 
   /**
-   * Deletes a role (high-impact / destructive).
+   * Deletes one or multiple roles (high-impact / destructive).
    */
-  static async deleteRole(guild, roleRef, context) {
-    const role = await context.resolveTarget(roleRef, 'role');
-    if (!role) {
-      return {
-        success: true,
-        action: 'delete_role',
-        details: `Role "${roleRef}" already deleted or not found`,
-        verified: true
-      };
+  static async deleteRole(guild, roleRef, context = {}) {
+    const rawTarget = roleRef || context?.args?.role;
+    let roleTargets = [];
+    if (Array.isArray(rawTarget)) {
+      roleTargets = rawTarget;
+    } else if (typeof rawTarget === 'string') {
+      roleTargets = rawTarget.split(/,\s*|\s+and\s+/i).map(s => s.trim()).filter(Boolean);
+    }
+    if (roleTargets.length === 0) {
+      return { success: false, error: 'No role specified to delete.', action: 'delete_role' };
     }
 
-    const hierarchy = checkRoleHierarchy(guild, { action: 'delete_role' }, role);
-    if (!hierarchy.valid) {
-      return { success: false, error: hierarchy.reason, action: 'delete_role' };
+    const deleted = [];
+    const errors = [];
+    for (const ref of roleTargets) {
+      const clean = String(ref).replace(/^@/, '').trim();
+      const role = typeof context?.resolveTarget === 'function'
+        ? await context.resolveTarget(clean, 'role')
+        : guild.roles.cache.find(r => r.id === clean || r.name?.toLowerCase() === clean.toLowerCase());
+
+      if (!role) {
+        deleted.push(`Role "${clean}" (already absent)`);
+        continue;
+      }
+
+      const hierarchy = checkRoleHierarchy(guild, { action: 'delete_role' }, role);
+      if (!hierarchy.valid) {
+        errors.push(`Cannot delete @${role.name}: ${hierarchy.reason}`);
+        continue;
+      }
+
+      const name = role.name;
+      await role.delete(`Deleted via Honey Bot by ${context?.invokingUser?.tag || 'moderator'}`);
+      deleted.push(`@${name}`);
     }
 
-    const name = role.name;
-    await role.delete(`Deleted via Honey Bot by ${context.invokingUser.tag}`);
+    if (errors.length > 0 && deleted.length === 0) {
+      return { success: false, error: errors.join('; '), action: 'delete_role' };
+    }
+
     return {
       success: true,
       action: 'delete_role',
-      details: `Role @${name} deleted`,
-      verified: true,
-      resourceId: role.id
+      details: `Deleted roles: ${deleted.join(', ')}${errors.length > 0 ? ` (Warnings: ${errors.join('; ')})` : ''}`,
+      verified: true
     };
   }
 
@@ -1100,12 +1149,13 @@ export class Operations {
       };
     }
 
+    const announcementContent = options.message || options.content || options.description || 'Important server announcement';
     const embed = new EmbedBuilder()
       .setTitle(options.title || '📢 Server Announcement')
-      .setDescription(options.message || 'Announcement')
+      .setDescription(announcementContent)
       .setColor(0xE67E22)
       .setTimestamp()
-      .setFooter({ text: `Announced by ${context.invokingUser.tag}` });
+      .setFooter({ text: `Announced by ${context?.invokingUser?.tag || 'moderator'}` });
 
     const payload = { embeds: [embed] };
     if (options.mentionEveryone) {
@@ -1131,7 +1181,10 @@ export class Operations {
       action: 'send_announcement',
       details: `Announcement posted to #${channel.name}${options.mentionEveryone ? ' with @everyone' : ''}`,
       verified: Boolean(sent?.id),
-      resourceId: sent?.id
+      resourceId: sent?.id,
+      channelId: channel.id,
+      targetChannelId: channel.id,
+      channelName: channel.name
     };
   }
 
@@ -1529,8 +1582,8 @@ export class Operations {
   /**
    * Creates a new category channel.
    */
-  static async createCategory(guild, options, context = {}) {
-    const name = String(options.name || '').trim();
+  static async createCategory(guild, options = {}, context = {}) {
+    const name = String(options.name || options.categoryName || options.category || options.title || options.targetCategory || options.targetRef || options.target || '').trim();
     if (!name) return { success: false, error: 'Category name is required.', action: 'create_category' };
 
     // Idempotency: check if category with same name exists
