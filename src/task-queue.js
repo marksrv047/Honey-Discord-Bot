@@ -15,11 +15,16 @@ const QUEUE_FILE = path.join(DATA_DIR, 'task-queue.json');
 
 /**
  * Task Queue Lifecycle States
+ * Implements explicit execution states for robust tracking and recovery.
  */
 export const TaskQueueState = {
+  RECEIVED: 'received',
+  INTERPRETING: 'interpreting',
+  AWAITING_CLARIFICATION: 'awaiting_clarification',
   QUEUED: 'queued',
   PLANNING: 'planning',
   VALIDATING: 'validating',
+  VALIDATED: 'validated',
   AWAITING_CONFIRMATION: 'awaiting_confirmation',
   RUNNING: 'running',
   WAITING: 'waiting',
@@ -28,7 +33,8 @@ export const TaskQueueState = {
   FAILED: 'failed',
   CANCELLED: 'cancelled',
   INTERRUPTED: 'interrupted',
-  RECOVERY_REQUIRED: 'recovery_required'
+  RECOVERY_REQUIRED: 'recovery_required',
+  UNVERIFIED: 'unverified'
 };
 
 /**
@@ -40,13 +46,34 @@ export const TaskActionStatus = {
   SUCCEEDED: 'succeeded',
   FAILED: 'failed',
   SKIPPED: 'skipped',
-  UNCERTAIN: 'uncertain'
+  UNCERTAIN: 'uncertain',
+  UNVERIFIED: 'unverified'
 };
 
 /**
  * Valid state transitions mapping
  */
 const VALID_TRANSITIONS = {
+  [TaskQueueState.RECEIVED]: [
+    TaskQueueState.INTERPRETING,
+    TaskQueueState.QUEUED,
+    TaskQueueState.VALIDATING,
+    TaskQueueState.CANCELLED,
+    TaskQueueState.FAILED
+  ],
+  [TaskQueueState.INTERPRETING]: [
+    TaskQueueState.AWAITING_CLARIFICATION,
+    TaskQueueState.VALIDATING,
+    TaskQueueState.QUEUED,
+    TaskQueueState.CANCELLED,
+    TaskQueueState.FAILED
+  ],
+  [TaskQueueState.AWAITING_CLARIFICATION]: [
+    TaskQueueState.INTERPRETING,
+    TaskQueueState.VALIDATING,
+    TaskQueueState.CANCELLED,
+    TaskQueueState.FAILED
+  ],
   [TaskQueueState.QUEUED]: [
     TaskQueueState.PLANNING,
     TaskQueueState.VALIDATING,
@@ -56,10 +83,18 @@ const VALID_TRANSITIONS = {
   ],
   [TaskQueueState.PLANNING]: [
     TaskQueueState.VALIDATING,
+    TaskQueueState.VALIDATED,
     TaskQueueState.CANCELLED,
     TaskQueueState.FAILED
   ],
   [TaskQueueState.VALIDATING]: [
+    TaskQueueState.VALIDATED,
+    TaskQueueState.AWAITING_CONFIRMATION,
+    TaskQueueState.RUNNING,
+    TaskQueueState.CANCELLED,
+    TaskQueueState.FAILED
+  ],
+  [TaskQueueState.VALIDATED]: [
     TaskQueueState.AWAITING_CONFIRMATION,
     TaskQueueState.RUNNING,
     TaskQueueState.CANCELLED,
@@ -74,6 +109,7 @@ const VALID_TRANSITIONS = {
     TaskQueueState.WAITING,
     TaskQueueState.PARTIALLY_COMPLETED,
     TaskQueueState.COMPLETED,
+    TaskQueueState.UNVERIFIED,
     TaskQueueState.FAILED,
     TaskQueueState.INTERRUPTED,
     TaskQueueState.RECOVERY_REQUIRED,
@@ -103,6 +139,11 @@ const VALID_TRANSITIONS = {
     TaskQueueState.PARTIALLY_COMPLETED,
     TaskQueueState.FAILED,
     TaskQueueState.CANCELLED
+  ],
+  [TaskQueueState.UNVERIFIED]: [
+    TaskQueueState.RECOVERY_REQUIRED,
+    TaskQueueState.COMPLETED,
+    TaskQueueState.FAILED
   ],
   [TaskQueueState.COMPLETED]: [],
   [TaskQueueState.FAILED]: [],

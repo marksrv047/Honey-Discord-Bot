@@ -1,6 +1,6 @@
 import { CAPABILITY_REGISTRY } from '../capabilities.js';
 import { EXAMPLE_LIBRARY } from './modules/example-library.js';
-import { normalizeEverydayEnglish } from './modules/core-language.js';
+import { normalizeEverydayEnglish, SLANG_AND_COLLOQUIALISMS } from './modules/core-language.js';
 import { NegationDetector } from './negation-detector.js';
 
 /**
@@ -35,8 +35,21 @@ export class KnowledgeRetriever {
 
       for (const token of tokens) {
         if (actionTokens.includes(token)) score += 5;
-        if (synTokens.includes(token)) score += 3;
+        if (synTokens.includes(token)) score += 4;
         if (descTokens.includes(token)) score += 1;
+
+        // Stemming bonus
+        const stem = token.replace(/(?:ing|ed|es|s)$/, '');
+        if (stem.length > 2 && actionTokens.some(at => at.startsWith(stem))) {
+          score += 3;
+        }
+      }
+
+      // Slang bonus
+      for (const [slang, info] of Object.entries(SLANG_AND_COLLOQUIALISMS)) {
+        if (normalized.includes(slang) && info.intent === action) {
+          score += 15;
+        }
       }
 
       if (score > 0) {

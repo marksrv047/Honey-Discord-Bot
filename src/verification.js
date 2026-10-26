@@ -9,6 +9,7 @@ export const VerificationStatus = {
   PASSED: 'passed',
   FAILED: 'failed',
   INCONCLUSIVE: 'inconclusive',
+  UNVERIFIED: 'unverified',
   NOT_APPLICABLE: 'not_applicable'
 };
 
@@ -394,26 +395,36 @@ export class Verifier {
     const completed = results.filter(r => r.status === 'COMPLETED' || r.verificationStatus === 'passed').length;
     const failed = results.filter(r => r.status === 'FAILED' || r.status === 'MISMATCH' || r.verificationStatus === 'failed').length;
     const skipped = results.filter(r => r.status === 'SKIPPED').length;
+    const unverified = results.filter(r => r.status === 'UNVERIFIED' || r.verificationStatus === 'unverified' || r.verificationStatus === 'inconclusive').length;
 
-    const allSuccessful = failed === 0 && skipped === 0;
+    const allSuccessful = failed === 0 && skipped === 0 && unverified === 0;
     const color = allSuccessful ? 0x2ECC71 : (completed > 0 ? 0xE67E22 : 0xED4245);
 
     const title = allSuccessful
       ? 'Completed & Verified: Administrative Actions'
-      : '⚠️ Execution Report (Partial or Skipped)';
+      : (unverified > 0 && failed === 0 && skipped === 0
+          ? 'ℹ️ Actions Completed (Verification Pending / Inconclusive)'
+          : '⚠️ Execution Report (Partial or Skipped)');
 
     const embed = new EmbedBuilder()
       .setTitle(title)
       .setColor(color)
       .setDescription(
         `Plan: ${cleanText(plan.thoughtProcess || 'Administrative updates')}\n\n` +
-        `Summary: ${completed}/${total} completed${failed > 0 ? ` • ${failed} failed` : ''}${skipped > 0 ? ` • ${skipped} skipped` : ''}`
+        `Summary: ${completed}/${total} completed${unverified > 0 ? ` • ${unverified} unverified` : ''}${failed > 0 ? ` • ${failed} failed` : ''}${skipped > 0 ? ` • ${skipped} skipped` : ''}`
       )
       .setFooter({ text: `Execution ID: ${executionId}` });
 
     // Itemized list with minimal formatting
     const formattedList = results.map((r, i) => {
-      const statusTag = (r.status === 'COMPLETED' || r.verificationStatus === 'passed') ? '[OK]' : (r.status === 'SKIPPED' ? '[SKIPPED]' : '[FAILED]');
+      let statusTag = '[FAILED]';
+      if (r.status === 'COMPLETED' || r.verificationStatus === 'passed') {
+        statusTag = '[OK]';
+      } else if (r.status === 'UNVERIFIED' || r.verificationStatus === 'unverified' || r.verificationStatus === 'inconclusive') {
+        statusTag = '[UNVERIFIED]';
+      } else if (r.status === 'SKIPPED') {
+        statusTag = '[SKIPPED]';
+      }
       return `\`${statusTag}\` \`${i + 1}.\` **${r.action}**: ${cleanText(r.details)}`;
     }).join('\n');
 

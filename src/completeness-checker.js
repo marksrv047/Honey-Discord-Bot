@@ -458,6 +458,46 @@ export class CompletenessChecker {
       }
     }
 
+    // F. Compound Role Creation + Color + Assignment + Private Channel
+    // "Create a staff role, make it purple, assign it to Alex, and create a private staff channel"
+    const compoundStaffMatch = prompt.match(/create\s+(?:a\s+)?([a-zA-Z0-9_\s-]+?)\s+role,\s*(?:make|set)\s+(?:it\s+)?([#\w]+),\s*(?:assign|give)\s+(?:it\s+to\s+|to\s+)(@?[\w.-]+),\s*(?:and\s+)?create\s+(?:a\s+)?private\s+([a-zA-Z0-9_-]+)(?:\s+channel)?/i);
+    if (compoundStaffMatch) {
+      const roleName = compoundStaffMatch[1].trim();
+      const rawColor = compoundStaffMatch[2].trim();
+      const targetMember = compoundStaffMatch[3].trim().replace(/^@/, '');
+      const channelName = compoundStaffMatch[4].trim();
+      const resolvedColor = resolveColor(rawColor) || rawColor;
+
+      const hasRole = actions.some(a => a.action === 'create_role' && a.name?.toLowerCase() === roleName.toLowerCase());
+      const hasAssign = actions.some(a => a.action === 'assign_role' && a.targetMember === targetMember);
+      const hasChannel = actions.some(a => a.action === 'create_channel' && a.name?.toLowerCase() === channelName.toLowerCase());
+
+      if (!hasRole) {
+        actions.unshift({
+          action: 'create_role',
+          name: roleName,
+          color: resolvedColor
+        });
+      }
+      if (!hasAssign) {
+        actions.push({
+          action: 'assign_role',
+          targetRole: roleName,
+          targetMember,
+          dependsOn: ['create_role']
+        });
+      }
+      if (!hasChannel) {
+        actions.push({
+          action: 'create_channel',
+          name: channelName,
+          isPrivate: true,
+          allowedRoles: [roleName],
+          dependsOn: ['create_role']
+        });
+      }
+    }
+
     // =========================================================================
     // 6. AMBIGUOUS TARGET VALIDATION (Do not guess missing targets)
     // =========================================================================

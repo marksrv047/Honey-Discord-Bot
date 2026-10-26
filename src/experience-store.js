@@ -352,4 +352,57 @@ export class ExperienceStore {
 
     return exportedEntries;
   }
+
+  /**
+   * Section 8 Category Queries for Continuous Experience Inspection
+   */
+  static getCorrectInterpretations(guildId = null) {
+    this.loadAll();
+    let records = Array.from(this._records.values()).filter(r => r.outcome === 'succeeded');
+    if (guildId) records = records.filter(r => r.guildId === String(guildId));
+    return records;
+  }
+
+  static getFailedInterpretations(guildId = null) {
+    this.loadAll();
+    let records = Array.from(this._records.values()).filter(r => 
+      r.errorCategory === FailureCategory.LLM_PARSE_ERROR || r.errorCategory === FailureCategory.UNSUPPORTED_ACTION
+    );
+    if (guildId) records = records.filter(r => r.guildId === String(guildId));
+    return records;
+  }
+
+  static getResolvedClarifications(guildId = null) {
+    this.loadAll();
+    let records = Array.from(this._records.values()).filter(r => Boolean(r.clarificationNeeded));
+    if (guildId) records = records.filter(r => r.guildId === String(guildId));
+    return records;
+  }
+
+  static getExecutionFailures(guildId = null) {
+    this.loadAll();
+    let records = Array.from(this._records.values()).filter(r => r.outcome === 'failed');
+    if (guildId) records = records.filter(r => r.guildId === String(guildId));
+    return records;
+  }
+
+  static getRecoveryPatterns(guildId = null) {
+    this.loadAll();
+    let records = Array.from(this._records.values()).filter(r => r.outcome === 'partially_completed');
+    if (guildId) records = records.filter(r => r.guildId === String(guildId));
+    return records;
+  }
+
+  /**
+   * Untrusted-data safety gate: Ensures user-provided records do not contain prompt injections,
+   * tokens, or attempts to bypass security policies before learning or export.
+   */
+  static isSafeForLearning(record) {
+    if (!record || !record.userPrompt) return false;
+    const p = record.userPrompt.toLowerCase();
+    if (/\bnuke\b|\btoken\b|\bpassword\b|\bprocess\.env\b|ignore\s+previous\s+instructions/i.test(p)) {
+      return false;
+    }
+    return true;
+  }
 }
