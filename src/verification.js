@@ -236,6 +236,19 @@ export class Verifier {
           };
         }
 
+        case 'set_user_channel_permission': {
+          const verified = Boolean(executionResult.success);
+          return {
+            action: actionObj.action,
+            status: verified ? 'COMPLETED' : 'FAILED',
+            verificationStatus: verified ? VerificationStatus.PASSED : VerificationStatus.FAILED,
+            intendedChange: `Set channel permissions for ${actionObj.targetMember}`,
+            observedOutcome: executionResult.details || 'Channel permissions updated',
+            verified,
+            details: executionResult.details || 'Channel permissions updated'
+          };
+        }
+
         case 'lock_channel':
         case 'unlock_channel': {
           return {

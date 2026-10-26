@@ -70,7 +70,12 @@ RULES:
  */
 export class IntentRouter {
   constructor(aiProvider = new AIProvider()) {
-    this.aiProvider = aiProvider;
+    if (aiProvider && typeof aiProvider === 'object' && aiProvider.isDeterministicOnly) {
+      this.isDeterministicOnly = true;
+      this.aiProvider = null;
+    } else {
+      this.aiProvider = aiProvider;
+    }
   }
 
   /**
@@ -722,12 +727,12 @@ export class IntentRouter {
     }
 
     // L. "timeout <target> for <N> minutes for/because <reason>"
-    const timeoutMatch = cleanPrompt.match(/^(?:timeout|mute)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:for\s+)?(\d+|ten|five|fifteen|twenty|thirty|one|two)\s*(?:m|minutes?|mins?)?(?:\s+(?:for|because)\s+(.+))?$/i);
+    const timeoutMatch = cleanPrompt.match(/^(?:timeout|mute)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:for\s+)?(\d+|ten|five|fifteen|twenty|thirty|one|two)\s*(?:m|minutes?|mins?)?(?:\s+(?:for|because(?:\s+of)?)\s+(.+))?$/i);
     if (timeoutMatch) {
       const target = timeoutMatch[1].replace(/^@/, '');
       const wordsToNum = { one: 1, two: 2, five: 5, ten: 10, fifteen: 15, twenty: 20, thirty: 30 };
       const durationMinutes = parseInt(timeoutMatch[2], 10) || wordsToNum[timeoutMatch[2].toLowerCase()] || 10;
-      const reason = timeoutMatch[3] ? timeoutMatch[3].trim() : 'No reason provided';
+      const reason = timeoutMatch[3] ? timeoutMatch[3].trim().replace(/^of\s+/i, '') : 'No reason provided';
       logger.info('Routed through fast-path: timeout_member', { target, durationMinutes, reason });
       return {
         intent: 'timeout_member',
@@ -739,14 +744,41 @@ export class IntentRouter {
       };
     }
 
-    // M. "remove <target>'s <role> role for/because <reason>" or "remove <role> role from <target> for/because <reason>"
-    const removeRoleMatch = cleanPrompt.match(/^remove\s+(?:the\s+)?@?([\w.-]+)\s+role\s+from\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
-      cleanPrompt.match(/^remove\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+(?:the\s+)?@?([\w.-]+)\s+role(?:\s+(?:for|because)\s+(.+))?$/i);
-    if (removeRoleMatch) {
-      const isReversed = cleanPrompt.match(/^remove\s+(<@!?\d+>|@?[\w.-]+)['’]s/i);
-      const role = (isReversed ? removeRoleMatch[2] : removeRoleMatch[1]).replace(/^@/, '');
-      const target = (isReversed ? removeRoleMatch[1] : removeRoleMatch[2]).replace(/^@/, '');
-      const reason = removeRoleMatch[3] ? removeRoleMatch[3].trim() : 'No reason provided';
+    // M. Role Creation: "create a new role called Red with Color red" / "create role VIP with color gold"
+    const createRoleMatch = cleanPrompt.match(/^(?:create|add|make|set\s+up)\s+(?:a\s+)?(?:new\s+)?role\s+(?:called|named)\s+["']?([^"']+)["']?(?:\s+(?:with\s+)?color\s+["']?([^"']+)["']?)?$/i) ||
+      cleanPrompt.match(/^(?:create|add|make)\s+role\s+["']?([^"']+)["']?(?:\s+(?:with\s+)?color\s+["']?([^"']+)["']?)?$/i);
+    if (createRoleMatch) {
+      const roleName = createRoleMatch[1].trim();
+      const rawColor = createRoleMatch[2] ? createRoleMatch[2].trim() : '#99AAB5';
+      const resolvedColor = resolveColor(rawColor) || rawColor;
+      logger.info('Routed through fast-path: create_role', { roleName, resolvedColor });
+      return {
+        intent: 'create_role',
+        targetType: 'role',
+        targetRef: roleName,
+        args: { name: roleName, color: resolvedColor },
+        isHighImpact: false,
+        thought: `Create role @${roleName} with color ${resolvedColor}`
+      };
+    }
+
+    // N. Role Removal: "remove role X from Y" / "remove X from Y" / "remove Jordan from Moderator role"
+    const removeRoleFlex = cleanPrompt.match(/^(?:remove|take\s+away|strip|revoke)\s+role\s+(<@&?\d+>|@?[\w.-]+)\s+from\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
+      cleanPrompt.match(/^(?:remove|take\s+away|strip|revoke)\s+(?:the\s+)?@?([\w.-]+)\s+role\s+from\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
+      cleanPrompt.match(/^(?:remove|take\s+away|strip|revoke)\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+(?:the\s+)?@?([\w.-]+)\s+role(?:\s+(?:for|because)\s+(.+))?$/i) ||
+      cleanPrompt.match(/^(?:remove|take\s+away|strip|revoke)\s+(<@!?\d+>|@?[\w.-]+)\s+from\s+(?:the\s+)?(?:role\s+)?(<@&?\d+>|@?[\w.-]+)(?:\s+role)?(?:\s+(?:for|because)\s+(.+))?$/i);
+    if (removeRoleFlex) {
+      const isReversed = cleanPrompt.match(/^(?:remove|take\s+away|strip|revoke)\s+(<@!?\d+>|@?[\w.-]+)['’]s/i);
+      const isMemberFirst = cleanPrompt.match(/^(?:remove|take\s+away|strip|revoke)\s+(<@!?\d+>|@?[\w.-]+)\s+from/i);
+      let role, target;
+      if (isReversed || isMemberFirst) {
+        target = removeRoleFlex[1].replace(/^[@!]/, '');
+        role = removeRoleFlex[2].replace(/^[@&]/, '');
+      } else {
+        role = removeRoleFlex[1].replace(/^[@&]/, '');
+        target = removeRoleFlex[2].replace(/^[@!]/, '');
+      }
+      const reason = removeRoleFlex[3] ? removeRoleFlex[3].trim() : 'No reason provided';
       logger.info('Routed through fast-path: remove_role', { role, target, reason });
       return {
         intent: 'remove_role',
@@ -758,14 +790,17 @@ export class IntentRouter {
       };
     }
 
-    // N. "give <target> the <role> role" or "assign <role> role to <target>"
-    const assignRoleMatch = cleanPrompt.match(/^(?:give|assign|grant)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:the\s+)?@?([\w.-]+)\s+role(?:\s+(?:for|because)\s+(.+))?$/i) ||
-      cleanPrompt.match(/^(?:give|assign|grant)\s+(?:the\s+)?@?([\w.-]+)\s+role\s+to\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i);
-    if (assignRoleMatch) {
-      const isReverse = /^(?:give|assign|grant)\s+(?:the\s+)?@?[\w.-]+\s+role\s+to/i.test(cleanPrompt);
-      const role = (isReverse ? assignRoleMatch[1] : assignRoleMatch[2]).replace(/^@/, '');
-      const target = (isReverse ? assignRoleMatch[2] : assignRoleMatch[1]).replace(/^@/, '');
-      const reason = assignRoleMatch[3] ? assignRoleMatch[3].trim() : 'No reason provided';
+    // O. Role Assignment (supports IDs, mentions, role names, and flexible phrasing)
+    const assignRoleFlex = cleanPrompt.match(/^(?:assign|give|grant|add)\s+role\s+(<@&?\d+>|@?[\w.-]+)\s+to\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
+      cleanPrompt.match(/^(?:assign|give|grant)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:the\s+)?role\s+(<@&?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
+      cleanPrompt.match(/^(?:assign|give|grant)\s+(?:the\s+)?@?([\w.-]+)\s+role\s+to\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i) ||
+      cleanPrompt.match(/^(?:assign|give|grant)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:the\s+)?@?([\w.-]+)\s+role(?:\s+(?:for|because)\s+(.+))?$/i) ||
+      cleanPrompt.match(/^(?:add|give|assign)\s+role\s+(\d{17,20})\s+to\s+(\d{17,20})$/i);
+    if (assignRoleFlex) {
+      const isRoleFirst = /^(?:assign|give|grant|add)\s+role/i.test(cleanPrompt);
+      const role = (isRoleFirst ? assignRoleFlex[1] : assignRoleFlex[2]).replace(/^[@&]/, '');
+      const target = (isRoleFirst ? assignRoleFlex[2] : assignRoleFlex[1]).replace(/^[@!]/, '');
+      const reason = assignRoleFlex[3] ? assignRoleFlex[3].trim() : 'No reason provided';
       logger.info('Routed through fast-path: assign_role', { role, target, reason });
       return {
         intent: 'assign_role',
@@ -775,6 +810,228 @@ export class IntentRouter {
         isHighImpact: false,
         thought: `Assign role ${role} to ${target}`
       };
+    }
+
+    // P. User Channel Permission - Multi-constraint: "let Priya view #staff-chat but not send messages there"
+    const letPermMultiMatch = cleanPrompt.match(/^let\s+(<@!?\d+>|@?[\w.-]+)\s+view\s+(<#\d+>|#?[\w-]+)\s+but\s+not\s+(?:send\s+messages|send|talk|chat)(?:\s+there)?$/i);
+    if (letPermMultiMatch) {
+      const member = letPermMultiMatch[1].replace(/^@/, '');
+      const ch = letPermMultiMatch[2].replace(/^#/, '');
+      logger.info('Routed through fast-path: set_user_channel_permission (view but not send)', { member, ch });
+      return {
+        intent: 'set_user_channel_permission',
+        targetType: 'member_channel',
+        targetRef: member,
+        args: { targetMember: member, targetChannel: ch, allow: ['ViewChannel'], deny: ['SendMessages'] },
+        isHighImpact: false,
+        thought: `Allow ${member} ViewChannel but deny SendMessages in #${ch}`
+      };
+    }
+
+    // Q. User Channel Permission - Allow: "allow Alex to send messages in #general"
+    const allowPermMatch = cleanPrompt.match(/^(?:allow|let)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:to\s+)?(send\s+messages|send\s+messages\s+in\s+threads|view\s+channel|view|read|attach\s+files|files|images|embed\s+links|links|mention\s+everyone|add\s+reactions|manage\s+messages|connect|speak|stream)\s+(?:in|on|to)\s+(<#\d+>|#?[\w-]+)$/i);
+    if (allowPermMatch) {
+      const member = allowPermMatch[1].replace(/^@/, '');
+      const rawPerm = allowPermMatch[2].trim();
+      const ch = allowPermMatch[3].replace(/^#/, '');
+      logger.info('Routed through fast-path: set_user_channel_permission (allow)', { member, rawPerm, ch });
+      return {
+        intent: 'set_user_channel_permission',
+        targetType: 'member_channel',
+        targetRef: member,
+        args: { targetMember: member, targetChannel: ch, allow: [rawPerm] },
+        isHighImpact: false,
+        thought: `Allow ${member} to ${rawPerm} in #${ch}`
+      };
+    }
+
+    // R. User Channel Permission - Deny: "stop Jordan from sending messages in #announcements" / "prevent Sam from connecting to the voice channel"
+    const denyPermMatch = cleanPrompt.match(/^(?:stop|prevent|deny|disallow|block)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:from\s+)?(sending\s+messages|sending\s+messages\s+in\s+threads|send\s+messages|viewing\s+channel|view\s+channel|view|attaching\s+files|attach\s+files|embedding\s+links|embed\s+links|mentioning\s+everyone|mention\s+everyone|adding\s+reactions|add\s+reactions|connecting|connect|speaking|speak)\s+(?:in|on|to)\s+(<#\d+>|#?[\w-]+)$/i) ||
+      cleanPrompt.match(/^remove\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+(?:ability|permission)\s+to\s+(send\s+messages|attach\s+files|embed\s+links|mention\s+everyone|view\s+channel)\s+(?:in|on)\s+(<#\d+>|#?[\w-]+)$/i);
+    if (denyPermMatch) {
+      const member = denyPermMatch[1].replace(/^@/, '');
+      const rawPerm = denyPermMatch[2].trim();
+      const ch = denyPermMatch[3].replace(/^#/, '');
+      logger.info('Routed through fast-path: set_user_channel_permission (deny)', { member, rawPerm, ch });
+      return {
+        intent: 'set_user_channel_permission',
+        targetType: 'member_channel',
+        targetRef: member,
+        args: { targetMember: member, targetChannel: ch, deny: [rawPerm] },
+        isHighImpact: false,
+        thought: `Deny ${rawPerm} for ${member} in #${ch}`
+      };
+    }
+
+    // S. User Channel Permission - Read-Only: "make #general read-only for Sam" / "give Sam read-only access to #general"
+    const readOnlyMatch = cleanPrompt.match(/^make\s+(<#\d+>|#?[\w-]+)\s+read-?only\s+for\s+(<@!?\d+>|@?[\w.-]+)$/i) ||
+      cleanPrompt.match(/^give\s+(<@!?\d+>|@?[\w.-]+)\s+read-?only\s+access\s+to\s+(<#\d+>|#?[\w-]+)$/i);
+    if (readOnlyMatch) {
+      const ch = (cleanPrompt.startsWith('make') ? readOnlyMatch[1] : readOnlyMatch[2]).replace(/^#/, '');
+      const member = (cleanPrompt.startsWith('make') ? readOnlyMatch[2] : readOnlyMatch[1]).replace(/^@/, '');
+      logger.info('Routed through fast-path: set_user_channel_permission (read-only)', { member, ch });
+      return {
+        intent: 'set_user_channel_permission',
+        targetType: 'member_channel',
+        targetRef: member,
+        args: { targetMember: member, targetChannel: ch, allow: ['ViewChannel', 'ReadMessageHistory'], deny: ['SendMessages', 'SendMessagesInThreads', 'CreatePublicThreads', 'CreatePrivateThreads'] },
+        isHighImpact: false,
+        thought: `Make #${ch} read-only for ${member}`
+      };
+    }
+
+    // T. User Channel Permission - Reset/Inherit: "reset Sam's send-message permission in #general"
+    const resetPermMatch = cleanPrompt.match(/^reset\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+([\w\s-]+?)\s+permission\s+(?:in|on)\s+(<#\d+>|#?[\w-]+)$/i);
+    if (resetPermMatch) {
+      const member = resetPermMatch[1].replace(/^@/, '');
+      const rawPerm = resetPermMatch[2].trim();
+      const ch = resetPermMatch[3].replace(/^#/, '');
+      logger.info('Routed through fast-path: set_user_channel_permission (inherit/reset)', { member, rawPerm, ch });
+      return {
+        intent: 'set_user_channel_permission',
+        targetType: 'member_channel',
+        targetRef: member,
+        args: { targetMember: member, targetChannel: ch, inherit: [rawPerm] },
+        isHighImpact: false,
+        thought: `Reset ${rawPerm} permission for ${member} in #${ch} to inherit`
+      };
+    }
+
+    // U. Permission Inspection: "show Alex's permissions in #general" / "does Alex have administrator"
+    const inspectPermMatch = cleanPrompt.match(/^(?:show|inspect|check|explain|get|view)\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+permissions?(?:\s+(?:in|on)\s+(<#\d+>|#?[\w-]+))?$/i) ||
+      cleanPrompt.match(/^(?:show|inspect|check|view)\s+permissions?\s+(?:for|of)\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:in|on)\s+(<#\d+>|#?[\w-]+))?$/i);
+    if (inspectPermMatch) {
+      const member = inspectPermMatch[1].replace(/^@/, '');
+      const ch = inspectPermMatch[2] ? inspectPermMatch[2].replace(/^#/, '') : undefined;
+      logger.info('Routed through fast-path: inspect_user_permissions', { member, ch });
+      return {
+        intent: 'inspect_user_permissions',
+        targetType: 'member',
+        targetRef: member,
+        args: { targetMember: member, targetChannel: ch },
+        isHighImpact: false,
+        thought: `Inspect permissions for ${member}${ch ? ` in #${ch}` : ''}`
+      };
+    }
+
+    const whyCanMatch = cleanPrompt.match(/^why\s+can\s+(<@!?\d+>|@?[\w.-]+)\s+(.+)$/i);
+    if (whyCanMatch) {
+      const member = whyCanMatch[1].replace(/^@/, '');
+      logger.info('Routed through fast-path: inspect_user_permissions (why)', { member });
+      return {
+        intent: 'inspect_user_permissions',
+        targetType: 'member',
+        targetRef: member,
+        args: { targetMember: member },
+        isHighImpact: false,
+        thought: `Explain why ${member} has permissions`
+      };
+    }
+
+    const hasAdminMatch = cleanPrompt.match(/^does\s+(<@!?\d+>|@?[\w.-]+)\s+have\s+admin(?:istrator)?(?:\s+privileges|\s+permissions)?$/i);
+    if (hasAdminMatch) {
+      const member = hasAdminMatch[1].replace(/^@/, '');
+      logger.info('Routed through fast-path: inspect_user_permissions (admin check)', { member });
+      return {
+        intent: 'inspect_user_permissions',
+        targetType: 'member',
+        targetRef: member,
+        args: { targetMember: member },
+        isHighImpact: false,
+        thought: `Check if ${member} has Administrator privileges`
+      };
+    }
+
+    // V. Voice Moderation: "mute Alex in voice" / "deafen Alex in voice" / "disconnect Alex from voice"
+    const voiceMuteMatch = cleanPrompt.match(/^(?:server\s+)?mute\s+(<@!?\d+>|@?[\w.-]+)\s+in\s+voice$/i);
+    if (voiceMuteMatch) {
+      const target = voiceMuteMatch[1].replace(/^@/, '');
+      logger.info('Routed through fast-path: voice_mute', { target });
+      return { intent: 'voice_mute', targetType: 'member', targetRef: target, args: { targetMember: target }, isHighImpact: false, thought: `Mute ${target} in voice` };
+    }
+
+    const voiceUnmuteMatch = cleanPrompt.match(/^(?:server\s+)?unmute\s+(<@!?\d+>|@?[\w.-]+)\s+in\s+voice$/i);
+    if (voiceUnmuteMatch) {
+      const target = voiceUnmuteMatch[1].replace(/^@/, '');
+      logger.info('Routed through fast-path: voice_unmute', { target });
+      return { intent: 'voice_unmute', targetType: 'member', targetRef: target, args: { targetMember: target }, isHighImpact: false, thought: `Unmute ${target} in voice` };
+    }
+
+    const voiceDeafenMatch = cleanPrompt.match(/^(?:server\s+)?deafen\s+(<@!?\d+>|@?[\w.-]+)(?:\s+in\s+voice)?$/i);
+    if (voiceDeafenMatch) {
+      const target = voiceDeafenMatch[1].replace(/^@/, '');
+      logger.info('Routed through fast-path: voice_deafen', { target });
+      return { intent: 'voice_deafen', targetType: 'member', targetRef: target, args: { targetMember: target }, isHighImpact: false, thought: `Deafen ${target} in voice` };
+    }
+
+    const voiceUndeafenMatch = cleanPrompt.match(/^(?:server\s+)?undeafen\s+(<@!?\d+>|@?[\w.-]+)(?:\s+in\s+voice)?$/i);
+    if (voiceUndeafenMatch) {
+      const target = voiceUndeafenMatch[1].replace(/^@/, '');
+      logger.info('Routed through fast-path: voice_undeafen', { target });
+      return { intent: 'voice_undeafen', targetType: 'member', targetRef: target, args: { targetMember: target }, isHighImpact: false, thought: `Undeafen ${target} in voice` };
+    }
+
+    const voiceDcMatch = cleanPrompt.match(/^(?:disconnect|kick)\s+(<@!?\d+>|@?[\w.-]+)\s+from\s+voice(?:\s+channel)?$/i);
+    if (voiceDcMatch) {
+      const target = voiceDcMatch[1].replace(/^@/, '');
+      logger.info('Routed through fast-path: voice_disconnect', { target });
+      return { intent: 'voice_disconnect', targetType: 'member', targetRef: target, args: { targetMember: target }, isHighImpact: false, thought: `Disconnect ${target} from voice` };
+    }
+
+    const voiceMoveMatch = cleanPrompt.match(/^move\s+(<@!?\d+>|@?[\w.-]+)\s+to\s+(?:voice\s+channel\s+)?(<#\d+>|#?[\w-]+)$/i);
+    if (voiceMoveMatch) {
+      const target = voiceMoveMatch[1].replace(/^@/, '');
+      const ch = voiceMoveMatch[2].replace(/^#/, '');
+      logger.info('Routed through fast-path: voice_move', { target, ch });
+      return { intent: 'voice_move', targetType: 'member_channel', targetRef: target, args: { targetMember: target, targetChannel: ch }, isHighImpact: false, thought: `Move ${target} to voice channel #${ch}` };
+    }
+
+    // W. Warnings: "warn Alex for spamming" / "show warnings for Alex" / "clear warnings for Alex"
+    const warnMatch = cleanPrompt.match(/^warn\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i);
+    if (warnMatch) {
+      const target = warnMatch[1].replace(/^@/, '');
+      const reason = warnMatch[2] ? warnMatch[2].trim() : 'No reason provided';
+      logger.info('Routed through fast-path: issue_warning', { target, reason });
+      return { intent: 'issue_warning', targetType: 'member', targetRef: target, args: { targetMember: target, reason }, isHighImpact: false, thought: `Warn ${target} for: ${reason}` };
+    }
+
+    const inspectWarnMatch = cleanPrompt.match(/^(?:show|check|view|inspect|list)\s+warnings?\s+(?:for|of)\s+(<@!?\d+>|@?[\w.-]+)$/i);
+    if (inspectWarnMatch) {
+      const target = inspectWarnMatch[1].replace(/^@/, '');
+      logger.info('Routed through fast-path: inspect_warnings', { target });
+      return { intent: 'inspect_warnings', targetType: 'member', targetRef: target, args: { targetMember: target }, isHighImpact: false, thought: `Inspect warnings for ${target}` };
+    }
+
+    const clearWarnMatch = cleanPrompt.match(/^clear\s+warnings?\s+(?:for|of)\s+(<@!?\d+>|@?[\w.-]+)$/i);
+    if (clearWarnMatch) {
+      const target = clearWarnMatch[1].replace(/^@/, '');
+      logger.info('Routed through fast-path: clear_warnings', { target });
+      return { intent: 'clear_warnings', targetType: 'member', targetRef: target, args: { targetMember: target }, isHighImpact: false, thought: `Clear warnings for ${target}` };
+    }
+
+    // X. Softban & Moderation State Inspection: "softban Alex" / "inspect Alex's moderation state" / "unban user 123"
+    const softbanMatch = cleanPrompt.match(/^soft-?ban\s+(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i);
+    if (softbanMatch) {
+      const target = softbanMatch[1].replace(/^@/, '');
+      const reason = softbanMatch[2] ? softbanMatch[2].trim() : 'Softban (kick + message purge)';
+      logger.info('Routed through fast-path: softban_member', { target, reason });
+      return { intent: 'softban_member', targetType: 'member', targetRef: target, args: { targetMember: target, reason }, isHighImpact: true, thought: `Softban ${target}` };
+    }
+
+    const inspectModMatch = cleanPrompt.match(/^(?:inspect|show|check)\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+moderation\s+(?:state|history)$/i) ||
+      cleanPrompt.match(/^(?:inspect|show|check)\s+moderation\s+(?:state|history)\s+(?:for|of)\s+(<@!?\d+>|@?[\w.-]+)$/i);
+    if (inspectModMatch) {
+      const target = inspectModMatch[1].replace(/^@/, '');
+      logger.info('Routed through fast-path: inspect_member_moderation', { target });
+      return { intent: 'inspect_member_moderation', targetType: 'member', targetRef: target, args: { targetMember: target }, isHighImpact: false, thought: `Inspect moderation state for ${target}` };
+    }
+
+    const unbanMatch = cleanPrompt.match(/^unban\s+(?:user\s+)?(<@!?\d+>|@?[\w.-]+)(?:\s+(?:for|because)\s+(.+))?$/i);
+    if (unbanMatch) {
+      const target = unbanMatch[1].replace(/^@/, '');
+      const reason = unbanMatch[2] ? unbanMatch[2].trim() : 'Unbanned via Honey Bot';
+      logger.info('Routed through fast-path: unban_member', { target, reason });
+      return { intent: 'unban_member', targetType: 'user', targetRef: target, args: { targetMember: target, targetMemberId: target, reason }, isHighImpact: false, thought: `Unban ${target}` };
     }
 
     // O. "remove the timeout from <target>" or "untimeout <target>"
@@ -1017,9 +1274,15 @@ export class IntentRouter {
       };
     }
 
-    // =========================================================================
-    // 2. COMPACT LLM INTERPRETATION PATH (1 Focused Model Call)
-    // =========================================================================
+    if (this.isDeterministicOnly || typeof this.aiProvider?.planWithCustomPrompt !== 'function') {
+      return {
+        intent: 'unsupported',
+        thought: 'Deterministic router could not match rule',
+        isHighImpact: false,
+        args: {}
+      };
+    }
+
     const { context, estimatedTokens } = ContextManager.buildInterpretationContext(userPrompt, executionContext);
     
     // Check budget before making LLM request

@@ -120,7 +120,7 @@ export function checkRoleHierarchy(guild, actionObj, targetRoleOrMember) {
   if (['kick_member', 'ban_member', 'timeout_member', 'change_nickname'].includes(actionObj.action) && targetRoleOrMember) {
     const member = typeof targetRoleOrMember === 'object' && targetRoleOrMember.roles
       ? targetRoleOrMember
-      : guild.members.cache.find(m => m.id === targetRoleOrMember || m.user?.username.toLowerCase() === String(targetRoleOrMember).toLowerCase());
+      : guild.members.cache.find(m => m.id === targetRoleOrMember || m.user?.username?.toLowerCase() === String(targetRoleOrMember).toLowerCase());
 
     if (member) {
       if (member.id === guild.ownerId) {
@@ -135,10 +135,12 @@ export function checkRoleHierarchy(guild, actionObj, targetRoleOrMember) {
           reason: `Target is the bot itself. The bot will not moderate itself.`
         };
       }
-      if (member.roles.highest.position >= botHighestRole.position) {
+      const memberPos = member.roles?.highest?.position ?? member.roles?.highest?.rawPosition ?? 0;
+      const botPos = botHighestRole?.position ?? botHighestRole?.rawPosition ?? 0;
+      if (botPos > 0 && memberPos >= botPos) {
         return {
           valid: false,
-          reason: `Hierarchy Error: Member "${member.user.tag}" has a role "${member.roles.highest.name}" that is higher than or equal to the bot's highest role "${botHighestRole.name}".`
+          reason: `Hierarchy Error: Member "${member.user?.tag || member.id}" has a role "${member.roles.highest?.name || 'Unknown'}" that is higher than or equal to the bot's highest role "${botHighestRole.name || 'Bot'}".`
         };
       }
     }

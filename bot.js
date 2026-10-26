@@ -230,15 +230,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const handled = await TicketManager.handleButtonInteraction(interaction);
       if (handled) return;
 
-      // Handle confirmation buttons that expired or were clicked by unauthorized users
+      // Confirmation buttons are handled directly by ConfirmationManager collector.
       if (interaction.customId?.startsWith('confirm_') || interaction.customId?.startsWith('cancel_')) {
-        if (!interaction.replied && !interaction.deferred) {
-          await interaction.reply({
-            content: '⚠️ This confirmation prompt has expired or can only be operated by the command initiator.',
-            ephemeral: true
-          }).catch(() => {});
-          return;
-        }
+        return;
       }
 
       // Any other unhandled button: acknowledge ephemerally to prevent "The application did not respond"

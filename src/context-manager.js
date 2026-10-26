@@ -3,6 +3,15 @@ import { Logger } from './logger.js';
 
 const logger = new Logger('ContextManager');
 
+function getCacheValues(cache) {
+  if (!cache) return [];
+  if (Array.isArray(cache)) return cache;
+  if (typeof cache.values === 'function') {
+    return Array.from(cache.values());
+  }
+  return [];
+}
+
 /**
  * Manages LLM context windows, compaction, and token safety margins.
  * Eliminates unnecessary full-server dumps from prompts.
@@ -13,8 +22,10 @@ export class ContextManager {
    * Total context payload is typically < 250 tokens instead of 7,000+ tokens.
    */
   static buildInterpretationContext(userPrompt, executionContext) {
-    const compactCtx = executionContext.getCompactContext();
-    const promptLower = userPrompt.toLowerCase();
+    const compactCtx = typeof executionContext?.getCompactContext === 'function'
+      ? executionContext.getCompactContext()
+      : (executionContext || {});
+    const promptLower = (userPrompt || '').toLowerCase();
 
     // Check if user explicitly asked for discovery or inventory
     const isDiscovery = /(list|show|all|enumerate|find every|browse)\b/i.test(userPrompt) &&
@@ -22,25 +33,16 @@ export class ContextManager {
 
     // Context payload
     const context = {
-      server: compactCtx.guild.name,
+      server: compactCtx.guild?.name || 'Unknown Server',
       currentChannel: compactCtx.currentChannel ? {
         id: compactCtx.currentChannel.id,
         name: compactCtx.currentChannel.name
       } : null,
-      invokingUser: compactCtx.invokingUser.tag
+      invokingUser: compactCtx.invokingUser?.tag || 'User'
     };
 
-function getCacheValues(cache) {
-  if (!cache) return [];
-  if (Array.isArray(cache)) return cache;
-  if (typeof cache.values === 'function') {
-    return Array.from(cache.values());
-  }
-  return [];
-}
-
     // If the prompt mentions specific roles or channels that are already in cache, include only them!
-    const guild = executionContext.guild;
+    const guild = executionContext?.guild;
     if (guild && !isDiscovery) {
       // Find any role mentioned in prompt
       const allRoles = getCacheValues(guild.roles?.cache);

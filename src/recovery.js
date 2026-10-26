@@ -839,6 +839,56 @@ RecoveryRegistry.register('delete_role', {
   unavailabilityReason: 'Deleted roles cannot be recovered because Discord deletes their permissions and member assignments permanently.'
 });
 
+// 13. User Channel Permission Recovery
+RecoveryRegistry.register('set_user_channel_permission', {
+  reversible: true,
+  requiredPermissions: ['ManageChannels'],
+  requiresConfirmation: false,
+  checkConflict(guild, record) {
+    const ch = guild.channels.cache.get(record.channelId || record.targetId || record.id);
+    if (!ch) return { conflict: true, reason: 'Target channel no longer exists.' };
+    const member = guild.members.cache.get(record.targetMemberId);
+    if (!member) return { conflict: true, reason: 'Target member is no longer in the server.' };
+    if (!record.preState || (!record.preState.allow && !record.preState.deny)) {
+      return { unrecorded: true, reason: "I can't safely undo that action because its previous permission state wasn't recorded." };
+    }
+    return { valid: true, channel: ch, member };
+  },
+  async execute(guild, record, context) {
+    const ch = guild.channels.cache.get(record.channelId || record.targetId || record.id);
+    const member = guild.members.cache.get(record.targetMemberId);
+    const prevAllow = record.preState.allow || [];
+    const prevDeny = record.preState.deny || [];
+    const postAllow = record.postState?.allow || [];
+    const postDeny = record.postState?.deny || [];
+
+    const patch = {};
+    for (const p of prevAllow) patch[p] = true;
+    for (const p of prevDeny) patch[p] = false;
+
+    // Reset newly added flags that weren't in preState to inherit (null)
+    for (const p of postAllow) {
+      if (!prevAllow.includes(p) && !prevDeny.includes(p)) patch[p] = null;
+    }
+    for (const p of postDeny) {
+      if (!prevAllow.includes(p) && !prevDeny.includes(p)) patch[p] = null;
+    }
+
+    await ch.permissionOverwrites.edit(member.id, patch, {
+      reason: `Recovery of user channel permissions by ${context?.actor?.tag || 'moderator'}`
+    });
+    return { success: true };
+  },
+  verify(guild, record) {
+    const ch = guild.channels.cache.get(record.channelId || record.targetId || record.id);
+    return Boolean(ch && ch.permissionOverwrites.cache.has(record.targetMemberId));
+  },
+  formatSuccess(record) {
+    return `Restored previous channel permissions for ${record.targetMemberTag || 'member'} in #${record.channelName || 'channel'}. The previous overwrite is verified.`;
+  }
+});
+RecoveryRegistry.register('user_channel_permission', RecoveryRegistry.getHandler('set_user_channel_permission'));
+
 /**
  * Main recovery execution engine.
  * Handles deterministic target resolution, ambiguity detection, authorization, anti-nuke enforcement,

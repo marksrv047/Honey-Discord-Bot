@@ -351,6 +351,79 @@ export const MusicLeaveSchema = z.object({
   action: z.literal('music_leave')
 });
 
+export const SetUserChannelPermissionSchema = z.object({
+  action: z.literal('set_user_channel_permission'),
+  targetMember: z.string().min(1),
+  targetChannel: z.string().min(1),
+  allow: z.array(z.string()).optional().default([]),
+  deny: z.array(z.string()).optional().default([]),
+  inherit: z.array(z.string()).optional().default([])
+});
+
+export const InspectUserPermissionsSchema = z.object({
+  action: z.literal('inspect_user_permissions'),
+  targetMember: z.string().min(1),
+  targetChannel: z.string().optional()
+});
+
+export const VoiceMuteSchema = z.object({
+  action: z.literal('voice_mute'),
+  targetMember: z.string().min(1)
+});
+
+export const VoiceUnmuteSchema = z.object({
+  action: z.literal('voice_unmute'),
+  targetMember: z.string().min(1)
+});
+
+export const VoiceDeafenSchema = z.object({
+  action: z.literal('voice_deafen'),
+  targetMember: z.string().min(1)
+});
+
+export const VoiceUndeafenSchema = z.object({
+  action: z.literal('voice_undeafen'),
+  targetMember: z.string().min(1)
+});
+
+export const VoiceMoveSchema = z.object({
+  action: z.literal('voice_move'),
+  targetMember: z.string().min(1),
+  targetChannel: z.string().min(1)
+});
+
+export const VoiceDisconnectSchema = z.object({
+  action: z.literal('voice_disconnect'),
+  targetMember: z.string().min(1)
+});
+
+export const IssueWarningSchema = z.object({
+  action: z.literal('issue_warning'),
+  targetMember: z.string().min(1),
+  reason: z.string().optional().default('No reason provided')
+});
+
+export const InspectWarningsSchema = z.object({
+  action: z.literal('inspect_warnings'),
+  targetMember: z.string().min(1)
+});
+
+export const ClearWarningsSchema = z.object({
+  action: z.literal('clear_warnings'),
+  targetMember: z.string().min(1)
+});
+
+export const SoftbanMemberSchema = z.object({
+  action: z.literal('softban_member'),
+  targetMember: z.string().min(1),
+  reason: z.string().optional().default('Softban (kick + message purge)')
+});
+
+export const InspectMemberModerationSchema = z.object({
+  action: z.literal('inspect_member_moderation'),
+  targetMember: z.string().min(1)
+});
+
 /**
  * Discriminated union of all supported actions
  */
@@ -369,11 +442,24 @@ export const ActionSchema = z.discriminatedUnion('action', [
   EditChannelSchema,
   DeleteChannelSchema,
   SetChannelPermissionSchema,
+  SetUserChannelPermissionSchema,
+  InspectUserPermissionsSchema,
   TimeoutMemberSchema,
   RemoveTimeoutSchema,
   KickMemberSchema,
   BanMemberSchema,
   UnbanMemberSchema,
+  SoftbanMemberSchema,
+  VoiceMuteSchema,
+  VoiceUnmuteSchema,
+  VoiceDeafenSchema,
+  VoiceUndeafenSchema,
+  VoiceMoveSchema,
+  VoiceDisconnectSchema,
+  IssueWarningSchema,
+  InspectWarningsSchema,
+  ClearWarningsSchema,
+  InspectMemberModerationSchema,
   ChangeNicknameSchema,
   RemoveNicknameSchema,
   InspectNicknameSchema,

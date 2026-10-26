@@ -7,6 +7,7 @@ import { resolveColor } from './color-utils.js';
 import { Logger } from './logger.js';
 import { MemberResolver } from './member-resolver.js';
 import { ModLogService } from './mod-log.js';
+import { WarningManager } from './warnings.js';
 
 const logger = new Logger('Operations');
 
@@ -351,19 +352,96 @@ export class Operations {
   }
 
   /**
+   * Creates a role with validated color and attributes.
+   */
+  static async createRole(guild, options = {}, context = {}) {
+    const roleName = options.name || options.targetRole || 'new role';
+    const existing = guild.roles?.cache?.find(r => r.name.toLowerCase() === roleName.toLowerCase());
+    if (existing) {
+      return {
+        success: true,
+        action: 'create_role',
+        details: `Role @${existing.name} already exists (re-using existing)`,
+        verified: true,
+        resourceId: existing.id
+      };
+    }
+
+    const resolvedColor = resolveColor(options.color) || '#99AAB5';
+    const actorTag = context?.invokingUser ? context.invokingUser.tag : 'administrator';
+    const role = await guild.roles.create({
+      name: roleName,
+      color: resolvedColor,
+      hoist: Boolean(options.hoist),
+      mentionable: Boolean(options.mentionable),
+      permissions: options.permissions || [],
+      reason: `Created via /go agent by ${actorTag}`
+    });
+
+    if (guild?.id && context?.executionId) {
+      ActionLedger.recordCreatedResource(context.executionId, 'role', role.id, role.name);
+    }
+
+    return {
+      success: true,
+      action: 'create_role',
+      details: `Role @${role.name} created with color ${resolvedColor}`,
+      verified: true,
+      resourceId: role.id
+    };
+  }
+
+  /**
+   * Deletes a role with hierarchy check.
+   */
+  static async deleteRole(guild, roleRef, context = {}) {
+    const targetRef = roleRef || context?.targetRef;
+    let role = null;
+    if (context.resolveTarget) {
+      role = await context.resolveTarget(targetRef, 'role');
+    }
+    if (!role && guild.roles?.cache) {
+      const clean = String(targetRef).replace(/^@/, '').toLowerCase();
+      role = guild.roles.cache.find(r => r.id === targetRef || r.name.toLowerCase() === clean);
+    }
+    if (!role) {
+      return { success: true, action: 'delete_role', details: `Role "${targetRef}" does not exist (nothing to delete)`, verified: true };
+    }
+
+    const hierarchy = checkRoleHierarchy(guild, { action: 'delete_role' }, role);
+    if (!hierarchy.valid) {
+      return { success: false, error: hierarchy.reason, action: 'delete_role' };
+    }
+
+    const actorTag = context?.invokingUser ? context.invokingUser.tag : 'administrator';
+    const oldName = role.name;
+    const oldId = role.id;
+    await role.delete(`Deleted via /go agent by ${actorTag}`);
+
+    return {
+      success: true,
+      action: 'delete_role',
+      details: `Role @${oldName} deleted`,
+      verified: true,
+      resourceId: oldId
+    };
+  }
+
+  /**
    * Edits a role's name, color, hoist, or permissions with per-property verification.
    */
   static async editRole(guild, targetRoleRef, updates = {}, context = {}) {
+    const roleIdentifier = targetRoleRef || updates.targetRole || updates.targetRef || updates.role || updates.name;
     let role;
     if (context.resolveTarget) {
-      role = await context.resolveTarget(targetRoleRef, 'role');
+      role = await context.resolveTarget(roleIdentifier, 'role');
     }
     if (!role && guild.roles?.cache) {
-      const cleanRef = String(targetRoleRef).replace(/^@/, '').toLowerCase();
-      role = guild.roles.cache.find(r => r.id === targetRoleRef || r.name.toLowerCase() === cleanRef);
+      const cleanRef = String(roleIdentifier).replace(/^@/, '').toLowerCase();
+      role = guild.roles.cache.find(r => r.id === roleIdentifier || r.name.toLowerCase() === cleanRef);
     }
     if (!role) {
-      return { success: false, error: `Role "${targetRoleRef}" not found in server.`, action: 'edit_role' };
+      return { success: false, error: `Role "${roleIdentifier}" not found in server.`, action: 'edit_role' };
     }
 
     const hierarchy = checkRoleHierarchy(guild, { action: 'edit_role' }, role);
@@ -1685,5 +1763,526 @@ export class Operations {
 
   static async leaveVoice(guild, context) {
     return await MusicService.leave(guild);
+  }
+
+  // =========================================================================
+  // USER-SPECIFIC CHANNEL PERMISSION MANAGEMENT (TRI-STATE: ALLOW/DENY/INHERIT)
+  // =========================================================================
+
+  /**
+   * Sets user-specific channel permission overwrites.
+   * Accurately supports Allow, Deny, and Inherit (null) while preserving unrelated permissions.
+   * Explains Discord Administrator bypass if member has Administrator privileges.
+   */
+  static async setUserChannelPermission(guild, targetMemberRef, targetChannelRef, permissions = {}, context = {}) {
+    let member = null;
+    if (context.resolveTarget) {
+      member = await context.resolveTarget(targetMemberRef, 'member');
+    }
+    if (!member && guild.members?.cache) {
+      const cleanRef = String(targetMemberRef).replace(/[<@!>]/g, '').trim();
+      member = guild.members.cache.find(m => m.id === cleanRef || m.user?.username?.toLowerCase() === cleanRef.toLowerCase() || m.displayName?.toLowerCase() === cleanRef.toLowerCase());
+    }
+    if (!member) {
+      return { success: false, error: `Member "${targetMemberRef}" not found.`, action: 'set_user_channel_permission' };
+    }
+    if (member.isAmbiguous) {
+      return { success: false, error: member.clarificationQuestion, isAmbiguous: true, action: 'set_user_channel_permission' };
+    }
+
+    let channel = null;
+    if (context.resolveTarget) {
+      channel = await context.resolveTarget(targetChannelRef, 'channel');
+    }
+    if (!channel && guild.channels?.cache) {
+      const cleanCh = String(targetChannelRef).replace(/^#/, '').toLowerCase();
+      channel = guild.channels.cache.find(c => c.id === targetChannelRef || c.name.toLowerCase() === cleanCh);
+    }
+    if (!channel) {
+      return { success: false, error: `Channel "${targetChannelRef}" not found.`, action: 'set_user_channel_permission' };
+    }
+
+    if (!channel.permissionOverwrites || typeof channel.permissionOverwrites.edit !== 'function') {
+      return { success: false, error: `Channel #${channel.name} does not support permission overwrites.`, action: 'set_user_channel_permission' };
+    }
+
+    // Role hierarchy check
+    const hierarchy = checkRoleHierarchy(guild, { action: 'set_user_channel_permission' }, member);
+    if (!hierarchy.valid) {
+      return { success: false, error: hierarchy.reason, action: 'set_user_channel_permission' };
+    }
+
+    const PERM_NAME_MAP = {
+      viewchannel: 'ViewChannel', view: 'ViewChannel', see: 'ViewChannel', read: 'ViewChannel',
+      sendmessages: 'SendMessages', sendmessage: 'SendMessages', messages: 'SendMessages', send: 'SendMessages', talk: 'SendMessages', chat: 'SendMessages',
+      sendmessagesinthreads: 'SendMessagesInThreads', readmessagehistory: 'ReadMessageHistory', history: 'ReadMessageHistory',
+      addreactions: 'AddReactions', react: 'AddReactions', reactions: 'AddReactions',
+      attachfiles: 'AttachFiles', attachfile: 'AttachFiles', files: 'AttachFiles', images: 'AttachFiles',
+      embedlinks: 'EmbedLinks', links: 'EmbedLinks', mentioneveryone: 'MentionEveryone', pingeveryone: 'MentionEveryone',
+      managemessages: 'ManageMessages', deletemessages: 'ManageMessages', connect: 'Connect', speak: 'Speak', stream: 'Stream',
+      useapplicationcommands: 'UseApplicationCommands', commands: 'UseApplicationCommands',
+      createpublicthreads: 'CreatePublicThreads', createprivatethreads: 'CreatePrivateThreads', managethreads: 'ManageThreads',
+      managechannels: 'ManageChannels', mutemembers: 'MuteMembers', deafenmembers: 'DeafenMembers', movemembers: 'MoveMembers'
+    };
+
+    const normalizePerm = (str) => {
+      if (!str) return null;
+      const clean = String(str).replace(/[\s_\-]/g, '').toLowerCase();
+      return PERM_NAME_MAP[clean] || str;
+    };
+
+    const allowList = (permissions.allow || []).map(normalizePerm).filter(Boolean);
+    const denyList = (permissions.deny || []).map(normalizePerm).filter(Boolean);
+    const inheritList = (permissions.inherit || []).map(normalizePerm).filter(Boolean);
+
+    const existingOverwrite = channel.permissionOverwrites.cache?.get(member.id);
+    const prevAllow = existingOverwrite?.allow?.toArray ? existingOverwrite.allow.toArray() : [];
+    const prevDeny = existingOverwrite?.deny?.toArray ? existingOverwrite.deny.toArray() : [];
+
+    const newAllowSet = new Set(prevAllow);
+    const newDenySet = new Set(prevDeny);
+
+    for (const p of allowList) {
+      newAllowSet.add(p);
+      newDenySet.delete(p);
+    }
+    for (const p of denyList) {
+      newDenySet.add(p);
+      newAllowSet.delete(p);
+    }
+    for (const p of inheritList) {
+      newAllowSet.delete(p);
+      newDenySet.delete(p);
+    }
+
+    // Check idempotency: if no changes needed
+    const sameAllow = prevAllow.length === newAllowSet.size && prevAllow.every(p => newAllowSet.has(p));
+    const sameDeny = prevDeny.length === newDenySet.size && prevDeny.every(p => newDenySet.has(p));
+    if (sameAllow && sameDeny) {
+      return {
+        success: true,
+        action: 'set_user_channel_permission',
+        targetMemberId: member.id,
+        targetMemberTag: member.user?.tag || member.displayName,
+        channelId: channel.id,
+        channelName: channel.name,
+        details: `${member.displayName || member.user?.tag} already has the requested channel permissions in #${channel.name}. No changes were made.`,
+        verified: true,
+        resourceId: channel.id
+      };
+    }
+
+    const patch = {};
+    for (const p of newAllowSet) patch[p] = true;
+    for (const p of newDenySet) patch[p] = false;
+    for (const p of inheritList) patch[p] = null;
+
+    const actorTag = context?.invokingUser ? context.invokingUser.tag : 'administrator';
+    await channel.permissionOverwrites.edit(member.id, patch, {
+      reason: `Channel permissions updated for ${member.user?.tag || member.id} via Honey Bot by ${actorTag}`
+    });
+
+    const hasAdmin = member.permissions?.has?.(PermissionFlagsBits.Administrator);
+    let note = '';
+    if (hasAdmin && (denyList.length > 0 || newDenySet.size > 0)) {
+      note = ' (Note: This member has Administrator privileges, which bypass channel overwrites.)';
+    }
+
+    const changedParts = [];
+    if (allowList.length > 0) changedParts.push(`allowed: ${allowList.join(', ')}`);
+    if (denyList.length > 0) changedParts.push(`denied: ${denyList.join(', ')}`);
+    if (inheritList.length > 0) changedParts.push(`reset to inherit: ${inheritList.join(', ')}`);
+
+    if (guild?.id && context?.executionId) {
+      ActionLedger.recordAction(guild.id, context.executionId, {
+        type: 'user_channel_permission',
+        action: 'set_user_channel_permission',
+        targetMemberId: member.id,
+        targetMemberTag: member.user?.tag,
+        channelId: channel.id,
+        channelName: channel.name,
+        targetId: channel.id,
+        targetName: channel.name,
+        preState: { allow: prevAllow, deny: prevDeny },
+        postState: { allow: Array.from(newAllowSet), deny: Array.from(newDenySet) },
+        actor: context.invokingUser ? { id: context.invokingUser.id, tag: context.invokingUser.tag } : null,
+        reversibility: 'reversible'
+      });
+    }
+
+    return {
+      success: true,
+      action: 'set_user_channel_permission',
+      targetMemberId: member.id,
+      targetMemberTag: member.user?.tag || member.displayName,
+      channelId: channel.id,
+      channelName: channel.name,
+      details: `Updated ${member.displayName || member.user?.tag}'s permissions in #${channel.name}: ${changedParts.join('; ')}.${note}`,
+      verified: true,
+      resourceId: channel.id
+    };
+  }
+
+  /**
+   * Inspects and explains user permissions, distinguishing channel overwrites, role permissions, and Administrator bypass.
+   */
+  static async inspectUserPermissions(guild, targetMemberRef, targetChannelRef, context = {}) {
+    let member = null;
+    if (context.resolveTarget) {
+      member = await context.resolveTarget(targetMemberRef, 'member');
+    }
+    if (!member && guild.members?.cache) {
+      const cleanRef = String(targetMemberRef).replace(/[<@!>]/g, '').trim();
+      member = guild.members.cache.find(m => m.id === cleanRef || m.user?.username?.toLowerCase() === cleanRef.toLowerCase() || m.displayName?.toLowerCase() === cleanRef.toLowerCase());
+    }
+    if (!member) {
+      return { success: false, error: `Member "${targetMemberRef}" not found.`, action: 'inspect_user_permissions' };
+    }
+
+    let channel = null;
+    if (targetChannelRef) {
+      if (context.resolveTarget) {
+        channel = await context.resolveTarget(targetChannelRef, 'channel');
+      }
+      if (!channel && guild.channels?.cache) {
+        const cleanCh = String(targetChannelRef).replace(/^#/, '').toLowerCase();
+        channel = guild.channels.cache.find(c => c.id === targetChannelRef || c.name.toLowerCase() === cleanCh);
+      }
+    }
+
+    const hasAdmin = member.permissions?.has?.(PermissionFlagsBits.Administrator);
+    const memberRoles = member.roles?.cache ? Array.from(member.roles.cache.values()).filter(r => r.id !== guild.id) : [];
+
+    if (channel) {
+      const explicitOverwrite = channel.permissionOverwrites?.cache?.get(member.id);
+      const explicitAllow = explicitOverwrite?.allow?.toArray ? explicitOverwrite.allow.toArray() : [];
+      const explicitDeny = explicitOverwrite?.deny?.toArray ? explicitOverwrite.deny.toArray() : [];
+
+      const roleOverwrites = [];
+      for (const role of memberRoles) {
+        const rOw = channel.permissionOverwrites?.cache?.get(role.id);
+        if (rOw) {
+          const rAllow = rOw.allow?.toArray ? rOw.allow.toArray() : [];
+          const rDeny = rOw.deny?.toArray ? rOw.deny.toArray() : [];
+          if (rAllow.length > 0 || rDeny.length > 0) {
+            roleOverwrites.push(`@${role.name} (+${rAllow.join(', ')} / -${rDeny.join(', ')})`);
+          }
+        }
+      }
+
+      const effective = channel.permissionsFor ? channel.permissionsFor(member).toArray() : [];
+      let explanation = `**Permissions for ${member.displayName || member.user?.tag} in #${channel.name}:**\n`;
+      if (hasAdmin) {
+        explanation += `👑 **Administrator:** Yes (bypasses all channel restrictions)\n`;
+      }
+      explanation += `• **Explicit Member Allow:** ${explicitAllow.length ? explicitAllow.join(', ') : 'None'}\n`;
+      explanation += `• **Explicit Member Deny:** ${explicitDeny.length ? explicitDeny.join(', ') : 'None'}\n`;
+      explanation += `• **Role Overwrites:** ${roleOverwrites.length ? roleOverwrites.join('; ') : 'None'}\n`;
+      explanation += `• **Key Effective Permissions:** ${effective.slice(0, 10).join(', ')}${effective.length > 10 ? ` (+${effective.length - 10} more)` : ''}`;
+
+      return {
+        success: true,
+        action: 'inspect_user_permissions',
+        details: explanation,
+        verified: true,
+        hasAdmin,
+        explicitAllow,
+        explicitDeny,
+        effective
+      };
+    } else {
+      let explanation = `**Server-wide Permissions for ${member.displayName || member.user?.tag}:**\n`;
+      explanation += `• **Administrator:** ${hasAdmin ? 'Yes (bypasses all restrictions)' : 'No'}\n`;
+      explanation += `• **Roles (${memberRoles.length}):** ${memberRoles.map(r => `@${r.name}`).join(', ') || 'None'}\n`;
+      const perms = member.permissions ? member.permissions.toArray() : [];
+      explanation += `• **Key Permissions:** ${perms.slice(0, 10).join(', ')}${perms.length > 10 ? ` (+${perms.length - 10} more)` : ''}`;
+
+      return {
+        success: true,
+        action: 'inspect_user_permissions',
+        details: explanation,
+        verified: true,
+        hasAdmin,
+        roles: memberRoles.map(r => r.name)
+      };
+    }
+  }
+
+  // =========================================================================
+  // VOICE MODERATION OPERATIONS
+  // =========================================================================
+
+  static async voiceMute(guild, memberRef, context = {}) {
+    const member = await context.resolveTarget?.(memberRef, 'member') || guild.members?.cache?.get(memberRef);
+    if (!member) return { success: false, error: `Member "${memberRef}" not found.`, action: 'voice_mute' };
+    if (!member.voice || !member.voice.channel) {
+      return { success: false, error: `Member ${member.displayName || member.user?.tag} is not connected to any voice channel.`, action: 'voice_mute' };
+    }
+    const hierarchy = checkRoleHierarchy(guild, { action: 'voice_mute' }, member);
+    if (!hierarchy.valid) return { success: false, error: hierarchy.reason, action: 'voice_mute' };
+
+    await member.voice.setMute(true, `Server-muted via Honey Bot`);
+    return {
+      success: true,
+      action: 'voice_mute',
+      details: `Server-muted ${member.displayName || member.user?.tag} in voice channel #${member.voice.channel.name}`,
+      verified: true,
+      resourceId: member.id
+    };
+  }
+
+  static async voiceUnmute(guild, memberRef, context = {}) {
+    const member = await context.resolveTarget?.(memberRef, 'member') || guild.members?.cache?.get(memberRef);
+    if (!member) return { success: false, error: `Member "${memberRef}" not found.`, action: 'voice_unmute' };
+    if (!member.voice || !member.voice.channel) {
+      return { success: false, error: `Member ${member.displayName || member.user?.tag} is not connected to any voice channel.`, action: 'voice_unmute' };
+    }
+    await member.voice.setMute(false, `Server-unmuted via Honey Bot`);
+    return {
+      success: true,
+      action: 'voice_unmute',
+      details: `Server-unmuted ${member.displayName || member.user?.tag} in voice channel #${member.voice.channel.name}`,
+      verified: true,
+      resourceId: member.id
+    };
+  }
+
+  static async voiceDeafen(guild, memberRef, context = {}) {
+    const member = await context.resolveTarget?.(memberRef, 'member') || guild.members?.cache?.get(memberRef);
+    if (!member) return { success: false, error: `Member "${memberRef}" not found.`, action: 'voice_deafen' };
+    if (!member.voice || !member.voice.channel) {
+      return { success: false, error: `Member ${member.displayName || member.user?.tag} is not connected to any voice channel.`, action: 'voice_deafen' };
+    }
+    const hierarchy = checkRoleHierarchy(guild, { action: 'voice_deafen' }, member);
+    if (!hierarchy.valid) return { success: false, error: hierarchy.reason, action: 'voice_deafen' };
+
+    await member.voice.setDeaf(true, `Server-deafened via Honey Bot`);
+    return {
+      success: true,
+      action: 'voice_deafen',
+      details: `Server-deafened ${member.displayName || member.user?.tag} in voice channel #${member.voice.channel.name}`,
+      verified: true,
+      resourceId: member.id
+    };
+  }
+
+  static async voiceUndeafen(guild, memberRef, context = {}) {
+    const member = await context.resolveTarget?.(memberRef, 'member') || guild.members?.cache?.get(memberRef);
+    if (!member) return { success: false, error: `Member "${memberRef}" not found.`, action: 'voice_undeafen' };
+    if (!member.voice || !member.voice.channel) {
+      return { success: false, error: `Member ${member.displayName || member.user?.tag} is not connected to any voice channel.`, action: 'voice_undeafen' };
+    }
+    await member.voice.setDeaf(false, `Server-undeafened via Honey Bot`);
+    return {
+      success: true,
+      action: 'voice_undeafen',
+      details: `Server-undeafened ${member.displayName || member.user?.tag} in voice channel #${member.voice.channel.name}`,
+      verified: true,
+      resourceId: member.id
+    };
+  }
+
+  static async voiceMove(guild, memberRef, targetChannelRef, context = {}) {
+    const member = await context.resolveTarget?.(memberRef, 'member') || guild.members?.cache?.get(memberRef);
+    if (!member) return { success: false, error: `Member "${memberRef}" not found.`, action: 'voice_move' };
+    if (!member.voice || !member.voice.channel) {
+      return { success: false, error: `Member ${member.displayName || member.user?.tag} is not connected to any voice channel.`, action: 'voice_move' };
+    }
+    const targetChannel = await context.resolveTarget?.(targetChannelRef, 'channel') || guild.channels?.cache?.get(targetChannelRef);
+    if (!targetChannel) return { success: false, error: `Voice channel "${targetChannelRef}" not found.`, action: 'voice_move' };
+    if (targetChannel.type !== ChannelType.GuildVoice && targetChannel.type !== ChannelType.GuildStageVoice) {
+      return { success: false, error: `Channel #${targetChannel.name} is not a voice channel.`, action: 'voice_move' };
+    }
+
+    await member.voice.setChannel(targetChannel, `Moved via Honey Bot`);
+    return {
+      success: true,
+      action: 'voice_move',
+      details: `Moved ${member.displayName || member.user?.tag} to voice channel #${targetChannel.name}`,
+      verified: true,
+      resourceId: targetChannel.id
+    };
+  }
+
+  static async voiceDisconnect(guild, memberRef, context = {}) {
+    const member = await context.resolveTarget?.(memberRef, 'member') || guild.members?.cache?.get(memberRef);
+    if (!member) return { success: false, error: `Member "${memberRef}" not found.`, action: 'voice_disconnect' };
+    if (!member.voice || !member.voice.channel) {
+      return { success: false, error: `Member ${member.displayName || member.user?.tag} is not connected to any voice channel.`, action: 'voice_disconnect' };
+    }
+    const hierarchy = checkRoleHierarchy(guild, { action: 'voice_disconnect' }, member);
+    if (!hierarchy.valid) return { success: false, error: hierarchy.reason, action: 'voice_disconnect' };
+
+    const oldChannel = member.voice.channel.name;
+    await member.voice.disconnect(`Disconnected via Honey Bot`);
+    return {
+      success: true,
+      action: 'voice_disconnect',
+      details: `Disconnected ${member.displayName || member.user?.tag} from voice channel #${oldChannel}`,
+      verified: true,
+      resourceId: member.id
+    };
+  }
+
+  // =========================================================================
+  // WARNING & MODERATION HISTORY OPERATIONS
+  // =========================================================================
+
+  static async issueWarning(guild, memberRef, reason, context = {}) {
+    const member = await context.resolveTarget?.(memberRef, 'member') || guild.members?.cache?.get(memberRef);
+    if (!member) return { success: false, error: `Member "${memberRef}" not found.`, action: 'issue_warning' };
+
+    const hierarchy = checkRoleHierarchy(guild, { action: 'issue_warning' }, member);
+    if (!hierarchy.valid) return { success: false, error: hierarchy.reason, action: 'issue_warning' };
+
+    const actor = context?.invokingUser || { id: 'admin', tag: 'Administrator' };
+    const warning = WarningManager.addWarning(guild.id, member.id, {
+      reason: reason || 'No reason provided',
+      moderatorId: actor.id,
+      moderatorTag: actor.tag
+    });
+
+    const allWarnings = WarningManager.getWarnings(guild.id, member.id);
+    return {
+      success: true,
+      action: 'issue_warning',
+      details: `Warned ${member.displayName || member.user?.tag} for: "${warning.reason}". (Total warnings: ${allWarnings.length})`,
+      verified: true,
+      warningId: warning.id,
+      resourceId: member.id
+    };
+  }
+
+  static async inspectWarnings(guild, memberRef, context = {}) {
+    const member = await context.resolveTarget?.(memberRef, 'member') || guild.members?.cache?.get(memberRef);
+    if (!member) return { success: false, error: `Member "${memberRef}" not found.`, action: 'inspect_warnings' };
+
+    const warnings = WarningManager.getWarnings(guild.id, member.id);
+    if (warnings.length === 0) {
+      return {
+        success: true,
+        action: 'inspect_warnings',
+        details: `${member.displayName || member.user?.tag} has 0 warnings.`,
+        verified: true,
+        count: 0,
+        warnings: []
+      };
+    }
+
+    const lines = warnings.map((w, idx) => `\`${idx + 1}.\` **${w.reason}** (by ${w.moderatorTag} on ${new Date(w.timestamp).toLocaleDateString()})`);
+    return {
+      success: true,
+      action: 'inspect_warnings',
+      details: `**Warnings for ${member.displayName || member.user?.tag} (${warnings.length}):**\n${lines.join('\n')}`,
+      verified: true,
+      count: warnings.length,
+      warnings
+    };
+  }
+
+  static async clearWarnings(guild, memberRef, context = {}) {
+    const member = await context.resolveTarget?.(memberRef, 'member') || guild.members?.cache?.get(memberRef);
+    if (!member) return { success: false, error: `Member "${memberRef}" not found.`, action: 'clear_warnings' };
+
+    const res = WarningManager.clearWarnings(guild.id, member.id);
+    return {
+      success: true,
+      action: 'clear_warnings',
+      details: `Cleared ${res.count} warning(s) for ${member.displayName || member.user?.tag}.`,
+      verified: true,
+      count: res.count,
+      resourceId: member.id
+    };
+  }
+
+  static async softbanMember(guild, memberRef, reason, context = {}) {
+    const member = await context.resolveTarget?.(memberRef, 'member') || guild.members?.cache?.get(memberRef);
+    if (!member) return { success: false, error: `Member "${memberRef}" not found.`, action: 'softban_member' };
+
+    const hierarchy = checkRoleHierarchy(guild, { action: 'softban_member' }, member);
+    if (!hierarchy.valid) return { success: false, error: hierarchy.reason, action: 'softban_member' };
+
+    const safeReason = String(reason || 'Softban via Honey Bot (kick + message purge)').slice(0, 512);
+    const memberId = member.id;
+    const memberTag = member.user?.tag || member.displayName;
+
+    await guild.members.ban(memberId, {
+      deleteMessageSeconds: 86400,
+      reason: safeReason
+    });
+
+    await guild.members.unban(memberId, `Softban complete: unbanned after message purge`);
+
+    return {
+      success: true,
+      action: 'softban_member',
+      details: `Soft-banned ${memberTag}: messages purged (1 day) and member kicked.`,
+      verified: true,
+      resourceId: memberId
+    };
+  }
+
+  static async inspectMemberModeration(guild, memberRef, context = {}) {
+    const member = await context.resolveTarget?.(memberRef, 'member') || guild.members?.cache?.get(memberRef);
+    if (!member) return { success: false, error: `Member "${memberRef}" not found.`, action: 'inspect_member_moderation' };
+
+    const isTimedOut = member.communicationDisabledUntilTimestamp && member.communicationDisabledUntilTimestamp > Date.now();
+    const timeoutRemaining = isTimedOut ? Math.round((member.communicationDisabledUntilTimestamp - Date.now()) / 60000) : 0;
+    const warnings = WarningManager.getWarnings(guild.id, member.id);
+    const inVoice = Boolean(member.voice?.channel);
+    const hasAdmin = member.permissions?.has?.(PermissionFlagsBits.Administrator);
+    const roles = member.roles?.cache ? Array.from(member.roles.cache.values()).filter(r => r.id !== guild.id).map(r => `@${r.name}`) : [];
+
+    let details = `**Moderation State for ${member.displayName || member.user?.tag}:**\n`;
+    details += `• **Timeout:** ${isTimedOut ? `Active (${timeoutRemaining}m remaining)` : 'None'}\n`;
+    details += `• **Warnings:** ${warnings.length}\n`;
+    details += `• **Voice:** ${inVoice ? `Connected to #${member.voice.channel.name}${member.voice.serverMute ? ' (Muted)' : ''}${member.voice.serverDeaf ? ' (Deafened)' : ''}` : 'Not connected'}\n`;
+    details += `• **Administrator:** ${hasAdmin ? 'Yes' : 'No'}\n`;
+    details += `• **Roles (${roles.length}):** ${roles.join(', ') || 'None'}`;
+
+    return {
+      success: true,
+      action: 'inspect_member_moderation',
+      details,
+      verified: true,
+      isTimedOut,
+      timeoutRemaining,
+      warningsCount: warnings.length,
+      inVoice,
+      hasAdmin,
+      resourceId: member.id
+    };
+  }
+
+  static async unbanMember(guild, targetUserRef, reason, context = {}) {
+    const cleanId = String(targetUserRef).replace(/[<@!>]/g, '').trim();
+    let targetId = cleanId;
+
+    if (!/^\d{17,20}$/.test(cleanId) && guild.bans?.fetch) {
+      try {
+        const bans = await guild.bans.fetch();
+        const matchedBan = bans.find(b => b.user.username.toLowerCase() === cleanId.toLowerCase() || b.user.tag?.toLowerCase() === cleanId.toLowerCase());
+        if (matchedBan) {
+          targetId = matchedBan.user.id;
+        }
+      } catch (err) {
+        logger.debug(`Bans fetch failed: ${err.message}`);
+      }
+    }
+
+    if (!targetId || typeof targetId !== 'string' || targetId.trim().length === 0) {
+      return { success: false, error: `Could not resolve banned user "${targetUserRef}". Please provide their exact User ID.`, action: 'unban_member' };
+    }
+
+    const safeReason = String(reason || 'Unbanned via Honey Bot').slice(0, 512);
+    await guild.members.unban(targetId, safeReason);
+
+    return {
+      success: true,
+      action: 'unban_member',
+      details: `User <@${targetId}> unbanned.`,
+      verified: true,
+      resourceId: targetId
+    };
   }
 }

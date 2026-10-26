@@ -7,6 +7,7 @@ import { Operations } from './operations.js';
 import { ExecutionContext } from './execution-context.js';
 import { SecurityGate } from './security-gate.js';
 import { config } from './config.js';
+import { resolveColor } from './color-utils.js';
 import { Logger } from './logger.js';
 
 const logger = new Logger('Executor');
@@ -204,9 +205,10 @@ export class Executor {
           return { success: true, details: `Role @${existing.name} already exists (re-using existing)` };
         }
 
+        const resolvedColor = resolveColor(action.color) || '#99AAB5';
         const role = await guild.roles.create({
           name: action.name,
-          color: action.color || '#99AAB5',
+          color: resolvedColor,
           hoist: Boolean(action.hoist),
           mentionable: Boolean(action.mentionable),
           permissions: action.permissions || [],
@@ -214,21 +216,23 @@ export class Executor {
         });
 
         ActionLedger.recordCreatedResource(executionId, 'role', role.id, role.name);
-        return { success: true, details: `Role @${role.name} created with color ${action.color || 'default'}` };
+        return { success: true, details: `Role @${role.name} created with color ${resolvedColor}` };
       }
 
       case 'edit_role': {
+        const targetRef = action.targetRole || action.targetRef || action.role || action.name;
         const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
           invokingUser: invokingMember.user,
           resolveTarget: async (ref) => guild.roles.cache.find(r => r.id === ref || r.name.toLowerCase() === String(ref).replace(/^@/, '').toLowerCase())
         };
-        return await Operations.editRole(guild, action.targetRole, action, ctx);
+        return await Operations.editRole(guild, targetRef, action, ctx);
       }
 
       case 'delete_role': {
-        const role = guild.roles.cache.find(r => r.id === action.targetRole || r.name.toLowerCase() === action.targetRole.toLowerCase());
+        const targetRef = action.targetRole || action.targetRef || action.role;
+        const role = guild.roles.cache.find(r => r.id === targetRef || r.name.toLowerCase() === String(targetRef).toLowerCase());
         if (!role) {
-          return { success: true, details: `Role "${action.targetRole}" does not exist (nothing to delete)` };
+          return { success: true, details: `Role "${targetRef}" does not exist (nothing to delete)` };
         }
 
         const hierarchy = checkRoleHierarchy(guild, action, role);
@@ -238,6 +242,32 @@ export class Executor {
 
         await role.delete(`Deleted via /go agent by ${invokingMember.user.tag}`);
         return { success: true, details: `Role @${role.name} deleted` };
+      }
+
+      case 'assign_role': {
+        const memberRef = action.targetMember || action.targetMemberId || action.targetRef;
+        const roleRef = action.targetRole || action.targetRoleId || action.role || action.name;
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref, type) => {
+            if (type === 'role') return guild.roles.cache.find(r => r.id === ref || r.name.toLowerCase() === String(ref).replace(/^@/, '').toLowerCase());
+            return guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase() || m.displayName?.toLowerCase() === String(ref).toLowerCase());
+          }
+        };
+        return await Operations.assignRole(guild, memberRef, roleRef, ctx);
+      }
+
+      case 'remove_role': {
+        const memberRef = action.targetMember || action.targetMemberId || action.targetRef;
+        const roleRef = action.targetRole || action.targetRoleId || action.role || action.name;
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref, type) => {
+            if (type === 'role') return guild.roles.cache.find(r => r.id === ref || r.name.toLowerCase() === String(ref).replace(/^@/, '').toLowerCase());
+            return guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase() || m.displayName?.toLowerCase() === String(ref).toLowerCase());
+          }
+        };
+        return await Operations.removeRole(guild, memberRef, roleRef, ctx);
       }
 
       case 'create_channel': {
@@ -349,7 +379,7 @@ export class Executor {
       case 'timeout_member': {
         const rawTarget = String(action.targetMember || action.targetRef || '');
         const cleanId = rawTarget.replace(/[<@!>]/g, '').trim();
-        const member = guild.members.cache.find(m => m.id === cleanId || m.id === rawTarget || m.user?.username.toLowerCase() === rawTarget.toLowerCase() || m.displayName?.toLowerCase() === rawTarget.toLowerCase());
+        const member = guild.members.cache.find(m => m.id === cleanId || m.id === rawTarget || m.user?.username?.toLowerCase() === rawTarget.toLowerCase() || m.displayName?.toLowerCase() === rawTarget.toLowerCase());
         if (!member) {
           return { success: false, error: `Member "${action.targetMember}" not found in server` };
         }
@@ -375,7 +405,7 @@ export class Executor {
       case 'remove_timeout': {
         const rawTarget = String(action.targetMember || action.targetRef || '');
         const cleanId = rawTarget.replace(/[<@!>]/g, '').trim();
-        const member = guild.members.cache.find(m => m.id === cleanId || m.id === rawTarget || m.user?.username.toLowerCase() === rawTarget.toLowerCase() || m.displayName?.toLowerCase() === rawTarget.toLowerCase());
+        const member = guild.members.cache.find(m => m.id === cleanId || m.id === rawTarget || m.user?.username?.toLowerCase() === rawTarget.toLowerCase() || m.displayName?.toLowerCase() === rawTarget.toLowerCase());
         if (!member) return { success: false, error: `Member "${action.targetMember}" not found` };
 
         const safeReason = String(action.reason || 'No reason provided').slice(0, 512);
@@ -394,7 +424,7 @@ export class Executor {
       case 'kick_member': {
         const rawTarget = String(action.targetMember || action.targetRef || '');
         const cleanId = rawTarget.replace(/[<@!>]/g, '').trim();
-        const member = guild.members.cache.find(m => m.id === cleanId || m.id === rawTarget || m.user?.username.toLowerCase() === rawTarget.toLowerCase() || m.displayName?.toLowerCase() === rawTarget.toLowerCase());
+        const member = guild.members.cache.find(m => m.id === cleanId || m.id === rawTarget || m.user?.username?.toLowerCase() === rawTarget.toLowerCase() || m.displayName?.toLowerCase() === rawTarget.toLowerCase());
         if (!member) return { success: false, error: `Member "${action.targetMember}" not found` };
 
         const hierarchy = checkRoleHierarchy(guild, action, member);
@@ -418,7 +448,7 @@ export class Executor {
       case 'ban_member': {
         const rawTarget = String(action.targetMember || action.targetRef || '');
         const cleanId = rawTarget.replace(/[<@!>]/g, '').trim();
-        const member = guild.members.cache.find(m => m.id === cleanId || m.id === rawTarget || m.user?.username.toLowerCase() === rawTarget.toLowerCase() || m.displayName?.toLowerCase() === rawTarget.toLowerCase());
+        const member = guild.members.cache.find(m => m.id === cleanId || m.id === rawTarget || m.user?.username?.toLowerCase() === rawTarget.toLowerCase() || m.displayName?.toLowerCase() === rawTarget.toLowerCase());
         const targetId = member ? member.id : cleanId;
 
         if (member) {
@@ -445,15 +475,96 @@ export class Executor {
       }
 
       case 'unban_member': {
-        await guild.members.unban(action.targetMemberId, action.reason || 'Unbanned via /go agent');
-        return {
-          success: true,
-          action: 'unban_member',
-          details: `User ID ${action.targetMemberId} unbanned`,
-          verified: true,
-          resourceId: action.targetMemberId,
-          targetMemberId: action.targetMemberId
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingUser: invokingMember.user };
+        return await Operations.unbanMember(guild, action.targetMember || action.targetMemberId || action.targetRef, action.reason, ctx);
+      }
+
+      case 'set_user_channel_permission': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref, type) => {
+            if (type === 'channel') return guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).replace(/^#/, '').toLowerCase());
+            return guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase() || m.displayName?.toLowerCase() === String(ref).toLowerCase());
+          }
         };
+        const perms = {
+          allow: action.allow || (action.permissions?.allow) || [],
+          deny: action.deny || (action.permissions?.deny) || [],
+          inherit: action.inherit || (action.permissions?.inherit) || []
+        };
+        return await Operations.setUserChannelPermission(guild, action.targetMember || action.targetRef, action.targetChannel, perms, ctx);
+      }
+
+      case 'inspect_user_permissions': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref, type) => {
+            if (type === 'channel') return guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).replace(/^#/, '').toLowerCase());
+            return guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase() || m.displayName?.toLowerCase() === String(ref).toLowerCase());
+          }
+        };
+        return await Operations.inspectUserPermissions(guild, action.targetMember || action.targetRef, action.targetChannel, ctx);
+      }
+
+      case 'voice_mute': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingUser: invokingMember.user, resolveTarget: async (ref) => guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase()) };
+        return await Operations.voiceMute(guild, action.targetMember || action.targetRef, ctx);
+      }
+
+      case 'voice_unmute': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingUser: invokingMember.user, resolveTarget: async (ref) => guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase()) };
+        return await Operations.voiceUnmute(guild, action.targetMember || action.targetRef, ctx);
+      }
+
+      case 'voice_deafen': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingUser: invokingMember.user, resolveTarget: async (ref) => guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase()) };
+        return await Operations.voiceDeafen(guild, action.targetMember || action.targetRef, ctx);
+      }
+
+      case 'voice_undeafen': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingUser: invokingMember.user, resolveTarget: async (ref) => guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase()) };
+        return await Operations.voiceUndeafen(guild, action.targetMember || action.targetRef, ctx);
+      }
+
+      case 'voice_move': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref, type) => {
+            if (type === 'channel') return guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).replace(/^#/, '').toLowerCase());
+            return guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase());
+          }
+        };
+        return await Operations.voiceMove(guild, action.targetMember || action.targetRef, action.targetChannel, ctx);
+      }
+
+      case 'voice_disconnect': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingUser: invokingMember.user, resolveTarget: async (ref) => guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase()) };
+        return await Operations.voiceDisconnect(guild, action.targetMember || action.targetRef, ctx);
+      }
+
+      case 'issue_warning': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingUser: invokingMember.user, resolveTarget: async (ref) => guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase()) };
+        return await Operations.issueWarning(guild, action.targetMember || action.targetRef, action.reason, ctx);
+      }
+
+      case 'inspect_warnings': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingUser: invokingMember.user, resolveTarget: async (ref) => guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase()) };
+        return await Operations.inspectWarnings(guild, action.targetMember || action.targetRef, ctx);
+      }
+
+      case 'clear_warnings': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingUser: invokingMember.user, resolveTarget: async (ref) => guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase()) };
+        return await Operations.clearWarnings(guild, action.targetMember || action.targetRef, ctx);
+      }
+
+      case 'softban_member': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingUser: invokingMember.user, resolveTarget: async (ref) => guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase()) };
+        return await Operations.softbanMember(guild, action.targetMember || action.targetRef, action.reason, ctx);
+      }
+
+      case 'inspect_member_moderation': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingUser: invokingMember.user, resolveTarget: async (ref) => guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase()) };
+        return await Operations.inspectMemberModeration(guild, action.targetMember || action.targetRef, ctx);
       }
 
       case 'change_nickname': {

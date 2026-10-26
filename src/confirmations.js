@@ -25,7 +25,7 @@ export class ConfirmationManager {
       actionText = truncatedLines.join('\n') + `\n*...and ${remaining} additional action(s)*`;
     }
 
-    const description = 
+    const description =
       `The requested operation involves **high-impact, destructive, or mass changes**.\n\n` +
       `**Intended Plan:**\n${thought}\n\n` +
       `**Actions to Execute (${actions.length}):**\n${actionText}`;
@@ -96,7 +96,7 @@ export class ConfirmationManager {
           content: 'Confirmation timed out. Operation aborted safely.',
           embeds: [],
           components: []
-        }).catch(() => {});
+        }).catch(() => { });
       }
       return false;
     }
