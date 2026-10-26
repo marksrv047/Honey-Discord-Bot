@@ -18,7 +18,7 @@
     "groq",
     "ollama"
   ],
-  "author": "",
+  "author": "marksrv047",
   "license": "MIT",
   "dependencies": {
     "@discordjs/voice": "^0.19.2",

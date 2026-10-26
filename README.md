@@ -151,3 +151,10 @@ npm test
   `/go prompt: Give @John the VIP role and change his nickname to Captain John.`
 - **Reversal:**
   `/undo` (Reverses all channels and roles created in the most recent `/go` session).
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE) - see the [LICENSE](LICENSE) file for details.
+
