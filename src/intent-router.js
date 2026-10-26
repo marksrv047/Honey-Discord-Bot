@@ -7,6 +7,9 @@ import { resolveColor } from './color-utils.js';
 import { CapabilityRegistry } from './capabilities.js';
 import { ActionLedger } from './recovery.js';
 import { HelpManager } from './help.js';
+import { KnowledgeRetriever } from './knowledge/retrieval.js';
+import { NegationDetector } from './knowledge/negation-detector.js';
+import { ClarificationEngine } from './knowledge/clarification-engine.js';
 
 const logger = new Logger('IntentRouter');
 
@@ -120,6 +123,22 @@ export class IntentRouter {
         thought: unsupported.reason,
         isHighImpact: false,
         conversationalResponse: `🛑 **Unsupported Operation:** ${unsupported.reason}${unsupported.supportedAlternative ? `\n\n💡 *Alternative:* ${unsupported.supportedAlternative}` : ''}`
+      };
+    }
+
+    // =========================================================================
+    // 00. CLARIFICATION PRE-FILTER FOR AMBIGUOUS REQUESTS
+    // =========================================================================
+    const clarification = ClarificationEngine.evaluate(cleanPrompt);
+    if (clarification.needsClarification && clarification.question) {
+      logger.info('Routed to clarification request', { reason: clarification.reason });
+      return {
+        intent: 'conversational',
+        thought: `Ambiguous request: ${clarification.reason}`,
+        clarificationNeeded: clarification.question,
+        conversationalResponse: clarification.question,
+        isHighImpact: false,
+        args: {}
       };
     }
 
@@ -1867,7 +1886,11 @@ export class IntentRouter {
     // Check budget before making LLM request
     budget.recordModelCall(estimatedTokens, 256);
 
-    const promptPayload = `CONTEXT:\n${JSON.stringify(context)}\n\nUSER REQUEST:\n"${userPrompt}"`;
+    // Retrieve targeted knowledge snippet (1-3 capabilities, 1-2 examples) to ground Groq interpretation
+    const { promptSnippet } = KnowledgeRetriever.retrieve(userPrompt);
+    const retrievedSection = promptSnippet ? `\n\n${promptSnippet}` : '';
+
+    const promptPayload = `CONTEXT:\n${JSON.stringify(context)}${retrievedSection}\n\nUSER REQUEST:\n"${userPrompt}"`;
 
     logger.info('Routing through compact LLM interpretation', { estimatedTokens, provider: config.ai.provider });
 
@@ -1887,7 +1910,7 @@ export class IntentRouter {
       throw new Error('Intent interpretation failed to produce a structured object.');
     }
 
-    return {
+    const output = {
       intent: parsed.intent || 'unknown',
       thought: parsed.thought || 'Interpreted instruction',
       targetType: parsed.targetType || null,
@@ -1898,5 +1921,15 @@ export class IntentRouter {
       conversationalResponse: parsed.conversationalResponse || null,
       multiActions: Array.isArray(parsed.multiActions) ? parsed.multiActions : null
     };
+
+    // Negation safety check: prevent execution of explicitly negated actions
+    if (NegationDetector.isActionNegated(output.intent, userPrompt)) {
+      logger.warn(`Action "${output.intent}" was blocked due to explicit negation in prompt`, { userPrompt });
+      output.intent = 'unsupported';
+      output.thought = `The action "${output.intent}" was explicitly negated or cancelled in the prompt.`;
+      output.conversationalResponse = `I noted your instruction not to perform "${output.intent}". No action was taken.`;
+    }
+
+    return output;
   }
 }
