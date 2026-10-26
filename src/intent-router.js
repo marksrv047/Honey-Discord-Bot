@@ -150,9 +150,12 @@ export class IntentRouter {
       };
     }
 
-    // Nickname fast-paths:
-    // "change my nickname to Alex"
-    const myNickMatch = cleanPrompt.match(/^(?:change|set|rename|update)\s+my\s+(?:server\s+)?nickname\s+(?:to|as)\s+["']?([^"']+)["']?$/i);
+    // =========================================================================
+    // NICKNAME & MEMBER MANAGEMENT FAST-PATHS
+    // =========================================================================
+
+    // 1. "change my nickname to Alex" / "rename me to Alex"
+    const myNickMatch = cleanPrompt.match(/^(?:change|set|rename|update)\s+(?:my\s+(?:server\s+)?nickname|me)\s+(?:to|as)\s+["']?([^"']+)["']?$/i);
     if (myNickMatch) {
       const newNick = myNickMatch[1].trim();
       logger.info('Routed through fast-path: change my nickname', { newNick });
@@ -166,8 +169,27 @@ export class IntentRouter {
       };
     }
 
-    // "rename Sarah's nickname to Sally"
-    const memberNickMatch = cleanPrompt.match(/^(?:change|set|rename|update)\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+(?:server\s+)?nickname\s+(?:to|as)\s+["']?([^"']+)["']?$/i);
+    // 2. "rename Sarah to Sally" / "rename @Alex to Night Owl"
+    const directRenameMemberMatch = cleanPrompt.match(/^rename\s+(?:user\s+|member\s+)?(<@!?\d+>|@?[\w.-]+)\s+to\s+["']?([^"']+)["']?$/i);
+    if (directRenameMemberMatch) {
+      const candidateTarget = directRenameMemberMatch[1].replace(/^@/, '');
+      if (!/^channel$|^this|^role$|^server$/i.test(candidateTarget) && !candidateTarget.startsWith('#')) {
+        const newNick = directRenameMemberMatch[2].trim().replace(/^["']|["']$/g, '');
+        logger.info('Routed through fast-path: rename member directly', { target: candidateTarget, newNick });
+        return {
+          intent: 'change_nickname',
+          targetType: 'member',
+          targetRef: candidateTarget,
+          args: { targetMember: candidateTarget, nickname: newNick },
+          isHighImpact: false,
+          thought: `Rename member ${candidateTarget} to "${newNick}"`
+        };
+      }
+    }
+
+    // 3. "rename Sarah's nickname to Sally" / "change Alex's nickname to Night Owl" / "set nickname of Alex to Night Owl"
+    const memberNickMatch = cleanPrompt.match(/^(?:change|set|rename|update)\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+(?:server\s+)?nickname\s+(?:to|as)\s+["']?([^"']+)["']?$/i) ||
+      cleanPrompt.match(/^(?:change|set|rename|update)\s+(?:the\s+)?(?:server\s+)?nickname\s+(?:of|for)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:to|as)\s+["']?([^"']+)["']?$/i);
     if (memberNickMatch) {
       const target = memberNickMatch[1].replace(/^@/, '');
       const newNick = memberNickMatch[2].trim();
@@ -182,7 +204,7 @@ export class IntentRouter {
       };
     }
 
-    // "set the nickname of the member i just mentioned to Captain"
+    // 4. "set the nickname of the member i just mentioned to Captain"
     const mentionedNickMatch = cleanPrompt.match(/^(?:set|change|rename)\s+(?:the\s+)?nickname\s+of\s+(?:the\s+member\s+)?i\s+just\s+mentioned\s+(?:to|as)\s+["']?([^"']+)["']?$/i);
     if (mentionedNickMatch) {
       const newNick = mentionedNickMatch[1].trim();
@@ -197,19 +219,56 @@ export class IntentRouter {
       };
     }
 
-    // "remove Sarah's server nickname" / "remove my server nickname"
-    const removeNickMatch = cleanPrompt.match(/^(?:remove|reset|clear)\s+(?:(<@!?\d+>|@?[\w.-]+)['’]s|my)\s+(?:server\s+)?nickname$/i);
+    // 5. Explicit Nickname Removal: "remove Sarah's server nickname" / "remove my server nickname" / "reset Alex's nickname" / "clear my nickname"
+    const removeNickMatch = cleanPrompt.match(/^(?:remove|reset|clear)\s+(?:(<@!?\d+>|@?[\w.-]+)['’]s|my)\s+(?:server\s+)?nickname$/i) ||
+      cleanPrompt.match(/^(?:remove|reset|clear)\s+(?:the\s+)?(?:server\s+)?nickname\s+(?:of|for)\s+(<@!?\d+>|@?[\w.-]+|me)$/i);
     if (removeNickMatch) {
-      const target = removeNickMatch[1] ? removeNickMatch[1].replace(/^@/, '') : 'me';
+      const target = removeNickMatch[1] ? (removeNickMatch[1].toLowerCase() === 'me' ? 'me' : removeNickMatch[1].replace(/^@/, '')) : 'me';
       logger.info('Routed through fast-path: remove server nickname', { target });
       return {
-        intent: 'change_nickname',
+        intent: 'remove_nickname',
         targetType: 'member',
         targetRef: target,
-        args: { targetMember: target, nickname: null },
+        args: { targetMember: target },
         isHighImpact: false,
         thought: `Remove server nickname for ${target}`
       };
+    }
+
+    // 6. Read-Only Nickname Inspection: "what is Alex's current nickname?" / "what is my nickname?"
+    const inspectNickMatch = cleanPrompt.match(/^(?:what\s+is|show|inspect|check|view|get)\s+(?:(<@!?\d+>|@?[\w.-]+)['’]s|my)\s+(?:current\s+)?(?:server\s+)?nickname$/i) ||
+      cleanPrompt.match(/^(?:what\s+is|show|inspect|check|view|get)\s+(?:the\s+)?(?:current\s+)?(?:server\s+)?nickname\s+(?:of|for)\s+(<@!?\d+>|@?[\w.-]+|me)$/i);
+    if (inspectNickMatch) {
+      const target = inspectNickMatch[1] ? (inspectNickMatch[1].toLowerCase() === 'me' ? 'me' : inspectNickMatch[1].replace(/^@/, '')) : 'me';
+      logger.info('Routed through fast-path: inspect nickname', { target });
+      return {
+        intent: 'inspect_nickname',
+        targetType: 'member',
+        targetRef: target,
+        args: { targetMember: target },
+        isHighImpact: false,
+        thought: `Inspect nickname for ${target}`
+      };
+    }
+
+    // 7. Profile Inspection: "inspect Alex's profile" / "who is Alex" / "view my profile" / "look up @Alex"
+    const profileMatch = cleanPrompt.match(/^(?:inspect|view|show|check|get|display)\s+(?:(<@!?\d+>|@?[\w.-]+)['’]s|my)\s+(?:member\s+|user\s+)?profile$/i) ||
+      cleanPrompt.match(/^(?:inspect|view|show|check|get|lookup|look\s+up)\s+(?:member|user|profile\s+(?:for|of))\s+(<@!?\d+>|@?[\w.-]+|me)$/i) ||
+      cleanPrompt.match(/^(?:who\s+is)\s+(<@!?\d+>|@?[\w.-]+)$/i) ||
+      cleanPrompt.match(/^(?:lookup|look\s+up)\s+(<@!?\d+>|@?[\w.-]+)$/i);
+    if (profileMatch) {
+      const candidate = profileMatch[1] ? (profileMatch[1].toLowerCase() === 'me' ? 'me' : profileMatch[1].replace(/^@/, '')) : 'me';
+      if (!/^channel$|^role$|^server$/i.test(candidate)) {
+        logger.info('Routed through fast-path: lookup member profile', { target: candidate });
+        return {
+          intent: 'lookup_member',
+          targetType: 'member',
+          targetRef: candidate,
+          args: { targetMember: candidate },
+          isHighImpact: false,
+          thought: `Lookup profile for ${candidate}`
+        };
+      }
     }
 
     // Multi-step A: "rename this channel to <name> and update its topic to <topic>"

@@ -5,6 +5,8 @@ import { TicketManager } from './tickets.js';
 import { MusicService } from './music-service.js';
 import { resolveColor } from './color-utils.js';
 import { Logger } from './logger.js';
+import { MemberResolver } from './member-resolver.js';
+import { ModLogService } from './mod-log.js';
 
 const logger = new Logger('Operations');
 
@@ -624,15 +626,38 @@ export class Operations {
   }
 
   /**
-   * Changes or removes the nickname of a member with target resolution and verification.
+   * Replaces a member's server nickname with an explicit replacement value.
+   * Preserves spaces, punctuation, checks constraints, and verifies postcondition.
    */
   static async changeNickname(guild, memberRef, nickname, context) {
+    if (nickname === null) {
+      return await Operations.removeNickname(guild, memberRef, context);
+    }
+
+    if (nickname === undefined || String(nickname).trim() === '') {
+      return {
+        success: false,
+        error: 'No replacement nickname provided. To remove or reset a nickname instead, ask to remove or reset the nickname.',
+        action: 'change_nickname'
+      };
+    }
+
+    const targetNickname = String(nickname).trim();
+
+    if (targetNickname.length < 1 || targetNickname.length > 32) {
+      return {
+        success: false,
+        error: `Nickname length out of bounds: Discord nicknames must be between 1 and 32 characters (received ${targetNickname.length} characters).`,
+        action: 'change_nickname'
+      };
+    }
+
     const ref = memberRef || 'me';
     let member;
-    if (/^(me|my|myself|self|i)$/i.test(String(ref).trim())) {
-      member = context.invokingMember || (await context.resolveTarget?.(ref, 'member'));
-    } else {
+    if (context && typeof context.resolveTarget === 'function') {
       member = await context.resolveTarget(ref, 'member');
+    } else {
+      member = await MemberResolver.resolveMember(guild, ref, context);
     }
 
     if (member?.isAmbiguous) {
@@ -640,6 +665,7 @@ export class Operations {
         success: false,
         isAmbiguous: true,
         error: member.clarificationQuestion,
+        candidates: member.candidates,
         action: 'change_nickname'
       };
     }
@@ -648,20 +674,24 @@ export class Operations {
       return { success: false, error: `Member "${ref}" not found in this server.`, action: 'change_nickname' };
     }
 
-    const isRemoval = nickname === null || nickname === undefined || /^(?:none|reset|remove|clear)$/i.test(String(nickname).trim());
-    const targetNickname = isRemoval ? null : String(nickname).trim();
-
-    if (targetNickname && targetNickname.length > 32) {
-      return {
-        success: false,
-        error: `Nickname length out of bounds: Discord nicknames cannot exceed 32 characters (received ${targetNickname.length} characters).`,
-        action: 'change_nickname'
-      };
+    if (member.guild && member.guild.id && member.guild.id !== guild.id) {
+      return { success: false, error: 'Cross-guild operations are not permitted.', action: 'change_nickname' };
     }
 
     const hierarchy = checkRoleHierarchy(guild, { action: 'change_nickname' }, member);
     if (!hierarchy.valid) {
       return { success: false, error: hierarchy.reason, action: 'change_nickname' };
+    }
+
+    const botMember = guild.members?.me || (guild.members?.cache ? guild.members.cache.get(guild.client?.user?.id) : null);
+    if (botMember && typeof botMember.permissions?.has === 'function') {
+      if (!botMember.permissions.has(PermissionFlagsBits.ManageNicknames) && !botMember.permissions.has(PermissionFlagsBits.Administrator)) {
+        return {
+          success: false,
+          error: 'Honey Bot lacks the required "Manage Nicknames" permission in this server.',
+          action: 'change_nickname'
+        };
+      }
     }
 
     const currentNickname = member.nickname || null;
@@ -671,16 +701,14 @@ export class Operations {
         action: 'change_nickname',
         targetMemberId: member.id,
         nickname: targetNickname,
-        details: isRemoval
-          ? `Server nickname for ${member.user?.tag || member.displayName} is already cleared.`
-          : `Nickname for ${member.user?.tag || member.displayName} is already "${targetNickname}".`,
+        details: `Nickname for ${member.user?.tag || member.displayName} is already "${targetNickname}".`,
         verified: true,
         resourceId: member.id
       };
     }
 
     const oldNickname = member.nickname || '';
-    const actorTag = context.invokingUser ? context.invokingUser.tag : 'administrator';
+    const actorTag = context?.invokingUser ? context.invokingUser.tag : 'administrator';
     await member.setNickname(targetNickname, `Changed via Honey Bot by ${actorTag}`);
 
     // Verify resulting member state
@@ -702,18 +730,177 @@ export class Operations {
       });
     }
 
-    const details = isRemoval
-      ? `Removed server nickname for ${member.user?.tag || member.displayName} (reverted to username).`
-      : `Changed nickname for ${member.user?.tag || member.displayName} to "${targetNickname}".`;
+    if (typeof ModLogService?.logAction === 'function') {
+      await ModLogService.logAction(guild, {
+        action: 'change_nickname',
+        targetId: member.id,
+        targetName: member.user?.tag || member.displayName,
+        moderatorId: context?.invokingUser?.id,
+        moderatorTag: context?.invokingUser?.tag,
+        reason: `Changed nickname to "${targetNickname}"`,
+        details: `Nickname changed from "${oldNickname || '(none)'}" to "${targetNickname}"`
+      }).catch(err => logger.debug('ModLogService notification failed: ' + err.message));
+    }
 
     return {
       success: true,
       action: 'change_nickname',
       targetMemberId: member.id,
       nickname: targetNickname,
-      details,
+      details: `Changed nickname for ${member.user?.tag || member.displayName} to "${targetNickname}".`,
       verified,
+      verificationStatus: verified ? 'verified' : 'inconclusive',
       resourceId: member.id
+    };
+  }
+
+  /**
+   * Explicitly removes a member's server nickname, reverting to their default username.
+   */
+  static async removeNickname(guild, memberRef, context) {
+    const ref = memberRef || 'me';
+    let member;
+    if (context && typeof context.resolveTarget === 'function') {
+      member = await context.resolveTarget(ref, 'member');
+    } else {
+      member = await MemberResolver.resolveMember(guild, ref, context);
+    }
+
+    if (member?.isAmbiguous) {
+      return {
+        success: false,
+        isAmbiguous: true,
+        error: member.clarificationQuestion,
+        candidates: member.candidates,
+        action: 'remove_nickname'
+      };
+    }
+
+    if (!member) {
+      return { success: false, error: `Member "${ref}" not found in this server.`, action: 'remove_nickname' };
+    }
+
+    if (member.guild && member.guild.id && member.guild.id !== guild.id) {
+      return { success: false, error: 'Cross-guild operations are not permitted.', action: 'remove_nickname' };
+    }
+
+    const hierarchy = checkRoleHierarchy(guild, { action: 'remove_nickname' }, member);
+    if (!hierarchy.valid) {
+      return { success: false, error: hierarchy.reason, action: 'remove_nickname' };
+    }
+
+    const botMember = guild.members?.me || (guild.members?.cache ? guild.members.cache.get(guild.client?.user?.id) : null);
+    if (botMember && typeof botMember.permissions?.has === 'function') {
+      if (!botMember.permissions.has(PermissionFlagsBits.ManageNicknames) && !botMember.permissions.has(PermissionFlagsBits.Administrator)) {
+        return {
+          success: false,
+          error: 'Honey Bot lacks the required "Manage Nicknames" permission in this server.',
+          action: 'remove_nickname'
+        };
+      }
+    }
+
+    const currentNickname = member.nickname || null;
+    if (!currentNickname) {
+      return {
+        success: true,
+        action: 'remove_nickname',
+        targetMemberId: member.id,
+        nickname: null,
+        details: `Server nickname for ${member.user?.tag || member.displayName} is already cleared.`,
+        verified: true,
+        resourceId: member.id
+      };
+    }
+
+    const oldNickname = member.nickname || '';
+    const actorTag = context?.invokingUser ? context.invokingUser.tag : 'administrator';
+    await member.setNickname(null, `Removed nickname via Honey Bot by ${actorTag}`);
+
+    const updatedNickname = member.nickname ?? null;
+    const verified = updatedNickname === null;
+
+    if (guild?.id && context?.executionId) {
+      ActionLedger.recordAction(guild.id, context.executionId, {
+        type: 'nickname_change',
+        action: 'remove_nickname',
+        targetMemberId: member.id,
+        targetMemberTag: member.user?.tag,
+        oldNickname,
+        newNickname: null,
+        preState: { nickname: oldNickname },
+        postState: { nickname: null },
+        actor: context.invokingUser ? { id: context.invokingUser.id, tag: context.invokingUser.tag } : null,
+        reversibility: 'reversible'
+      });
+    }
+
+    if (typeof ModLogService?.logAction === 'function') {
+      await ModLogService.logAction(guild, {
+        action: 'remove_nickname',
+        targetId: member.id,
+        targetName: member.user?.tag || member.displayName,
+        moderatorId: context?.invokingUser?.id,
+        moderatorTag: context?.invokingUser?.tag,
+        reason: 'Removed server nickname',
+        details: `Cleared server nickname "${oldNickname}"`
+      }).catch(err => logger.debug('ModLogService notification failed: ' + err.message));
+    }
+
+    return {
+      success: true,
+      action: 'remove_nickname',
+      targetMemberId: member.id,
+      nickname: null,
+      details: `Removed server nickname for ${member.user?.tag || member.displayName} (reverted to username).`,
+      verified,
+      verificationStatus: verified ? 'verified' : 'inconclusive',
+      resourceId: member.id
+    };
+  }
+
+  /**
+   * Inspects a member's current nickname and username (read-only, no mutation).
+   */
+  static async inspectNickname(guild, memberRef, context) {
+    const ref = memberRef || 'me';
+    let member;
+    if (context && typeof context.resolveTarget === 'function') {
+      member = await context.resolveTarget(ref, 'member');
+    } else {
+      member = await MemberResolver.resolveMember(guild, ref, context);
+    }
+
+    if (member?.isAmbiguous) {
+      return {
+        success: false,
+        isAmbiguous: true,
+        error: member.clarificationQuestion,
+        candidates: member.candidates,
+        action: 'inspect_nickname'
+      };
+    }
+
+    if (!member) {
+      return { success: false, error: `Member "${ref}" not found in this server.`, action: 'inspect_nickname' };
+    }
+
+    const currentNick = member.nickname;
+    const globalUsername = member.user?.username || 'Unknown';
+    const displayName = member.displayName || globalUsername;
+
+    const details = `**Nickname Information for ${displayName}:**\n` +
+      `• Server Nickname: ${currentNick ? `"${currentNick}"` : '*None set (using username)*'}\n` +
+      `• Global Username: \`${globalUsername}\`\n` +
+      `• Server Display Name: **${displayName}**\n` +
+      `• User ID: \`${member.id}\``;
+
+    return {
+      success: true,
+      action: 'inspect_nickname',
+      targetMemberId: member.id,
+      details,
+      verified: true
     };
   }
 
@@ -1207,18 +1394,226 @@ export class Operations {
   }
 
   /**
-   * Looks up a member and returns profile summary.
+   * Looks up a member and generates a detailed evidence-based profile display.
+   * Produces both a Discord Embed and structured markdown text.
    */
   static async lookupMember(guild, memberRef, context) {
-    const member = await context.resolveTarget(memberRef, 'member');
-    if (!member) return { success: false, error: `Member "${memberRef}" not found in server`, action: 'lookup_member' };
-    const roles = member.roles.cache.filter(r => r.id !== guild.id).map(r => `@${r.name}`);
+    const ref = memberRef || 'me';
+    let member;
+    if (context && typeof context.resolveTarget === 'function') {
+      member = await context.resolveTarget(ref, 'member');
+    } else {
+      member = await MemberResolver.resolveMember(guild, ref, context);
+    }
+
+    if (member?.isAmbiguous) {
+      return {
+        success: false,
+        isAmbiguous: true,
+        error: member.clarificationQuestion,
+        candidates: member.candidates,
+        action: 'lookup_member'
+      };
+    }
+
+    if (!member) {
+      return { success: false, error: `Member "${ref}" not found in this server.`, action: 'lookup_member' };
+    }
+
+    // 1. Identity
+    const user = member.user || {};
+    const isBot = Boolean(user.bot);
+    const globalUsername = user.username || 'Unknown';
+    const serverNickname = member.nickname || null;
+    const displayName = member.displayName || globalUsername;
+    const accountCreatedTs = user.createdTimestamp ? Math.floor(user.createdTimestamp / 1000) : null;
+    const avatarUrl = typeof member.displayAvatarURL === 'function' ? member.displayAvatarURL({ dynamic: true, size: 256 }) : null;
+
+    // 2. Server Membership
+    const joinedTs = member.joinedTimestamp ? Math.floor(member.joinedTimestamp / 1000) : null;
+    const isOwner = guild.ownerId === member.id;
+    const highestRole = member.roles?.highest || { name: '@everyone', position: 0 };
+
+    // Role hierarchy comparison
+    const botMember = guild.members?.me || (guild.members?.cache ? guild.members.cache.get(guild.client?.user?.id) : null);
+    const botHighest = botMember?.roles?.highest;
+    let hierarchyStatus = 'Standard hierarchy';
+    if (isOwner) {
+      hierarchyStatus = '👑 Server Owner (Protected from moderation/bot changes)';
+    } else if (botHighest) {
+      if (botHighest.position > highestRole.position) {
+        hierarchyStatus = `Manageable by Bot (Bot role position: ${botHighest.position} > ${highestRole.position})`;
+      } else {
+        hierarchyStatus = `⚠️ Above or equal to Bot role (Bot position: ${botHighest.position} ≤ ${highestRole.position} — Bot cannot modify this member)`;
+      }
+    }
+
+    // 3. Roles
+    const rawRoles = member.roles?.cache ? getCacheValues(member.roles.cache) : [];
+    const assignedRoles = rawRoles
+      .filter(r => r.id !== guild.id)
+      .sort((a, b) => (b.position || 0) - (a.position || 0));
+    const roleMentions = assignedRoles.map(r => `<@&${r.id}>`);
+    const roleNames = assignedRoles.map(r => `@${r.name}`);
+    const displayedRoles = roleMentions.length > 20
+      ? roleMentions.slice(0, 20).join(', ') + ` *...and ${roleMentions.length - 20} more*`
+      : (roleMentions.join(', ') || '*No roles assigned*');
+    const displayedRoleNames = roleNames.length > 20
+      ? roleNames.slice(0, 20).join(', ') + ` *...and ${roleNames.length - 20} more*`
+      : (roleNames.join(', ') || '*No roles assigned*');
+
+    // 4. Permissions (Guild vs Channel distinction)
+    const isAdmin = Boolean(member.permissions?.has?.(PermissionFlagsBits.Administrator));
+    const keyPermsList = [
+      { name: 'Administrator', flag: PermissionFlagsBits.Administrator },
+      { name: 'Manage Server', flag: PermissionFlagsBits.ManageGuild },
+      { name: 'Manage Roles', flag: PermissionFlagsBits.ManageRoles },
+      { name: 'Manage Channels', flag: PermissionFlagsBits.ManageChannels },
+      { name: 'Ban Members', flag: PermissionFlagsBits.BanMembers },
+      { name: 'Kick Members', flag: PermissionFlagsBits.KickMembers },
+      { name: 'Moderate Members (Timeout)', flag: PermissionFlagsBits.ModerateMembers },
+      { name: 'Manage Messages', flag: PermissionFlagsBits.ManageMessages },
+      { name: 'Manage Nicknames', flag: PermissionFlagsBits.ManageNicknames },
+      { name: 'Mention @everyone', flag: PermissionFlagsBits.MentionEveryone },
+      { name: 'View Audit Log', flag: PermissionFlagsBits.ViewAuditLog }
+    ];
+
+    const grantedGuildPerms = [];
+    for (const p of keyPermsList) {
+      if (typeof member.permissions?.has === 'function' && member.permissions.has(p.flag)) {
+        grantedGuildPerms.push(p.name);
+      }
+    }
+
+    let channelPermNote = '';
+    if (context?.channel && typeof member.permissionsIn === 'function') {
+      try {
+        const inChan = member.permissionsIn(context.channel);
+        const canSend = inChan.has(PermissionFlagsBits.SendMessages);
+        const canView = inChan.has(PermissionFlagsBits.ViewChannel);
+        channelPermNote = `\n• Channel-specific (<#${context.channel.id}>): View: ${canView ? '✅' : '❌'}, Send: ${canSend ? '✅' : '❌'}`;
+        if (isAdmin) {
+          channelPermNote += ' *(Administrator bypasses channel overwrites)*';
+        }
+      } catch {}
+    }
+
+    // 5. Moderation History from ActionLedger
+    let activeTimeoutNote = 'None (Active)';
+    if (member.communicationDisabledUntilTimestamp && member.communicationDisabledUntilTimestamp > Date.now()) {
+      const timeoutTs = Math.floor(member.communicationDisabledUntilTimestamp / 1000);
+      activeTimeoutNote = `⚠️ Active timeout until <t:${timeoutTs}:F> (<t:${timeoutTs}:R>)`;
+    }
+
+    ActionLedger.loadAllHistory();
+    const gLedger = ActionLedger.getGuildLedger(guild.id);
+    const memberActions = [];
+    if (gLedger) {
+      for (const [execId, acts] of gLedger.entries()) {
+        for (const act of acts) {
+          if (act.targetMemberId === member.id || act.targetMemberTag === member.user?.tag) {
+            memberActions.push(act);
+          }
+        }
+      }
+    }
+    memberActions.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+    let modHistorySummary = '';
+    if (memberActions.length > 0) {
+      const recent = memberActions.slice(0, 3).map(a => {
+        const ts = a.timestamp ? `<t:${Math.floor(a.timestamp / 1000)}:R>` : 'Recently';
+        const actName = (a.action || a.type || 'Action').replace(/_/g, ' ');
+        const reason = a.reason || a.args?.reason ? ` (Reason: "${a.reason || a.args?.reason}")` : '';
+        return `• **${actName}** ${ts}${reason}`;
+      }).join('\n');
+      modHistorySummary = `Recorded actions (${memberActions.length} total):\n${recent}`;
+    } else {
+      modHistorySummary = 'No moderation records found in Honey Bot log.\n*(Note: Actions taken outside bot commands or prior to bot installation are not tracked).*';
+    }
+
+    // 6. Status and Activity
+    const inVoice = member.voice?.channel ? `🔊 Connected to <#${member.voice.channel.id}> (${member.voice.channel.name})` : 'Not in voice';
+    const presenceStatus = member.presence?.status ? `Status: ${member.presence.status}` : 'Presence data unavailable (requires privileged Presence Gateway intent)';
+
+    // Build Discord Embed
+    const embed = new EmbedBuilder()
+      .setColor(0xFEE75C)
+      .setTitle(`Member Profile: ${displayName}`)
+      .setThumbnail(avatarUrl)
+      .addFields(
+        {
+          name: '👤 Identity',
+          value: `• **Global Username:** \`${globalUsername}\`\n` +
+                 `• **Server Nickname:** ${serverNickname ? `\`${serverNickname}\`` : '*None (using display name)*'}\n` +
+                 `• **Display Name:** **${displayName}**\n` +
+                 `• **User ID:** \`${member.id}\` (<@${member.id}>)\n` +
+                 `• **Account Type:** ${isBot ? '🤖 Bot Account' : '👤 Human User'}\n` +
+                 `• **Created:** ${accountCreatedTs ? `<t:${accountCreatedTs}:F> (<t:${accountCreatedTs}:R>)` : 'Unknown'}`,
+          inline: false
+        },
+        {
+          name: '🏰 Server Membership',
+          value: `• **Joined Server:** ${joinedTs ? `<t:${joinedTs}:F> (<t:${joinedTs}:R>)` : 'Unknown'}\n` +
+                 `• **Highest Role:** **${highestRole.name}** (Position: ${highestRole.position})\n` +
+                 `• **Hierarchy:** ${hierarchyStatus}`,
+          inline: false
+        },
+        {
+          name: `🛡️ Roles (${assignedRoles.length})`,
+          value: displayedRoles,
+          inline: false
+        },
+        {
+          name: '🔑 Key Permissions',
+          value: (grantedGuildPerms.length > 0 ? grantedGuildPerms.join(', ') : 'Standard member permissions') + channelPermNote,
+          inline: false
+        },
+        {
+          name: '📋 Moderation Status & History',
+          value: `• **Current Restriction:** ${activeTimeoutNote}\n• ${modHistorySummary}`,
+          inline: false
+        },
+        {
+          name: '📡 Status & Voice',
+          value: `• **Voice:** ${inVoice}\n• **Presence:** ${presenceStatus}`,
+          inline: false
+        }
+      )
+      .setFooter({ text: `Honey Bot Member Inspection • ID: ${member.id}` })
+      .setTimestamp();
+
+    // Clean Markdown string fallback for text-only contexts
+    const markdownDetails = `### 👤 Member Profile: **${displayName}**\n` +
+      `**Identity**\n` +
+      `• Global Username: \`${globalUsername}\`\n` +
+      `• Server Nickname: ${serverNickname ? `"${serverNickname}"` : '*None set*'}\n` +
+      `• Display Name: **${displayName}**\n` +
+      `• User ID: \`${member.id}\` (<@${member.id}>)\n` +
+      `• Account Type: ${isBot ? 'Bot Account 🤖' : 'Human User 👤'}\n` +
+      `• Created: ${accountCreatedTs ? `<t:${accountCreatedTs}:F>` : 'Unknown'}\n\n` +
+      `**Server Membership**\n` +
+      `• Joined: ${joinedTs ? `<t:${joinedTs}:F>` : 'Unknown'}\n` +
+      `• Highest Role: **${highestRole.name}** (Position: ${highestRole.position})\n` +
+      `• Hierarchy: ${hierarchyStatus}\n\n` +
+      `**Roles (${assignedRoles.length})**\n` +
+      `${displayedRoleNames}\n\n` +
+      `**Key Permissions**\n` +
+      `• Guild Permissions: ${grantedGuildPerms.length > 0 ? grantedGuildPerms.join(', ') : 'Standard member'}${channelPermNote}\n\n` +
+      `**Moderation Status & History**\n` +
+      `• Active Restriction: ${activeTimeoutNote}\n` +
+      `• ${modHistorySummary}\n\n` +
+      `**Voice & Activity**\n` +
+      `• Voice: ${inVoice}\n` +
+      `• Presence: ${presenceStatus}`;
+
     return {
       success: true,
       action: 'lookup_member',
-      details: `**User:** ${member.user.tag} (ID: ${member.id})\n` +
-        `**Joined Server:** ${member.joinedAt ? member.joinedAt.toLocaleDateString() : 'Unknown'}\n` +
-        `**Roles (${roles.length}):** ${roles.slice(0, 15).join(', ') || 'None'}`,
+      targetMemberId: member.id,
+      details: markdownDetails,
+      embed,
+      embeds: [embed],
       verified: true
     };
   }

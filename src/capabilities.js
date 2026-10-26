@@ -248,18 +248,18 @@ export const CAPABILITY_REGISTRY = {
   // =========================================================================
   lookup_member: {
     category: 'MEMBERS',
-    description: 'Looks up a member and displays essential roles and profile details.',
+    description: 'Inspects a member profile, identity, server membership, roles, permissions, hierarchy, and moderation history.',
     status: CapabilityStatus.IMPLEMENTED,
     requiredBotPermissions: [],
     requiredUserPermissions: [PermissionFlagsBits.Administrator],
     isDestructive: false,
     requiresConfirmation: false,
-    isReversible: true,
+    isReversible: false,
     verificationMethod: 'API_RESPONSE'
   },
   change_nickname: {
     category: 'MEMBERS',
-    description: 'Changes a member nickname.',
+    description: 'Changes a member server nickname.',
     status: CapabilityStatus.IMPLEMENTED,
     requiredBotPermissions: [PermissionFlagsBits.ManageNicknames],
     requiredUserPermissions: [PermissionFlagsBits.Administrator],
@@ -267,6 +267,28 @@ export const CAPABILITY_REGISTRY = {
     requiresConfirmation: false,
     isReversible: true,
     verificationMethod: 'MEMBER_NICKNAME_CHECK'
+  },
+  remove_nickname: {
+    category: 'MEMBERS',
+    description: 'Removes a member server nickname, resetting it to default display name.',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [PermissionFlagsBits.ManageNicknames],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: true,
+    verificationMethod: 'MEMBER_NICKNAME_CHECK'
+  },
+  inspect_nickname: {
+    category: 'MEMBERS',
+    description: 'Inspects a member server nickname and global username (read-only).',
+    status: CapabilityStatus.IMPLEMENTED,
+    requiredBotPermissions: [],
+    requiredUserPermissions: [PermissionFlagsBits.Administrator],
+    isDestructive: false,
+    requiresConfirmation: false,
+    isReversible: false,
+    verificationMethod: 'API_RESPONSE'
   },
   timeout_member: {
     category: 'MEMBERS',
@@ -563,6 +585,11 @@ export const RESTRICTED_OPERATIONS = [
     operation: 'grant_administrator_permission',
     reason: 'Granting Administrator permissions via the automated agent is blocked to prevent privilege escalation.',
     status: CapabilityStatus.BLOCKED_BY_POLICY
+  },
+  {
+    operation: 'modify_global_account',
+    reason: 'Bots cannot modify a user\'s global Discord username, email address, password, or private account settings. Server-specific nicknames can be managed instead via change_nickname.',
+    status: CapabilityStatus.DISCORD_RESTRICTED
   }
 ];
 
@@ -581,5 +608,9 @@ export const UNSUPPORTED_DISCORD_OPERATIONS = [
   {
     pattern: /(install|add)\s+((an|another|external)\s+)?bot/i,
     reason: 'Discord API requires human OAuth2 authorization to add bots. Bots cannot directly install other bots without an administrator visiting the bot\'s official OAuth2 URL.'
+  },
+  {
+    pattern: /(?:change|set|update|modify)\s+(?:.*['’]s\s+|my\s+)?(?:global\s+)?(?:discord\s+username|username\s+globally|global\s+tag|email|password|account\s+settings)/i,
+    reason: 'Discord API prohibits bots from modifying a user\'s global Discord username, email, password, or account settings. You can manage server-specific nicknames using "/go Change [user]\'s nickname to [name]".'
   }
 ];

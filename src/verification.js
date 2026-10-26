@@ -264,7 +264,8 @@ export class Verifier {
           };
         }
 
-        case 'change_nickname': {
+        case 'change_nickname':
+        case 'remove_nickname': {
           const targetRef = actionObj.targetMember;
           const member = guild.members?.cache?.find(m => m.id === targetRef || m.user?.username?.toLowerCase() === String(targetRef).toLowerCase() || m.displayName?.toLowerCase() === String(targetRef).toLowerCase());
           if (!member) {
@@ -272,13 +273,13 @@ export class Verifier {
               action: actionObj.action,
               status: 'COMPLETED',
               verificationStatus: VerificationStatus.PASSED,
-              intendedChange: `Change nickname`,
+              intendedChange: actionObj.action === 'remove_nickname' ? 'Remove nickname' : `Change nickname`,
               observedOutcome: executionResult.details || 'Nickname updated',
               verified: true,
               details: executionResult.details || 'Nickname updated'
             };
           }
-          const expectedNick = actionObj.nickname || null;
+          const expectedNick = actionObj.action === 'remove_nickname' ? null : (actionObj.nickname || null);
           const currentNick = member.nickname || null;
           const matches = expectedNick === null ? (currentNick === null) : (currentNick === expectedNick);
           return {
@@ -289,6 +290,20 @@ export class Verifier {
             observedOutcome: currentNick ? `Nickname is "${currentNick}"` : 'Nickname is default username',
             verified: matches,
             details: matches ? (executionResult.details || `Nickname verified as "${currentNick || member.user.username}"`) : `Nickname mismatch: expected "${expectedNick}", observed "${currentNick}"`
+          };
+        }
+
+        case 'inspect_nickname':
+        case 'lookup_member': {
+          const verified = Boolean(executionResult.success);
+          return {
+            action: actionObj.action,
+            status: verified ? 'COMPLETED' : 'FAILED',
+            verificationStatus: verified ? VerificationStatus.PASSED : VerificationStatus.FAILED,
+            intendedChange: `Inspect member details`,
+            observedOutcome: executionResult.details || 'Member details retrieved',
+            verified,
+            details: executionResult.details || 'Member details retrieved'
           };
         }
 

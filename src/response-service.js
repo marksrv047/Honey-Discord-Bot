@@ -388,6 +388,20 @@ export class ResponseService {
         return `Changed nickname for ${member} to "${nick}".`;
       }
 
+      case 'remove_nickname': {
+        const snowflake = ResponseService.extractSnowflake(details.targetMemberId || details.resourceId || details.targetMember);
+        const member = snowflake ? `<@${snowflake}>` : `@${String(details.targetMember || 'member').replace(/^@/, '')}`;
+        return `Removed server nickname for ${member}.`;
+      }
+
+      case 'inspect_nickname': {
+        return details.details ? cleanText(details.details) : 'Inspected nickname.';
+      }
+
+      case 'lookup_member': {
+        return details.details ? cleanText(details.details) : 'Retrieved member profile.';
+      }
+
       case 'setup_ticket_system': {
         const chSnowflake = ResponseService.extractSnowflake(details.targetChannelId || details.resourceId);
         if (chSnowflake) return `Ticket system configured in <#${chSnowflake}>.`;
@@ -493,10 +507,11 @@ export class ResponseService {
 
     const mergedDetails = { ...details, ...opResult };
     const text = ResponseService.formatSuccess(action, mergedDetails);
+    const embeds = opResult.embeds || (opResult.embed ? [opResult.embed] : []);
     return {
       outcomeClass: OutcomeClass.SUCCESS,
       content: text,
-      embeds: [],
+      embeds,
       allowedMentions: ResponseService.getAllowedMentions()
     };
   }

@@ -182,8 +182,19 @@ export const UnbanMemberSchema = z.object({
 export const ChangeNicknameSchema = z.object({
   action: z.literal('change_nickname'),
   targetMember: z.string().min(1),
-  nickname: z.string().max(32).nullable().optional(),
+  nickname: z.string().min(1, 'Nickname cannot be empty').max(32, 'Discord nicknames cannot exceed 32 characters'),
   reason: z.string().max(512).optional().default('Nickname changed via /go agent')
+});
+
+export const RemoveNicknameSchema = z.object({
+  action: z.literal('remove_nickname'),
+  targetMember: z.string().min(1),
+  reason: z.string().max(512).optional().default('Nickname removed via /go agent')
+});
+
+export const InspectNicknameSchema = z.object({
+  action: z.literal('inspect_nickname'),
+  targetMember: z.string().min(1)
 });
 
 export const SetupTicketSystemSchema = z.object({
@@ -364,6 +375,8 @@ export const ActionSchema = z.discriminatedUnion('action', [
   BanMemberSchema,
   UnbanMemberSchema,
   ChangeNicknameSchema,
+  RemoveNicknameSchema,
+  InspectNicknameSchema,
   SetupTicketSystemSchema,
   AuditServerSchema,
   SetupRoleMenuSchema,

@@ -794,6 +794,7 @@ RecoveryRegistry.register('change_nickname', {
   }
 });
 RecoveryRegistry.register('nickname_change', RecoveryRegistry.getHandler('change_nickname'));
+RecoveryRegistry.register('remove_nickname', RecoveryRegistry.getHandler('change_nickname'));
 
 // 9. Ban member recovery (unban)
 RecoveryRegistry.register('ban_member', {

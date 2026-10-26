@@ -1,6 +1,7 @@
 import { ChannelType, PermissionFlagsBits } from 'discord.js';
 import { ActionLedger } from './recovery.js';
 import { Logger } from './logger.js';
+import { MemberResolver } from './member-resolver.js';
 
 const logger = new Logger('ExecutionContext');
 
@@ -251,64 +252,7 @@ export class ExecutionContext {
       }
 
       case 'member': {
-        // Targeted ID lookup
-        if (isSnowflake && this.guild.members?.cache) {
-          resolved = this.guild.members.cache.get(cleanId);
-          if (!resolved && typeof this.guild.members?.fetch === 'function') {
-            try {
-              resolved = await this.guild.members.fetch(cleanId);
-            } catch (err) {
-              logger.debug(`Targeted member fetch failed for ID ${cleanId}: ${err.message}`);
-            }
-          }
-        }
-
-        // Targeted Username lookup with ambiguity detection
-        if (!resolved && this.guild.members?.cache) {
-          const cleanUsername = refStr.replace(/^@/, '').toLowerCase();
-          const normRef = normalizeName(cleanUsername);
-
-          const matches = findMultipleInCache(this.guild.members.cache, m => 
-            m.user?.username?.toLowerCase() === cleanUsername || 
-            m.displayName?.toLowerCase() === cleanUsername ||
-            normalizeName(m.user?.username) === normRef ||
-            normalizeName(m.displayName) === normRef
-          );
-
-          if (matches.length > 1) {
-            // Ambiguity detected: do not arbitrarily pick one
-            return {
-              isAmbiguous: true,
-              candidateCount: matches.length,
-              name: refStr.replace(/^@/, ''),
-              clarificationQuestion: `I found ${matches.length} members named ${refStr.replace(/^@/, '')}. Which one did you mean?`
-            };
-          }
-
-          if (matches.length === 1) {
-            resolved = matches[0];
-          }
-
-          if (!resolved && typeof this.guild.members?.fetch === 'function') {
-            try {
-              const fetched = await this.guild.members.fetch({ query: cleanUsername, limit: 5 });
-              const members = getCacheValues(fetched);
-
-              if (members.length > 1) {
-                return {
-                  isAmbiguous: true,
-                  candidateCount: members.length,
-                  name: refStr.replace(/^@/, ''),
-                  clarificationQuestion: `I found ${members.length} members named ${refStr.replace(/^@/, '')}. Which one did you mean?`
-                };
-              }
-
-              resolved = members[0] || null;
-            } catch (err) {
-              logger.debug(`Member query fetch failed: ${err.message}`);
-            }
-          }
-        }
+        resolved = await MemberResolver.resolveMember(this.guild, refStr, this);
         break;
       }
     }

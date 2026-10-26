@@ -315,6 +315,18 @@ export function formatSingleOutcome(intentOrAction, opResult, details = {}) {
       return `Changed nickname for ${member} to "${nick}".`;
     }
 
+    case 'remove_nickname': {
+      const snowflake = extractSnowflake(details.targetMemberId || details.resourceId) || extractSnowflake(details.targetMember);
+      const member = snowflake ? `<@${snowflake}>` : `@${String(details.targetMember || 'member').replace(/^@/, '')}`;
+      return `Removed server nickname for ${member}.`;
+    }
+
+    case 'inspect_nickname':
+    case 'lookup_member': {
+      if (opResult.details) return opResult.details;
+      return 'Member details retrieved.';
+    }
+
     case 'purge_messages': {
       const count = opResult.deletedCount !== undefined ? opResult.deletedCount : (details.count || details.args?.count || 5);
       const chSnowflake = extractSnowflake(details.targetChannelId || details.resourceId) || extractSnowflake(details.targetRef);

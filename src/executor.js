@@ -451,9 +451,26 @@ export class Executor {
       case 'change_nickname': {
         const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
           invokingUser: invokingMember.user,
-          resolveTarget: async (ref) => /me|my|myself|self|i/i.test(ref) ? invokingMember : guild.members.cache.find(m => m.id === ref || m.user?.username.toLowerCase() === String(ref).toLowerCase())
+          resolveTarget: async (ref) => /me|my|myself|self|i/i.test(ref) ? invokingMember : guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase() || m.displayName?.toLowerCase() === String(ref).toLowerCase())
         };
-        return await Operations.changeNickname(guild, action.targetMember, action.nickname, ctx);
+        const requestedNick = action.nickname ?? action.newNickname ?? action.name;
+        return await Operations.changeNickname(guild, action.targetMember || action.targetRef, requestedNick, ctx);
+      }
+
+      case 'remove_nickname': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => /me|my|myself|self|i/i.test(ref) ? invokingMember : guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase() || m.displayName?.toLowerCase() === String(ref).toLowerCase())
+        };
+        return await Operations.removeNickname(guild, action.targetMember || action.targetRef, ctx);
+      }
+
+      case 'inspect_nickname': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember.user,
+          resolveTarget: async (ref) => /me|my|myself|self|i/i.test(ref) ? invokingMember : guild.members.cache.find(m => m.id === ref || m.user?.username?.toLowerCase() === String(ref).toLowerCase() || m.displayName?.toLowerCase() === String(ref).toLowerCase())
+        };
+        return await Operations.inspectNickname(guild, action.targetMember || action.targetRef, ctx);
       }
 
       case 'setup_ticket_system': {
@@ -667,7 +684,13 @@ export class Executor {
         return await Operations.editRole(guild, intentObj.targetRef || intentObj.args?.targetRole, intentObj.args, executionContext);
 
       case 'change_nickname':
-        return await Operations.changeNickname(guild, intentObj.targetRef, intentObj.args.nickname, executionContext);
+        return await Operations.changeNickname(guild, intentObj.targetRef || intentObj.args?.targetMember, intentObj.args?.nickname ?? intentObj.args?.newNickname ?? intentObj.args?.name, executionContext);
+
+      case 'remove_nickname':
+        return await Operations.removeNickname(guild, intentObj.targetRef || intentObj.args?.targetMember, executionContext);
+
+      case 'inspect_nickname':
+        return await Operations.inspectNickname(guild, intentObj.targetRef || intentObj.args?.targetMember, executionContext);
 
       case 'send_announcement':
         return await Operations.sendAnnouncement(guild, intentObj.targetRef, {

@@ -165,23 +165,36 @@ export class CompletenessChecker {
     // 4. NICKNAME ACCURACY & REMOVAL INVARIANTS
     // "Distinguish member's server nickname from global Discord username. Handle removal as distinct operation."
     // =========================================================================
-    const isNicknameRequest = /(?:change|set|rename|update|remove|reset|clear)\s+(?:my\s+|[\w.-]+'s\s+)?(?:server\s+)?nickname/i.test(prompt);
+    const isDirectRename = /^rename\s+(?:user\s+|member\s+)?(<@!?\d+>|@?[\w.-]+)\s+to\s+["']?([^"']+)["']?$/i.test(prompt);
+    const isNicknameRequest = /(?:change|set|rename|update|remove|reset|clear|inspect|what\s+is)\s+(?:my\s+|[\w.-]+'s\s+)?(?:server\s+)?nickname/i.test(prompt) ||
+      /(?:change|set|rename|update|remove|reset|clear)\s+(?:the\s+)?(?:server\s+)?nickname\s+(?:of|for)/i.test(prompt) ||
+      isDirectRename;
 
     if (isNicknameRequest) {
-      const isMyNickname = /(?:my\s+(?:server\s+)?nickname|nickname\s+for\s+me|my\s+name\s+to)/i.test(prompt);
-      const isRemoval = /(?:remove|reset|clear)\s+(?:[\w.-]+'s\s+|my\s+)?(?:server\s+)?nickname/i.test(prompt);
+      const isMyNickname = /(?:my\s+(?:server\s+)?nickname|nickname\s+for\s+me|rename\s+me\s+to)/i.test(prompt);
+      const isRemoval = /(?:remove|reset|clear)\s+(?:[\w.-]+'s\s+|my\s+)?(?:server\s+)?nickname/i.test(prompt) ||
+        /(?:remove|reset|clear)\s+(?:the\s+)?(?:server\s+)?nickname\s+(?:of|for)/i.test(prompt);
+      const isInspection = /(?:what\s+is|show|inspect|check|view|get)\s+(?:[\w.-]+'s\s+|my\s+)?(?:current\s+)?(?:server\s+)?nickname/i.test(prompt) ||
+        /(?:what\s+is|show|inspect|check|view|get)\s+(?:the\s+)?(?:current\s+)?(?:server\s+)?nickname\s+(?:of|for)/i.test(prompt);
 
       let targetMember = isMyNickname ? 'me' : null;
       if (!targetMember) {
-        const memberMatch = prompt.match(/(?:change|set|rename|update|remove|reset|clear)\s+(<@!?\d+>|@?[\w.-]+)'s\s+(?:server\s+)?nickname/i) ||
-                            prompt.match(/(?:nickname\s+of\s+(?:the\s+member\s+)?(?:i\s+just\s+mentioned|(?<target><@!?\d+>|@?[\w.-]+)))/i);
-        if (memberMatch) {
+        const directMatch = prompt.match(/^rename\s+(?:user\s+|member\s+)?(<@!?\d+>|@?[\w.-]+)\s+to\s+/i);
+        const memberMatch = prompt.match(/(?:change|set|rename|update|remove|reset|clear|inspect|what\s+is)\s+(<@!?\d+>|@?[\w.-]+)['’]s\s+(?:server\s+)?nickname/i) ||
+                            prompt.match(/(?:nickname\s+of\s+(?:the\s+member\s+)?(?:i\s+just\s+mentioned|(?<target><@!?\d+>|@?[\w.-]+)))/i) ||
+                            prompt.match(/(?:nickname\s+(?:of|for)\s+(?<target><@!?\d+>|@?[\w.-]+))/i);
+        if (directMatch) {
+          const cand = directMatch[1].replace(/^@/, '');
+          if (!/^channel$|^this|^role$|^server$/i.test(cand) && !cand.startsWith('#')) {
+            targetMember = cand;
+          }
+        } else if (memberMatch) {
           targetMember = (memberMatch.groups?.target || memberMatch[1]).replace(/^@/, '');
         }
       }
 
       let newNickname = null;
-      if (!isRemoval) {
+      if (!isRemoval && !isInspection) {
         const nickMatch = prompt.match(/(?:to|as)\s+["']?([^"']+)["']?$/i) ||
                           prompt.match(/(?:to|as)\s+([a-zA-Z0-9_\s-]+?)(?:\s+in\s+this\s+server|$)/i);
         if (nickMatch) {
@@ -189,25 +202,49 @@ export class CompletenessChecker {
         }
       }
 
-      // Ensure nickname action exists and adheres to exact parameters
-      const existingNickIdx = actions.findIndex(a => a.action === 'change_nickname');
-      if (existingNickIdx >= 0) {
-        const act = { ...actions[existingNickIdx] };
-        if (targetMember && (!act.targetMember || act.targetMember === 'current')) {
-          act.targetMember = targetMember;
+      if (isRemoval) {
+        // Enforce remove_nickname action
+        const existingRemIdx = actions.findIndex(a => a.action === 'remove_nickname' || a.action === 'change_nickname');
+        if (existingRemIdx >= 0) {
+          actions[existingRemIdx] = {
+            action: 'remove_nickname',
+            targetMember: targetMember || actions[existingRemIdx].targetMember || 'me'
+          };
+        } else if (targetMember) {
+          actions.push({ action: 'remove_nickname', targetMember });
         }
-        if (isRemoval) {
-          act.nickname = null;
-        } else if (newNickname && !act.nickname) {
-          act.nickname = newNickname;
+      } else if (isInspection) {
+        const existingInspIdx = actions.findIndex(a => a.action === 'inspect_nickname');
+        if (existingInspIdx >= 0) {
+          actions[existingInspIdx] = {
+            action: 'inspect_nickname',
+            targetMember: targetMember || actions[existingInspIdx].targetMember || 'me'
+          };
+        } else if (targetMember) {
+          actions.push({ action: 'inspect_nickname', targetMember });
         }
-        actions[existingNickIdx] = act;
-      } else if (targetMember) {
-        actions.push({
-          action: 'change_nickname',
-          targetMember,
-          nickname: isRemoval ? null : (newNickname || 'Member')
-        });
+      } else {
+        // Nickname replacement: MUST have target and replacement nickname
+        if (!newNickname) {
+          // If user asked to change nickname without specifying replacement value, do not wipe it!
+          errors.push('No replacement nickname specified. Please provide the new nickname to set (e.g. "Rename Alex to Night Owl").');
+        } else {
+          const existingNickIdx = actions.findIndex(a => a.action === 'change_nickname');
+          if (existingNickIdx >= 0) {
+            const act = { ...actions[existingNickIdx] };
+            if (targetMember && (!act.targetMember || act.targetMember === 'current')) {
+              act.targetMember = targetMember;
+            }
+            act.nickname = newNickname;
+            actions[existingNickIdx] = act;
+          } else if (targetMember) {
+            actions.push({
+              action: 'change_nickname',
+              targetMember,
+              nickname: newNickname
+            });
+          }
+        }
       }
     }
 
