@@ -6,6 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node --dns-result-order=ipv4first bot.js",
+    "start:server": "node --dns-result-order=ipv4first bot.js",
+    "start:watch": "node --watch --dns-result-order=ipv4first bot.js",
     "deploy": "node deploy-commands.js",
     "test": "node --test tests/**/*.test.js"
   },

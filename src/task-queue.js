@@ -6,6 +6,7 @@ import { ChannelType } from 'discord.js';
 import { Logger } from './logger.js';
 import { ModLogService } from './mod-log.js';
 import { classifyDiscordError } from './recovery.js';
+import { SelfRoleManager } from './self-roles.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,9 +45,11 @@ export const TaskQueueState = {
 export const TaskActionStatus = {
   PENDING: 'pending',
   RUNNING: 'running',
+  RETRYING: 'retrying',
   SUCCEEDED: 'succeeded',
   FAILED: 'failed',
   SKIPPED: 'skipped',
+  COMPENSATING: 'compensating',
   UNCERTAIN: 'uncertain',
   UNVERIFIED: 'unverified'
 };
@@ -505,6 +508,22 @@ export class TaskQueue {
       task.currentActionIndex = i;
       const actionItem = task.actions[i];
 
+      // 0. If this step already succeeded in a prior run/retry, preserve outcome
+      if (actionItem.status === TaskActionStatus.SUCCEEDED) {
+        anySuccess = true;
+        continue;
+      }
+
+      // Resolve dynamic parameter references from prior steps
+      if (task.createdResources) {
+        for (const [key, val] of Object.entries(actionItem.args || {})) {
+          if (typeof val === 'string' && val.startsWith('$step_')) {
+            const resolved = task.createdResources[val];
+            if (resolved) actionItem.args[key] = resolved;
+          }
+        }
+      }
+
       // 1. Check dependencies: Every prerequisite step in dependsOn must be SUCCEEDED
       const unfulfilledPrereq = actionItem.dependsOn.find(depId => {
         const depAct = task.actions.find(a => a.id === depId);
@@ -550,6 +569,10 @@ export class TaskQueue {
 
       while (attempt <= maxRetries) {
         attempt++;
+        if (attempt > 1) {
+          actionItem.status = TaskActionStatus.RETRYING;
+          this.persistAllTasks();
+        }
         try {
           // Check Discord idempotency before calling mutation
           const alreadyDone = await this._checkPreExistingOutcome(guild, actionItem);
@@ -595,6 +618,12 @@ export class TaskQueue {
         actionItem.result = outcome;
         actionItem.completedAt = Date.now();
         anySuccess = true;
+
+        if (!task.createdResources) task.createdResources = {};
+        if (outcome.roleId) task.createdResources[`${actionItem.id}.roleId`] = outcome.roleId;
+        if (outcome.channelId) task.createdResources[`${actionItem.id}.channelId`] = outcome.channelId;
+        if (outcome.panelId) task.createdResources[`${actionItem.id}.panelId`] = outcome.panelId;
+        if (outcome.messageId) task.createdResources[`${actionItem.id}.messageId`] = outcome.messageId;
 
         if (outcome.resource) {
           task.recoverableState.push(outcome.resource);
@@ -733,6 +762,23 @@ export class TaskQueue {
         return {
           success: true,
           details: `Slowmode for #${targetCh.name} is already set to ${args.seconds}s.`
+        };
+      }
+    }
+
+    // Check Self-Role Panel Idempotency
+    if (action === 'setup_role_panel' || action === 'setup_role_menu') {
+      const panelTitle = args?.title || 'Self-Assignable Roles';
+      const existingPanel = SelfRoleManager.getGuildPanels(guild.id).find(
+        p => p.title.toLowerCase() === panelTitle.toLowerCase()
+      );
+      if (existingPanel) {
+        return {
+          success: true,
+          details: `Self-role panel "${existingPanel.title}" already exists (idempotent reuse)`,
+          panelId: existingPanel.panelId,
+          messageId: existingPanel.messageId,
+          channelId: existingPanel.channelId
         };
       }
     }

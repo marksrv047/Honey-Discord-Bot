@@ -124,11 +124,11 @@ test('4. Core Language: Normalizes typos, contractions, slang, and speech-to-tex
   assert.equal(CoreLanguage.SLANG_AND_COLLOQUIALISMS['spin'].canonical, 'music_play');
 });
 
-test('5. Command Interpretation: Preserves exactly 5 registered slash commands', () => {
+test('5. Command Interpretation: Preserves registered slash commands', () => {
   const commands = CommandInterpretation.REGISTERED_SLASH_COMMANDS;
   const commandKeys = Object.keys(commands);
-  assert.equal(commandKeys.length, 5);
-  assert.deepEqual(commandKeys.sort(), ['diagnose', 'go', 'help', 'modlog', 'undo']);
+  assert.equal(commandKeys.length, 6);
+  assert.deepEqual(commandKeys.sort(), ['diagnose', 'go', 'help', 'honeypot', 'modlog', 'undo']);
 
   // Routes natural phrases to commands
   assert.equal(CommandInterpretation.interpretCommandRoute('diagnose bot').command, '/diagnose');

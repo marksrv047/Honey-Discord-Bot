@@ -2,6 +2,8 @@ import { EmbedBuilder } from 'discord.js';
 import { AIProvider } from './ai-provider.js';
 import { CapabilityRegistry, CAPABILITY_CATEGORIES, REGISTERED_SLASH_COMMANDS } from './capabilities.js';
 import { ResponseService } from './response-service.js';
+import { config } from './config.js';
+import { PermissionAuditService } from './permission-audit.js';
 
 export const DEFAULT_HELP_TEXT = `**Meet Honey Bot**
 
@@ -16,6 +18,7 @@ Just choose the command that matches your goal, then describe what you want in t
 • \`/diagnose\` — Check the bot's health. Example: "Check whether the bot can access its configured channels."
 • \`/undo\` — Reverse a supported action when it is safe and possible. Example: "Undo my last channel rename."
 • \`/help\` — Learn how to use Honey Bot. Ask a question or view this guide.
+• \`/honeypot\` — Configure, inspect, enable, disable, and safely test honeypot decoy channels.
 
 **Getting started**
 
@@ -30,19 +33,22 @@ Just choose the command that matches your goal, then describe what you want in t
 • You can phrase requests naturally; exact wording is not required.
 • Honey Bot can perform only actions it supports and is authorized to perform.
 • Some actions require permissions or confirmation.
+• **Installation & Setup:** Use \`/go prompt: setup\` or \`/diagnose prompt: permissions\` to view the interactive Setup Panel, audit bot permissions, and access official OAuth2 authorization links.
+• **Role Hierarchy:** Discord requires Honey Bot's role to be dragged above any roles it manages in Server Settings > Roles.
 • Moderation actions and supported administrative events can be recorded in a server's configured mod-log channel.
 • If something fails, Honey Bot will explain why and suggest the next step.
 
-**Try asking:** "Help me set up moderation logging", "What can you do?", or "Check whether the bot is working".`;
+**Try asking:** "Help me set up moderation logging", "Show setup panel", "What can you do?", or "Check bot permissions".`;
 
 const HELP_QA_PROMPT = `
 You are the Honey Bot Help Assistant.
-Honey Bot is a secure, natural-language Discord administration and moderation bot with exactly five slash commands:
+Honey Bot is a secure, natural-language Discord administration and moderation bot with six slash commands:
 1. /go: Natural-language execution of supported Discord actions.
-   - Channels: Create, delete, edit, move, rename, lock/unlock, set slowmode, and configure channel permission overwrites.
-   - Roles: Create, edit, delete, assign, remove, and self-assignable role menus.
+   - Channels: Create, delete, edit, move, rename, lock/unlock, set slowmode, configure channel permission overwrites, and channel presets (rules, welcome, staff).
+   - Roles: Create, edit, delete, assign, remove, and persistent self-assignable role panels (buttons, select menus, reaction roles).
+   - Embeds & Messages: Create and publish rich embeds with templates (announcements, rules, welcome, FAQ, events), fields, footers, timestamps, buttons, and edit bot-authored embeds.
    - Moderation: Timeout, remove timeout, kick, ban, unban, change nickname, purge messages (1-100 limit, 14-day Discord restriction).
-   - Community: Announcements, messages, pins, ticket systems, and security audits.
+   - Community: Announcements, messages, pins, ticket systems, self-role panels, and security audits.
    - Music & Audio: Stream tracks and search YouTube/SoundCloud in voice channels (/go prompt: play <song>, pause, resume, skip, queue, np, volume, stop).
 2. /modlog: Free-form moderation log management.
    - Configure log channel, inspect status, test delivery, enable/disable, and troubleshoot permissions.
@@ -51,6 +57,8 @@ Honey Bot is a secure, natural-language Discord administration and moderation bo
 4. /undo: Rollback of recent reversible actions (channels created, roles created, channel renames).
    - Bans, kicks, purges, and channel deletions are consequential and cannot be reversed via /undo.
 5. /help: Introductory guide and capability assistance with an optional natural-language prompt.
+6. /honeypot: Decoy channel defense for detecting compromised accounts and scam bots.
+   - Setup, inspect status, enable/disable, and safely test honeypot channels.
 
 CRITICAL RULES:
 1. NEVER output internal action names as slash commands (e.g. NEVER say /timeout_member or /rename_channel).
@@ -79,7 +87,7 @@ export class HelpManager {
       .addFields([
         {
           name: 'Core Registered Slash Commands',
-          value: '• `/go` (required prompt)\n• `/modlog` (required prompt)\n• `/diagnose` (optional prompt)\n• `/undo` (optional prompt)\n• `/help` (optional prompt)'
+          value: '• `/go` (required prompt)\n• `/modlog` (required prompt)\n• `/diagnose` (optional prompt)\n• `/undo` (optional prompt)\n• `/help` (optional prompt)\n• `/honeypot` (interactive subcommands)'
         },
         {
           name: 'Supported Capability Categories',
@@ -104,7 +112,7 @@ export class HelpManager {
     const sections = [
       '**Honey Bot Authoritative Capability Catalog**',
       'All administrative capabilities are invoked through the `/go` command using everyday English.',
-      'Honey Bot has exactly five top-level slash commands: `/go`, `/modlog`, `/diagnose`, `/undo`, `/help`.',
+      'Honey Bot has six top-level slash commands: `/go`, `/modlog`, `/diagnose`, `/undo`, `/help`, and `/honeypot`.',
       ''
     ];
 
@@ -223,6 +231,23 @@ export class HelpManager {
         '**Category Management**\n' +
         catBullets + '\n\n' +
         '*Requires `ManageChannels` permission. Rate limit: Discord allows up to 2 channel renames per 10 minutes per channel.*'
+      );
+    }
+
+    // 5b. Bot installation, OAuth2 invite link, and permissions
+    if (/(?:invite|install|oauth|authorization|how\s+to\s+add|permission\s+set|bot\s+link)/i.test(qLower)) {
+      const clientId = config.discord.clientId || '<YOUR_CLIENT_ID>';
+      const inviteUrl = `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(clientId)}&scope=bot%20applications.commands&permissions=${PermissionAuditService.calculatePermissionBits('recommended')}`;
+      return (
+        '**Official Discord OAuth2 Installation & Permissions**\n\n' +
+        'Add Honey Bot to your server using the official Discord OAuth2 authorization URL:\n' +
+        `• **Official Invite Link:** [Authorize Honey Bot](${inviteUrl})\n\n` +
+        '**Permission Philosophy:**\n' +
+        '• **Least-Privilege by Default:** Honey Bot requests only granular permissions needed for its features (View Channels, Send Messages, Embed Links, Manage Channels, Manage Roles, Moderation, and Music).\n' +
+        '• **No Administrator by Default:** Honey Bot operates with least-privilege access and does not require Administrator.\n' +
+        '• **Role Hierarchy:** Discord strictly prevents any bot from modifying roles above its own highest role. Drag Honey Bot\'s role above managed roles in **Server Settings > Roles**.\n' +
+        '• **Privileged Gateway Intents:** Enable **Server Members Intent** and **Message Content Intent** in the Discord Developer Portal.\n\n' +
+        '*Run `/diagnose prompt: permissions` to inspect live permission health in this server.*'
       );
     }
 
@@ -365,8 +390,28 @@ export class HelpManager {
     }
 
     // 16. Music playback features
-    if (/\b(?:music|play\s+song|songs?|audio\s+stream(?:ing)?|voice\s+playback)\b/i.test(qLower)) {
-      return 'Honey Bot includes a built-in voice music system. You can stream tracks and control playback using `/go`:\n• `/go prompt: play <song or URL>` — Play a song or search query in your voice channel\n• `/go prompt: pause` / `resume` — Pause or resume playback\n• `/go prompt: skip` — Skip to the next track in queue\n• `/go prompt: queue` — View the current song queue\n• `/go prompt: np` — Show currently playing track\n• `/go prompt: volume <0-150>` — Adjust playback volume\n• `/go prompt: stop` — Stop music and disconnect from voice';
+    if (/\b(?:music|play\s+song|songs?|audio\s+stream(?:ing)?|voice\s+playback|music\s+help|music\s+capabilities?)\b/i.test(qLower)) {
+      return (
+        '**Honey Bot Music Engine & Voice Playback Capabilities**\n\n' +
+        'Honey Bot includes a high-fidelity, verified audio streaming engine for Discord voice channels:\n\n' +
+        '• **Supported Sources**:\n' +
+        '  - **YouTube**: Track URLs (`youtube.com`, `youtu.be`, `music.youtube.com`, Shorts), video IDs, and keyword searches with artist/title matching.\n' +
+        '  - **SoundCloud**: Track URLs (`https://soundcloud.com/...`).\n' +
+        '  - **Direct Audio Links**: Direct `.mp3`, `.ogg`, `.wav`, `.aac`, `.flac`, `.opus` audio streams.\n\n' +
+        '• **Playback Controls (`/go prompt: <action>`)**:\n' +
+        '  - `/go prompt: play <song or URL>` — Connects and streams music with verified playback\n' +
+        '  - `/go prompt: pause` / `/go prompt: resume` — Pause or resume playback\n' +
+        '  - `/go prompt: skip` — Skip to the next track in queue\n' +
+        '  - `/go prompt: queue` — View the current song queue\n' +
+        '  - `/go prompt: np` — Show currently playing track with live progress bar\n' +
+        '  - `/go prompt: volume <0-150>` — Adjust playback volume\n' +
+        '  - `/go prompt: shuffle` — Randomize upcoming tracks in queue\n' +
+        '  - `/go prompt: loop [off|track|queue]` — Configure single-track or full-queue repeat\n' +
+        '  - `/go prompt: clear queue` — Empty all pending tracks from the queue\n' +
+        '  - `/go prompt: stop` / `leave` — Stop music and disconnect from voice\n' +
+        '  - `/go prompt: music help` — Display the interactive Music Capability Embed\n\n' +
+        '*Requirements: You must be in a voice channel, and the bot requires `Connect` and `Speak` permissions.*'
+      );
     }
 
     // 17. Unsupported features (economy, leveling, gambling, hacking)

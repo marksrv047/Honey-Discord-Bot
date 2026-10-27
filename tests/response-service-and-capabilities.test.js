@@ -202,9 +202,9 @@ test('12. /go capability discovery uses the same source of truth', async () => {
 
 test('13. Internal action IDs are not displayed as real slash commands', () => {
   const slashCmds = CapabilityRegistry.getRegisteredSlashCommands();
-  assert.equal(slashCmds.length, 5);
+  assert.equal(slashCmds.length, 6);
   const names = slashCmds.map(c => c.name);
-  assert.deepEqual(names.sort(), ['/diagnose', '/go', '/help', '/modlog', '/undo'].sort());
+  assert.deepEqual(names.sort(), ['/diagnose', '/go', '/help', '/honeypot', '/modlog', '/undo'].sort());
 
   // Verify internal names are never in registered slash commands
   assert.ok(!names.includes('/timeout_member'));
@@ -385,10 +385,10 @@ test('23. Existing logging, undo, and security behavior remains intact', () => {
 // SECTION 4: INTEGRATION TESTS (Points 24 - 26)
 // =========================================================================
 
-test('24. All five top-level slash commands remain unchanged', () => {
-  assert.equal(slashCommands.length, 5);
+test('24. Registered slash commands remain intact', () => {
+  assert.equal(slashCommands.length, 6);
   const cmdNames = slashCommands.map(c => c.name);
-  assert.deepEqual(cmdNames.sort(), ['diagnose', 'go', 'help', 'modlog', 'undo'].sort());
+  assert.deepEqual(cmdNames.sort(), ['diagnose', 'go', 'help', 'honeypot', 'modlog', 'undo'].sort());
 
   const goCmd = slashCommands.find(c => c.name === 'go');
   assert.equal(goCmd.options.length, 1);

@@ -22,8 +22,17 @@ import { HelpManager } from './help.js';
 import { DiagnosticService } from './diagnostic-service.js';
 import { CompletenessChecker } from './completeness-checker.js';
 import { DashboardManager } from './dashboard.js';
+import { OnboardingManager } from './onboarding.js';
+import { PermissionAuditService } from './permission-audit.js';
 import { ExperienceStore } from './experience-store.js';
+import { HoneypotService } from './honeypot-service.js';
+import { IntentInterpreter } from './intent-interpreter.js';
+import { defaultPendingTaskManager } from './pending-task-manager.js';
+import { defaultConversationMemoryManager } from './conversation-memory.js';
+import { defaultContextResolutionPipeline } from './context-resolution-pipeline.js';
 import { Logger } from './logger.js';
+import { globalLifecycle } from './bot-lifecycle.js';
+import { globalCommandRegistry } from './command-registry.js';
 
 const logger = new Logger('Commands');
 const planner = new Planner();
@@ -109,13 +118,78 @@ export const slashCommands = [
         .setName('prompt')
         .setDescription('Optional question about Honey Bot features or setup')
         .setRequired(false)
+    ),
+
+  // 6. Dedicated Honeypot /honeypot command
+  new SlashCommandBuilder()
+    .setName('honeypot')
+    .setDescription('Configure, inspect, enable, disable, and safely test honeypot channels')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('setup')
+        .setDescription('Begin an interactive configuration flow for a honeypot channel')
+        .addChannelOption(option =>
+          option
+            .setName('channel')
+            .setDescription('Optional text channel to configure as the honeypot')
+            .setRequired(false)
+        )
+        .addStringOption(option =>
+          option
+            .setName('action')
+            .setDescription('Setup action')
+            .setRequired(false)
+            .addChoices(
+              { name: 'Create Dedicated #honeypot Channel', value: 'create_channel' },
+              { name: 'Configure Existing Channel', value: 'configure_existing' }
+            )
+        )
+        .addStringOption(option =>
+          option
+            .setName('mode')
+            .setDescription('Enforcement mode')
+            .setRequired(false)
+            .addChoices(
+              { name: 'Strict Instant-Kick Mode', value: 'strict' },
+              { name: 'Monitored Mode', value: 'monitored' }
+            )
+        )
+    )
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('enable')
+        .setDescription('Enable honeypot enforcement in the configured channel')
+    )
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('disable')
+        .setDescription('Disable honeypot enforcement without deleting channel or logs')
+    )
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('status')
+        .setDescription('Show whether honeypot is configured, enabled, mode, and recent events')
+    )
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('configure')
+        .setDescription('Open interactive configuration panel to modify settings')
+    )
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('test')
+        .setDescription('Perform a non-destructive diagnostic check of honeypot configuration and permissions')
     )
 ];
+
+// Register definitions with CommandRegistry
+globalCommandRegistry.loadDefinitions(slashCommands);
 
 /**
  * Slash command execution router.
  */
-export async function handleCommandInteraction(interaction) {
+export async function handleCommandInteraction(interaction, options = {}) {
   if (!interaction.isChatInputCommand()) return;
 
   if (!interaction.guild) {
@@ -125,31 +199,71 @@ export async function handleCommandInteraction(interaction) {
     }).catch(() => {});
   }
 
+  // 1. Lifecycle check: ensure application is serving commands
+  const lifecycleState = globalLifecycle.getState();
+  if (lifecycleState === 'FAILED') {
+    const errorMsg = '❌ **Service Unavailable:** Honey Bot encountered an initialization failure and cannot process commands. Please notify server administrators.';
+    if (!interaction.replied && !interaction.deferred) {
+      if (typeof interaction.reply === 'function') {
+        await interaction.reply({ content: errorMsg, ephemeral: true }).catch(() => {});
+      }
+    } else if (typeof interaction.editReply === 'function') {
+      await interaction.editReply({ content: errorMsg }).catch(() => {});
+    }
+    return;
+  }
+  if (lifecycleState === 'BOOTING' || lifecycleState === 'VALIDATING_CONFIG') {
+    const infoMsg = `⚠️ **Initializing:** Honey Bot is currently starting services (${lifecycleState}). Please try again in a moment.`;
+    if (!interaction.replied && !interaction.deferred) {
+      if (typeof interaction.reply === 'function') {
+        await interaction.reply({ content: infoMsg, ephemeral: true }).catch(() => {});
+      }
+    } else if (typeof interaction.editReply === 'function') {
+      await interaction.editReply({ content: infoMsg }).catch(() => {});
+    }
+    return;
+  }
+
   const { commandName } = interaction;
+  const handlerEntry = globalCommandRegistry.getHandler(commandName);
+
+  if (!handlerEntry) {
+    logger.warn(`Unknown command received: ${commandName}`);
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        content: `❌ Unknown command \`/${commandName}\`. Available commands: \`/go\`, \`/modlog\`, \`/diagnose\`, \`/undo\`, \`/help\`, \`/honeypot\`.`,
+        ephemeral: true
+      }).catch(() => {});
+    }
+    return;
+  }
+
+  const executionId = Logger.generateExecutionId();
+  const startTime = Date.now();
+  const watchdog = options.watchdog || null;
+
+  if (watchdog && typeof watchdog.recordInteractionStart === 'function') {
+    watchdog.recordInteractionStart(interaction, executionId);
+  }
 
   try {
-    if (commandName === 'go') {
-      await handleGoCommand(interaction);
-    } else if (commandName === 'modlog') {
-      await handleModlogCommand(interaction);
-    } else if (commandName === 'diagnose' || commandName === 'diagnostics' || commandName === 'audit') {
-      await handleDiagnoseCommand(interaction);
-    } else if (commandName === 'undo') {
-      await handleUndoCommand(interaction);
-    } else if (commandName === 'help') {
-      await handleHelpCommand(interaction);
-    } else {
-      logger.warn(`Unknown command received: ${commandName}`);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          content: `❌ Unknown command \`/${commandName}\`. Use \`/help\` or \`/go\` to interact with Honey Bot.`,
-          ephemeral: true
-        }).catch(() => {});
-      }
+    await handlerEntry.handler(interaction, { executionId, startTime });
+    const durationMs = Date.now() - startTime;
+    if (watchdog && typeof watchdog.recordInteractionComplete === 'function') {
+      watchdog.recordInteractionComplete(interaction, executionId, durationMs, 'SUCCESS');
     }
   } catch (err) {
+    const durationMs = Date.now() - startTime;
+    if (watchdog && typeof watchdog.recordInteractionFailed === 'function') {
+      watchdog.recordInteractionFailed(interaction, executionId, durationMs, err);
+    }
     logger.error(`Error in handleCommandInteraction for /${commandName}`, { error: err.message, stack: err.stack });
-    const content = `❌ **Error:** An error occurred while executing \`/${commandName}\`: ${err.message}`;
+
+    // Sanitize user-facing error - strip raw stack traces
+    const safeError = Logger.redactSecrets(err.message || 'An unexpected error occurred.');
+    const cleanMsg = safeError.replace(/(?:\r\n|\r|\n)\s*at\s+.*/g, '').trim();
+    const content = `❌ **Error:** An error occurred while executing \`/${commandName}\`: ${cleanMsg}`;
+
     if (interaction.deferred && typeof interaction.editReply === 'function') {
       await interaction.editReply({ content, embeds: [], components: [] }).catch(async () => {
         if (typeof interaction.followUp === 'function') {
@@ -191,25 +305,58 @@ async function handleGoCommand(interaction) {
       return await DashboardManager.openDashboard(interaction);
     }
 
+    // Direct setup / onboarding routing (0 Groq LLM calls)
+    if (
+      /^(?:open\s+)?(?:bot\s+|server\s+|installation\s+|first[- ]run\s+)?(?:setup|onboarding|permissions?\s+setup|install(?:\s+guide)?|permission\s+check)$/i.test(cleanPrompt) ||
+      /^(?:setup|onboarding|install\s+bot|bot\s+setup|server\s+setup|check\s+permissions?|reauthorize(?:\s+bot)?)$/i.test(cleanPrompt)
+    ) {
+      isDone = true;
+      return await OnboardingManager.openSetupPanel(interaction);
+    }
+
     const guild = interaction.guild;
     const member = interaction.member;
 
     // Create lightweight execution context and workflow tracker
     const executionContext = new ExecutionContext(interaction, executionId);
-    const workflow = new TaskWorkflow(executionId, userPrompt, executionContext);
 
-    logger.info(`Received /go command [${executionId}]`, { user: interaction.user?.tag, prompt: userPrompt });
+    // Build rich recent context from Layer A & Layer C
+    if (guild && interaction.user) {
+      executionContext.recentContext = defaultConversationMemoryManager.buildRecentContextSnapshot(
+        guild.id,
+        interaction.user.id,
+        interaction.channel?.id
+      );
+    }
 
-    // Immutable Security Policy Gate: Pre-flight prompt inspection
-    try {
-      SecurityGate.evaluatePromptSecurity(userPrompt, interaction.user.id, guild);
-    } catch (secErr) {
+    // Context Resolution Pipeline: check pending tasks, answers to clarifications, corrections, and pronouns
+    let activeUserPrompt = userPrompt;
+    const resolution = await defaultContextResolutionPipeline.resolve(userPrompt, {
+      guild,
+      member,
+      user: interaction.user,
+      channel: interaction.channel,
+      interaction,
+      executionContext
+    });
+
+    if (resolution.handled) {
       isDone = true;
-      logger.warn('Prompt rejected by Security Gate', { error: secErr.message });
+      if (timeoutGuard) clearTimeout(timeoutGuard);
       return await interaction.editReply({
-        content: `🛑 **Security Refusal:** ${secErr.message}`
+        content: resolution.message || '',
+        embeds: resolution.result?.embeds || (resolution.result?.embed ? [resolution.result.embed] : []),
+        components: []
       });
     }
+
+    if (resolution.resolvedPrompt) {
+      activeUserPrompt = resolution.resolvedPrompt;
+    }
+
+    const workflow = new TaskWorkflow(executionId, activeUserPrompt, executionContext);
+
+    logger.info(`Received /go command [${executionId}]`, { user: interaction.user?.tag, prompt: activeUserPrompt });
 
     // Hard safety timeout guard so interaction is never left stranded
     timeoutGuard = setTimeout(async () => {
@@ -223,35 +370,66 @@ async function handleGoCommand(interaction) {
       } catch {}
     }, 25000);
 
-    // Phase 1: Intent Routing (Fast-path deterministic or single compact model call)
-    const interpreted = await intentRouter.route(userPrompt, executionContext, workflow.budget);
+    // Phase 1: Intent Interpretation, Linguistic Normalization & Security Gate
+    const interpretation = await IntentInterpreter.interpret(activeUserPrompt, executionContext, {
+      routerInstance: intentRouter
+    });
 
-    // Check if clarification is needed
-    if (interpreted.clarificationNeeded) {
+    if (interpretation.isRefused) {
       isDone = true;
       clearTimeout(timeoutGuard);
       return await interaction.editReply({
-        content: `❓ **Clarification Needed:**\n${interpreted.clarificationNeeded}\n\n*Please run \`/go\` again with more details.*`
+        content: `🛑 **Security Refusal:** ${interpretation.failure?.error || 'Operation rejected by Security Gate.'}`
       });
     }
 
-    // Check if user requested the server dashboard
-    if (interpreted.intent === 'open_dashboard') {
+    if (interpretation.isNegated) {
       isDone = true;
       clearTimeout(timeoutGuard);
-      const dashboardPayload = await DashboardManager.buildDashboardPayload(guild, member, interaction.user, 'overview');
       return await interaction.editReply({
-        content: '',
-        embeds: dashboardPayload.embeds || [],
-        components: dashboardPayload.components || []
+        content: `🛑 **Instruction Cancelled:** ${interpretation.failure?.error || 'Operation was cancelled due to negative instruction.'}`
       });
     }
 
-    // Check if conversational / greeting / advice
-    if (interpreted.conversationalResponse) {
+    if (interpretation.clarificationQuestion) {
       isDone = true;
       clearTimeout(timeoutGuard);
-      const refinedContent = formatRefinedResponse(interpreted.conversationalResponse);
+
+      // Create structured pending task in Layer B
+      if (guild && interaction.user) {
+        defaultPendingTaskManager.createTask({
+          guildId: guild.id,
+          userId: interaction.user.id,
+          channelId: interaction.channel?.id,
+          action: interpretation.intendedAction || 'clarification_pending',
+          targetName: interpretation.targetName || null,
+          collectedParams: interpretation.collectedParams || {},
+          missingParams: interpretation.missingParams?.length ? interpretation.missingParams : ['details'],
+          clarificationQuestion: interpretation.clarificationQuestion,
+          constraints: {
+            isHighImpact: Boolean(interpretation.isHighImpact),
+            originalPrompt: activeUserPrompt
+          }
+        });
+
+        defaultConversationMemoryManager.recordBotResponse(
+          guild.id,
+          interaction.user.id,
+          interaction.channel?.id,
+          interpretation.clarificationQuestion,
+          { clarificationQuestion: interpretation.clarificationQuestion }
+        );
+      }
+
+      return await interaction.editReply({
+        content: `❓ **Clarification Needed:**\n${interpretation.clarificationQuestion}\n\n*Please reply with the missing information.*`
+      });
+    }
+
+    if (interpretation.conversationalResponse) {
+      isDone = true;
+      clearTimeout(timeoutGuard);
+      const refinedContent = formatRefinedResponse(interpretation.conversationalResponse);
       const chunks = ResponseService.splitMessage(refinedContent, 2000);
       await interaction.editReply({
         content: chunks[0] || '',
@@ -264,70 +442,53 @@ async function handleGoCommand(interaction) {
       return;
     }
 
-    // Phase 1.5: Deterministic Request-Completeness & Target-Safety Gate
-    let actionsToVerify = [];
-    if (interpreted.multiActions && interpreted.multiActions.length > 0) {
-      actionsToVerify = interpreted.multiActions;
-    } else if (interpreted.intent) {
-      actionsToVerify = [{
-        action: interpreted.intent,
-        targetChannel: interpreted.targetRef,
-        targetRole: interpreted.targetRef,
-        targetMember: interpreted.targetRef,
-        targetRef: interpreted.targetRef,
-        ...interpreted.args
-      }];
-    }
-
-    const checkResult = CompletenessChecker.verify(userPrompt, {
-      thoughtProcess: interpreted.thought || 'Administrative operation',
-      isHighImpact: Boolean(interpreted.isHighImpact),
-      actions: actionsToVerify
-    }, executionContext);
-
-    if (!checkResult.valid) {
+    if (interpretation.specialIntent === 'open_dashboard') {
       isDone = true;
       clearTimeout(timeoutGuard);
+      const dashboardPayload = await DashboardManager.buildDashboardPayload(guild, member, interaction.user, 'overview');
       return await interaction.editReply({
-        content: `⚠️ **Request Incomplete or Invalid:**\n${checkResult.errors.join('\n')}\n\n*Please specify the missing details or targets.*`
+        content: '',
+        embeds: dashboardPayload.embeds || [],
+        components: dashboardPayload.components || []
       });
     }
 
-    const repairedPlan = checkResult.repairedPlan;
-    if (repairedPlan.actions.length > 1) {
-      interpreted.multiActions = repairedPlan.actions;
-      interpreted.thought = repairedPlan.thoughtProcess;
-      interpreted.isHighImpact = repairedPlan.isHighImpact;
-    } else if (repairedPlan.actions.length === 1) {
-      delete interpreted.multiActions;
-      const act = repairedPlan.actions[0];
-      interpreted.intent = act.action;
-      if (act.action === 'assign_role' || act.action === 'remove_role') {
-        interpreted.targetRef = act.targetMember || act.targetRole || act.targetRef;
-      } else {
-        interpreted.targetRef = act.targetRole || act.targetChannel || act.targetMember || act.targetRef;
-      }
-      interpreted.args = { ...act };
+    if (interpretation.specialIntent === 'open_setup') {
+      isDone = true;
+      clearTimeout(timeoutGuard);
+      return await OnboardingManager.openSetupPanel(interaction);
     }
 
+    if (!interpretation.success) {
+      isDone = true;
+      clearTimeout(timeoutGuard);
+      const errMsg = interpretation.failure?.error || 'Request invalid or incomplete.';
+      return await interaction.editReply({
+        content: `⚠️ **Request Incomplete or Invalid:**\n${errMsg}\n\n*Please specify the missing details or targets.*`
+      });
+    }
+
+    const { plan } = interpretation;
+    const isMultiAction = Array.isArray(plan.actions) && plan.actions.length > 1;
+
     // Phase 2: Check if multi-step complex plan or single-step direct operation
-    if (interpreted.multiActions && interpreted.multiActions.length > 0) {
+    if (isMultiAction) {
       // Multi-step path: create plan and execute
-      const plan = {
-        thoughtProcess: interpreted.thought,
+      const multiPlan = {
+        thoughtProcess: plan.thoughtProcess,
         clarificationNeeded: null,
-        isHighImpact: interpreted.isHighImpact,
-        actions: interpreted.multiActions
+        isHighImpact: Boolean(interpretation.isHighImpact),
+        actions: plan.actions
       };
 
-      const userAuth = checkUserAuthorization(member, plan.actions);
+      const userAuth = checkUserAuthorization(member, multiPlan.actions);
       if (!userAuth.authorized) {
         isDone = true;
         clearTimeout(timeoutGuard);
         return await interaction.editReply({ content: `🛑 **Unauthorized:** ${userAuth.reason}` });
       }
 
-      const botAuth = checkBotPermissions(guild, plan.actions);
+      const botAuth = checkBotPermissions(guild, multiPlan.actions);
       if (!botAuth.capable) {
         isDone = true;
         clearTimeout(timeoutGuard);
@@ -336,16 +497,16 @@ async function handleGoCommand(interaction) {
 
       // Immutable Security Gate check on entire planned action sequence
       try {
-        SecurityGate.evaluateActionSequence(plan.actions, member, guild);
+        SecurityGate.evaluateActionSequence(multiPlan.actions, member, guild);
       } catch (secErr) {
         isDone = true;
         clearTimeout(timeoutGuard);
         return await interaction.editReply({ content: `🛑 **Security Refusal:** ${secErr.message}` });
       }
 
-      if (plan.isHighImpact) {
+      if (multiPlan.isHighImpact) {
         clearTimeout(timeoutGuard);
-        const confirmed = await ConfirmationManager.requestConfirmation(interaction, plan);
+        const confirmed = await ConfirmationManager.requestConfirmation(interaction, multiPlan);
         if (!confirmed) {
           isDone = true;
           return;
@@ -358,9 +519,9 @@ async function handleGoCommand(interaction) {
         userId: interaction.user.id,
         interactionId: interaction.id,
         userPrompt,
-        plan,
-        actions: plan.actions,
-        isHighImpact: plan.isHighImpact,
+        plan: multiPlan,
+        actions: multiPlan.actions,
+        isHighImpact: multiPlan.isHighImpact,
         correlationId: executionId
       });
 
@@ -447,12 +608,14 @@ async function handleGoCommand(interaction) {
     }
 
     // Phase 3: Minimal Execution Path (Single-Resource Targeted Operation)
-    const actionObj = {
-      action: interpreted.intent,
-      targetChannel: interpreted.targetRef,
-      targetRole: interpreted.targetRef,
-      targetMember: interpreted.targetRef,
-      ...interpreted.args
+    const actionObj = plan.actions[0] || {};
+    const targetRef = actionObj.targetRole || actionObj.targetChannel || actionObj.targetMember || actionObj.targetRef || '';
+    const interpreted = {
+      intent: actionObj.action,
+      targetRef,
+      args: { ...actionObj },
+      thought: plan.thoughtProcess,
+      isHighImpact: Boolean(interpretation.isHighImpact)
     };
 
     // Pre-execution authorization check
@@ -608,6 +771,33 @@ async function handleGoCommand(interaction) {
       latencyMs: Date.now() - (executionContext.startTime || Date.now())
     });
 
+    if (opResult.success && guild) {
+      if (interpreted.intent === 'create_role') {
+        defaultConversationMemoryManager.recordEntity(guild.id, 'role', {
+          id: opResult.resourceId,
+          name: interpreted.args?.name || interpreted.targetRef,
+          color: interpreted.args?.color
+        });
+      } else if (interpreted.intent === 'create_channel') {
+        defaultConversationMemoryManager.recordEntity(guild.id, 'channel', {
+          id: opResult.resourceId,
+          name: interpreted.args?.name || interpreted.targetRef
+        });
+      }
+      defaultConversationMemoryManager.recordAction(guild.id, {
+        action: interpreted.intent,
+        targetRef: interpreted.targetRef,
+        outcome: 'succeeded'
+      });
+      defaultConversationMemoryManager.recordBotResponse(
+        guild.id,
+        interaction.user.id,
+        interaction.channel?.id,
+        outcomeMessage,
+        { action: interpreted.intent, outcome: 'succeeded' }
+      );
+    }
+
     const resultEmbeds = opResult.embeds || (opResult.embed ? [opResult.embed] : []);
     const feedbackRow = buildFeedbackRow(executionId);
     const replyMsg = await interaction.editReply({
@@ -696,9 +886,31 @@ async function handleModlogCommand(interaction) {
   switch (interpreted.intent) {
     case 'inspect_config': {
       const conf = ModLogService.getConfig(guild.id);
-      if (!conf || !conf.channelId) {
+      if (!conf || (!conf.channelId && !conf.honeypotLogChannelId && !conf.botLogChannelId)) {
         return await interaction.editReply({
           content: 'No mod-log channel is configured for this server.'
+        });
+      }
+
+      if (conf.honeypotLogChannelId || conf.botLogChannelId) {
+        const modCh = (conf.modLogChannelId || conf.channelId) ? ResponseService.formatChannelMention(conf.modLogChannelId || conf.channelId, conf.modLogChannelName || conf.channelName) : 'Not configured';
+        const hpCh = conf.honeypotLogChannelId ? ResponseService.formatChannelMention(conf.honeypotLogChannelId, conf.honeypotLogChannelName) : 'Not configured';
+        const botCh = conf.botLogChannelId ? ResponseService.formatChannelMention(conf.botLogChannelId, conf.botLogChannelName) : 'Not configured';
+
+        const embed = new EmbedBuilder()
+          .setTitle('Logging Architecture Configuration')
+          .setColor(0xE5A93C)
+          .setDescription(`Honey Bot Three-Channel Logging configuration for **${guild.name}**:`)
+          .addFields(
+            { name: '1. Moderation Logs (#mod-logs)', value: `• Destination: ${modCh}\n• Policy: Permanent moderation audit trail\n• Status: ${conf.enabled ? 'Active' : 'Disabled'}`, inline: false },
+            { name: '2. Honeypot Logs (#honeypot-logs)', value: `• Destination: ${hpCh}\n• Retention: ${conf.honeypotRetentionHours || 24} hours (Automatic cleanup)\n• Status: ${conf.honeypotLogChannelId ? 'Active' : 'Not configured'}`, inline: false },
+            { name: '3. Bot Operations (#bot-logs)', value: `• Destination: ${botCh}\n• Scope: Operations, server changes, health alerts\n• Status: ${conf.botLogChannelId ? 'Active' : 'Not configured'}`, inline: false }
+          )
+          .setTimestamp();
+
+        return await interaction.editReply({
+          embeds: [embed],
+          allowedMentions: ResponseService.getAllowedMentions()
         });
       }
 
@@ -716,6 +928,75 @@ async function handleModlogCommand(interaction) {
       }
       return await interaction.editReply({
         content: msg,
+        allowedMentions: ResponseService.getAllowedMentions()
+      });
+    }
+
+    case 'configure_honeypot_channel': {
+      let hpTargetRef = interpreted.targetChannel;
+      if (hpTargetRef === 'current' || !hpTargetRef) {
+        hpTargetRef = interaction.channelId;
+      }
+      const hpRes = await ModLogService.setHoneypotLogChannel(guild, hpTargetRef, interaction.user.tag);
+      if (!hpRes.success) {
+        return await interaction.editReply({
+          content: `Couldn't configure honeypot-log channel: ${hpRes.error}`,
+          allowedMentions: ResponseService.getAllowedMentions()
+        });
+      }
+      const hpMention = ResponseService.formatChannelMention(hpRes.channel?.id, hpRes.channel?.name);
+      return await interaction.editReply({
+        content: `Honeypot security logging configured for ${hpMention}. Temporary evidence will be retained for ${hpRes.config.honeypotRetentionHours || 24} hours.`,
+        allowedMentions: ResponseService.getAllowedMentions()
+      });
+    }
+
+    case 'configure_bot_channel': {
+      let botTargetRef = interpreted.targetChannel;
+      if (botTargetRef === 'current' || !botTargetRef) {
+        botTargetRef = interaction.channelId;
+      }
+      const botRes = await ModLogService.setBotLogChannel(guild, botTargetRef, interaction.user.tag);
+      if (!botRes.success) {
+        return await interaction.editReply({
+          content: `Couldn't configure bot-log channel: ${botRes.error}`,
+          allowedMentions: ResponseService.getAllowedMentions()
+        });
+      }
+      const botMention = ResponseService.formatChannelMention(botRes.channel?.id, botRes.channel?.name);
+      return await interaction.editReply({
+        content: `Bot operations logging configured for ${botMention}. Routine resource changes and system health alerts will be recorded here.`,
+        allowedMentions: ResponseService.getAllowedMentions()
+      });
+    }
+
+    case 'configure_honeypot_retention': {
+      const retRes = ModLogService.setHoneypotRetention(guild.id, interpreted.retentionHours, interaction.user.tag);
+      return await interaction.editReply({
+        content: `Honeypot log retention set to ${retRes.retentionHours} hours. Expired security evidence will be automatically cleaned up while permanent moderation logs are preserved.`,
+        allowedMentions: ResponseService.getAllowedMentions()
+      });
+    }
+
+    case 'test_all_channels': {
+      const allRes = await ModLogService.testAllChannels(guild);
+      const conf = ModLogService.getConfig(guild.id);
+      const modStatus = allRes.results.moderation.success ? '✅ Verified Operational' : `❌ ${allRes.results.moderation.error || 'Failed'}`;
+      const hpStatus = conf.honeypotLogChannelId ? (allRes.results.honeypot.success ? '✅ Verified Operational' : `❌ ${allRes.results.honeypot.error}`) : '⚠️ Unconfigured';
+      const botStatus = conf.botLogChannelId ? (allRes.results.botOperations.success ? '✅ Verified Operational' : `❌ ${allRes.results.botOperations.error}`) : '⚠️ Unconfigured';
+
+      const embed = new EmbedBuilder()
+        .setTitle('Three-Channel Logging Test Results')
+        .setColor(allRes.success ? 0x2ECC71 : 0xE74C3C)
+        .addFields(
+          { name: '1. Moderation Logs (#mod-logs)', value: `• Destination: ${conf.modLogChannelId || conf.channelId ? `<#${conf.modLogChannelId || conf.channelId}>` : 'None'}\n• Result: ${modStatus}`, inline: false },
+          { name: '2. Honeypot Logs (#honeypot-logs)', value: `• Destination: ${conf.honeypotLogChannelId ? `<#${conf.honeypotLogChannelId}>` : 'None'}\n• Result: ${hpStatus}`, inline: false },
+          { name: '3. Bot Operations (#bot-logs)', value: `• Destination: ${conf.botLogChannelId ? `<#${conf.botLogChannelId}>` : 'None'}\n• Result: ${botStatus}`, inline: false }
+        )
+        .setTimestamp();
+
+      return await interaction.editReply({
+        embeds: [embed],
         allowedMentions: ResponseService.getAllowedMentions()
       });
     }
@@ -888,6 +1169,44 @@ async function handleModlogCommand(interaction) {
   }
 }
 
+// Register all top-level slash commands with the authoritative CommandRegistry
+globalCommandRegistry.registerHandler('go', handleGoCommand, {
+  category: 'Administration',
+  description: 'Natural-language execution of supported Discord actions',
+  timeoutMs: 25000
+});
+
+globalCommandRegistry.registerHandler('modlog', handleModlogCommand, {
+  category: 'Logging',
+  description: 'Natural-language configuration and management of moderation logging',
+  timeoutMs: 15000
+});
+
+globalCommandRegistry.registerHandler('diagnose', handleDiagnoseCommand, {
+  category: 'Maintenance',
+  description: 'Health checks, diagnostics, and supported safe repairs',
+  timeoutMs: 15000,
+  aliases: ['diagnostics', 'audit']
+});
+
+globalCommandRegistry.registerHandler('undo', handleUndoCommand, {
+  category: 'Safety',
+  description: 'Reversal of supported, reversible actions',
+  timeoutMs: 15000
+});
+
+globalCommandRegistry.registerHandler('help', handleHelpCommand, {
+  category: 'Utility',
+  description: 'An approachable explanation of Honey Bot and how to use it',
+  timeoutMs: 15000
+});
+
+globalCommandRegistry.registerHandler('honeypot', handleHoneypotCommand, {
+  category: 'Security',
+  description: 'Configure, inspect, enable, disable, and safely test honeypot channels',
+  timeoutMs: 15000
+});
+
 /**
  * Handles the /diagnose command.
  * Flexible, natural-language-driven system diagnostics, model discovery, and safe repairs.
@@ -898,6 +1217,10 @@ async function handleDiagnoseCommand(interaction) {
       await interaction.deferReply({ ephemeral: true }).catch(() => {});
     }
     const prompt = interaction.options?.getString ? interaction.options.getString('prompt') : null;
+
+    if (prompt && /(?:setup|onboarding|permissions?|install|auth|reauth|oauth)/i.test(prompt)) {
+      return await OnboardingManager.openSetupPanel(interaction);
+    }
 
     const result = await DiagnosticService.diagnose(prompt, {
       client: interaction.client,
@@ -1098,6 +1421,44 @@ async function handleUndoCommand(interaction) {
   }
 }
 
+// Register all top-level slash commands with the authoritative CommandRegistry
+globalCommandRegistry.registerHandler('go', handleGoCommand, {
+  category: 'Administration',
+  description: 'Natural-language execution of supported Discord actions',
+  timeoutMs: 25000
+});
+
+globalCommandRegistry.registerHandler('modlog', handleModlogCommand, {
+  category: 'Logging',
+  description: 'Natural-language configuration and management of moderation logging',
+  timeoutMs: 15000
+});
+
+globalCommandRegistry.registerHandler('diagnose', handleDiagnoseCommand, {
+  category: 'Maintenance',
+  description: 'Health checks, diagnostics, and supported safe repairs',
+  timeoutMs: 15000,
+  aliases: ['diagnostics', 'audit']
+});
+
+globalCommandRegistry.registerHandler('undo', handleUndoCommand, {
+  category: 'Safety',
+  description: 'Reversal of supported, reversible actions',
+  timeoutMs: 15000
+});
+
+globalCommandRegistry.registerHandler('help', handleHelpCommand, {
+  category: 'Utility',
+  description: 'An approachable explanation of Honey Bot and how to use it',
+  timeoutMs: 15000
+});
+
+globalCommandRegistry.registerHandler('honeypot', handleHoneypotCommand, {
+  category: 'Security',
+  description: 'Configure, inspect, enable, disable, and safely test honeypot channels',
+  timeoutMs: 15000
+});
+
 /**
  * Handles the /help command.
  */
@@ -1158,3 +1519,258 @@ async function handleHelpCommand(interaction) {
     }
   }
 }
+
+// Register all top-level slash commands with the authoritative CommandRegistry
+globalCommandRegistry.registerHandler('go', handleGoCommand, {
+  category: 'Administration',
+  description: 'Natural-language execution of supported Discord actions',
+  timeoutMs: 25000
+});
+
+globalCommandRegistry.registerHandler('modlog', handleModlogCommand, {
+  category: 'Logging',
+  description: 'Natural-language configuration and management of moderation logging',
+  timeoutMs: 15000
+});
+
+globalCommandRegistry.registerHandler('diagnose', handleDiagnoseCommand, {
+  category: 'Maintenance',
+  description: 'Health checks, diagnostics, and supported safe repairs',
+  timeoutMs: 15000,
+  aliases: ['diagnostics', 'audit']
+});
+
+globalCommandRegistry.registerHandler('undo', handleUndoCommand, {
+  category: 'Safety',
+  description: 'Reversal of supported, reversible actions',
+  timeoutMs: 15000
+});
+
+globalCommandRegistry.registerHandler('help', handleHelpCommand, {
+  category: 'Utility',
+  description: 'An approachable explanation of Honey Bot and how to use it',
+  timeoutMs: 15000
+});
+
+globalCommandRegistry.registerHandler('honeypot', handleHoneypotCommand, {
+  category: 'Security',
+  description: 'Configure, inspect, enable, disable, and safely test honeypot channels',
+  timeoutMs: 15000
+});
+
+/**
+ * Handles the /honeypot slash command and its subcommands:
+ * setup, enable, disable, status, configure, test.
+ */
+export async function handleHoneypotCommand(interaction) {
+  try {
+    const guild = interaction.guild;
+    const member = interaction.member;
+
+    // Authorization Check: Administrator or ManageGuild
+    const isAuthorized = member && (
+      member.id === guild.ownerId ||
+      member.permissions?.has(PermissionFlagsBits.Administrator) ||
+      member.permissions?.has(PermissionFlagsBits.ManageGuild)
+    );
+
+    if (!isAuthorized) {
+      const msg = '⛔ **Access Denied:** Only server administrators can configure or manage honeypot protection.';
+      if (interaction.deferred) {
+        return await interaction.editReply({ content: msg });
+      }
+      return await interaction.reply({ content: msg, ephemeral: true });
+    }
+
+    const subcommand = interaction.options?.getSubcommand ? interaction.options.getSubcommand() : 'status';
+
+    // 1. /honeypot status
+    if (subcommand === 'status') {
+      const config = HoneypotService.getConfig(guild.id);
+      const embed = HoneypotService.buildStatusEmbed(guild, config);
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`honeypot:toggle_active:${guild.id}`)
+          .setLabel(config.enabled ? 'Disable' : 'Enable')
+          .setStyle(config.enabled ? ButtonStyle.Danger : ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`honeypot:refresh:${guild.id}`)
+          .setLabel('Configure')
+          .setStyle(ButtonStyle.Primary)
+          .setEmoji('⚙️'),
+        new ButtonBuilder()
+          .setCustomId(`honeypot:test:${guild.id}`)
+          .setLabel('Test')
+          .setStyle(ButtonStyle.Secondary)
+          .setEmoji('🩺')
+      );
+
+      if (interaction.deferred) {
+        return await interaction.editReply({ embeds: [embed], components: [row] });
+      }
+      return await interaction.reply({ embeds: [embed], components: [row] });
+    }
+
+    // 2. /honeypot configure
+    if (subcommand === 'configure') {
+      const payload = HoneypotService.buildConfigurationPanelPayload(guild, member);
+      if (interaction.deferred) {
+        return await interaction.editReply(payload);
+      }
+      return await interaction.reply(payload);
+    }
+
+    // 3. /honeypot setup
+    if (subcommand === 'setup') {
+      const selectedChannel = interaction.options?.getChannel ? interaction.options.getChannel('channel') : null;
+      const action = interaction.options?.getString ? interaction.options.getString('action') : null;
+      const mode = interaction.options?.getString ? interaction.options.getString('mode') : null;
+
+      const isStrictModeRequested = mode === 'strict';
+      const shouldCreateChannel = action === 'create_channel' || (!selectedChannel && !HoneypotService.getConfig(guild.id).channelId);
+
+      const setupRes = await HoneypotService.setupHoneypot(guild, {
+        channelId: selectedChannel?.id || null,
+        createChannel: shouldCreateChannel,
+        strictMode: false // Pending explicit confirmation if strict requested
+      });
+
+      if (isStrictModeRequested) {
+        const warningEmbed = HoneypotService.buildStrictWarningEmbed(guild);
+        const confirmRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`honeypot:confirm_strict:${guild.id}`)
+            .setLabel('Confirm & Activate Strict Mode')
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji('⚠️'),
+          new ButtonBuilder()
+            .setCustomId(`honeypot:cancel_strict:${guild.id}`)
+            .setLabel('Cancel / Monitored Only')
+            .setStyle(ButtonStyle.Secondary)
+        );
+
+        if (interaction.deferred) {
+          return await interaction.editReply({
+            content: `✅ Honeypot channel configured (${setupRes.details}).\n⚠️ **Action Required to Activate Strict Mode:**`,
+            embeds: [warningEmbed],
+            components: [confirmRow]
+          });
+        }
+        return await interaction.reply({
+          content: `✅ Honeypot channel configured (${setupRes.details}).\n⚠️ **Action Required to Activate Strict Mode:**`,
+          embeds: [warningEmbed],
+          components: [confirmRow]
+        });
+      }
+
+      const payload = HoneypotService.buildConfigurationPanelPayload(guild, member);
+      if (interaction.deferred) {
+        return await interaction.editReply(payload);
+      }
+      return await interaction.reply(payload);
+    }
+
+    // 4. /honeypot enable
+    if (subcommand === 'enable') {
+      const enableRes = await HoneypotService.enableHoneypot(guild, interaction.user);
+      if (!enableRes.success && enableRes.requiresConfirmation) {
+        const warningEmbed = HoneypotService.buildStrictWarningEmbed(guild);
+        const confirmRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`honeypot:confirm_strict:${guild.id}`)
+            .setLabel('Confirm & Activate Strict Mode')
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji('⚠️'),
+          new ButtonBuilder()
+            .setCustomId(`honeypot:cancel_strict:${guild.id}`)
+            .setLabel('Cancel')
+            .setStyle(ButtonStyle.Secondary)
+        );
+
+        if (interaction.deferred) {
+          return await interaction.editReply({ embeds: [warningEmbed], components: [confirmRow] });
+        }
+        return await interaction.reply({ embeds: [warningEmbed], components: [confirmRow] });
+      }
+
+      if (!enableRes.success) {
+        const msg = `❌ **Could Not Enable Honeypot:** ${enableRes.error}`;
+        if (interaction.deferred) {
+          return await interaction.editReply({ content: msg });
+        }
+        return await interaction.reply({ content: msg, ephemeral: true });
+      }
+
+      const payload = HoneypotService.buildConfigurationPanelPayload(guild, member);
+      if (interaction.deferred) {
+        return await interaction.editReply({ content: `✅ ${enableRes.details}`, ...payload });
+      }
+      return await interaction.reply({ content: `✅ ${enableRes.details}`, ...payload });
+    }
+
+    // 5. /honeypot disable
+    if (subcommand === 'disable') {
+      const disableRes = await HoneypotService.disableHoneypot(guild);
+      const payload = HoneypotService.buildConfigurationPanelPayload(guild, member);
+      if (interaction.deferred) {
+        return await interaction.editReply({ content: `✅ ${disableRes.details}`, ...payload });
+      }
+      return await interaction.reply({ content: `✅ ${disableRes.details}`, ...payload });
+    }
+
+    // 6. /honeypot test
+    if (subcommand === 'test') {
+      if (!interaction.deferred && !interaction.replied) {
+        await interaction.deferReply();
+      }
+      const testRes = await HoneypotService.runDiagnosticTest(guild, interaction.user);
+      return await interaction.editReply({ embeds: [testRes.embed] });
+    }
+  } catch (err) {
+    logger.error('Error in /honeypot command', { error: err.message, stack: err.stack });
+    const msg = `❌ **Honeypot Command Error:** ${err.message}`;
+    if (interaction.deferred) {
+      await interaction.editReply({ content: msg, embeds: [], components: [] }).catch(() => {});
+    } else if (!interaction.replied) {
+      await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+    }
+  }
+}
+
+// Register all top-level slash commands with the authoritative CommandRegistry
+globalCommandRegistry.registerHandler('go', handleGoCommand, {
+  category: 'Administration',
+  description: 'Natural-language execution of supported Discord actions',
+  timeoutMs: 25000
+});
+
+globalCommandRegistry.registerHandler('modlog', handleModlogCommand, {
+  category: 'Logging',
+  description: 'Natural-language configuration and management of moderation logging',
+  timeoutMs: 15000
+});
+
+globalCommandRegistry.registerHandler('diagnose', handleDiagnoseCommand, {
+  category: 'Maintenance',
+  description: 'Health checks, diagnostics, and supported safe repairs',
+  timeoutMs: 15000,
+  aliases: ['diagnostics', 'audit']
+});
+
+globalCommandRegistry.registerHandler('undo', handleUndoCommand, {
+  category: 'Safety',
+  description: 'Reversal of supported, reversible actions',
+  timeoutMs: 15000
+});
+
+globalCommandRegistry.registerHandler('help', handleHelpCommand, {
+  category: 'Utility',
+  description: 'An approachable explanation of Honey Bot and how to use it',
+  timeoutMs: 15000
+});
+
+globalCommandRegistry.registerHandler('honeypot', handleHoneypotCommand, {
+  category: 'Security',
+  description: 'Configure, inspect, enable, disable, and safely test honeypot channels',
+  timeoutMs: 15000
+});

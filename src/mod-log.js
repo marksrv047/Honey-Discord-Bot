@@ -2,6 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ChannelType, PermissionFlagsBits, EmbedBuilder } from 'discord.js';
+import {
+  ActionRegistry,
+  FunctionalCategory,
+  EventSource,
+  OutcomeState,
+  VerificationStatus
+} from './action-registry.js';
+import { HoneypotRetentionService } from './honeypot-retention.js';
 import { Logger } from './logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -10,6 +18,15 @@ const logger = new Logger('ModLogService');
 
 const DATA_DIR = path.resolve(__dirname, '..', 'data');
 const CONFIG_FILE = path.join(DATA_DIR, 'modlog-config.json');
+
+/**
+ * Three Authoritative Logging Categories
+ */
+export const LogCategory = {
+  MODERATION: 'MODERATION',
+  HONEYPOT_SECURITY: 'HONEYPOT_SECURITY',
+  BOT_OPERATIONS: 'BOT_OPERATIONS'
+};
 
 /**
  * Centralized Moderation Logging & Configuration Service.
@@ -56,7 +73,7 @@ export class ModLogService {
    */
   static _persistConfigs() {
     ModLogService._ensureDataDir();
-    const tempFile = `${CONFIG_FILE}.tmp.${Date.now()}`;
+    const tempFile = `${CONFIG_FILE}.tmp.${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const payload = JSON.stringify(ModLogService._configCache || {}, null, 2);
     try {
       fs.writeFileSync(tempFile, payload, 'utf8');
@@ -66,6 +83,12 @@ export class ModLogService {
         fs.writeFileSync(CONFIG_FILE, payload, 'utf8');
       } catch (writeErr) {
         logger.error('Failed to write modlog-config.json', { error: writeErr.message });
+      }
+    } finally {
+      if (fs.existsSync(tempFile)) {
+        try {
+          fs.unlinkSync(tempFile);
+        } catch {}
       }
     }
   }
@@ -82,45 +105,55 @@ export class ModLogService {
     const defaultPreferences = {
       logBotActions: true,
       logExternalActions: true,
-      filterEvents: ['moderation', 'roles', 'channels', 'categories', 'permissions', 'policy'],
+      filterEvents: [
+        'all',
+        'moderation',
+        'roles',
+        'channels',
+        'categories',
+        'permissions',
+        'policy',
+        'music',
+        'messaging',
+        'panels',
+        'diagnostics',
+        'recovery',
+        'utilities'
+      ],
       logSuccess: true,
       logFailed: true,
       logDenied: true
     };
 
-    const conf = ModLogService._configCache[guildId];
-    if (!conf) {
-      return {
-        guildId,
-        channelId: null,
-        channelName: null,
-        enabled: false,
-        revision: 1,
-        setupStatus: 'unconfigured',
-        updatedAt: null,
-        updatedBy: null,
-        preferences: defaultPreferences,
-        lastDeliverySuccess: null,
-        lastDeliveryFailure: null,
-        pendingDeliveries: [],
-        deliveredCount: 0,
-        failedCount: 0
-      };
-    }
+    const conf = ModLogService._configCache[guildId] || {};
+    const modLogChannelId = conf.modLogChannelId || conf.channelId || null;
+    const modLogChannelName = conf.modLogChannelName || conf.channelName || null;
 
     return {
+      guildId,
+      channelId: modLogChannelId, // backward-compatible alias to modLogChannelId
+      channelName: modLogChannelName,
+      modLogChannelId,
+      modLogChannelName,
+      honeypotLogChannelId: conf.honeypotLogChannelId || null,
+      honeypotLogChannelName: conf.honeypotLogChannelName || null,
+      botLogChannelId: conf.botLogChannelId || null,
+      botLogChannelName: conf.botLogChannelName || null,
+      honeypotRetentionHours: conf.honeypotRetentionHours === 48 ? 48 : 24,
+      enabled: conf.enabled !== undefined ? conf.enabled : false,
       revision: conf.revision || 1,
-      setupStatus: conf.setupStatus || (conf.channelId && conf.enabled ? 'configured' : 'unconfigured'),
-      lastDeliverySuccess: null,
-      lastDeliveryFailure: null,
-      pendingDeliveries: [],
-      deliveredCount: 0,
-      failedCount: 0,
-      ...conf,
+      setupStatus: conf.setupStatus || (modLogChannelId && conf.enabled ? 'configured' : 'unconfigured'),
+      updatedAt: conf.updatedAt || null,
+      updatedBy: conf.updatedBy || null,
       preferences: {
         ...defaultPreferences,
         ...(conf.preferences || {})
-      }
+      },
+      lastDeliverySuccess: conf.lastDeliverySuccess || null,
+      lastDeliveryFailure: conf.lastDeliveryFailure || null,
+      pendingDeliveries: conf.pendingDeliveries || [],
+      deliveredCount: conf.deliveredCount || 0,
+      failedCount: conf.failedCount || 0
     };
   }
 
@@ -134,9 +167,18 @@ export class ModLogService {
     }
 
     const current = ModLogService.getConfig(guildId);
+    
+    // Synchronize legacy channelId with modLogChannelId
+    const effectiveModChannelId = updates.modLogChannelId || updates.channelId || current.modLogChannelId || current.channelId;
+    const effectiveModChannelName = updates.modLogChannelName || updates.channelName || current.modLogChannelName || current.channelName;
+
     const updated = {
       ...current,
       ...updates,
+      channelId: effectiveModChannelId,
+      channelName: effectiveModChannelName,
+      modLogChannelId: effectiveModChannelId,
+      modLogChannelName: effectiveModChannelName,
       preferences: {
         ...current.preferences,
         ...(updates.preferences || {})
@@ -257,6 +299,109 @@ export class ModLogService {
     });
 
     return { success: true, channel, config: updated };
+  }
+
+  /**
+   * Sets the Moderation log channel (#mod-logs).
+   */
+  static async setModLogChannel(guild, channelRef, userTagOrId = 'System') {
+    return ModLogService.setLogChannel(guild, channelRef, userTagOrId);
+  }
+
+  /**
+   * Sets the Honeypot security log channel (#honeypot-logs).
+   */
+  static async setHoneypotLogChannel(guild, channelRef, userTagOrId = 'System') {
+    const current = ModLogService.getConfig(guild?.id);
+    const validation = await ModLogService.validateLogChannel(guild, channelRef);
+    if (!validation.valid) {
+      return {
+        success: false,
+        error: validation.error,
+        preservedChannelId: current?.honeypotLogChannelId || null
+      };
+    }
+
+    const channel = validation.channel;
+    const updated = ModLogService.updateConfig(guild.id, {
+      honeypotLogChannelId: channel.id,
+      honeypotLogChannelName: channel.name,
+      updatedBy: userTagOrId
+    });
+
+    return { success: true, channel, config: updated };
+  }
+
+  /**
+   * Sets the Bot Operations log channel (#bot-logs).
+   */
+  static async setBotLogChannel(guild, channelRef, userTagOrId = 'System') {
+    const current = ModLogService.getConfig(guild?.id);
+    const validation = await ModLogService.validateLogChannel(guild, channelRef);
+    if (!validation.valid) {
+      return {
+        success: false,
+        error: validation.error,
+        preservedChannelId: current?.botLogChannelId || null
+      };
+    }
+
+    const channel = validation.channel;
+    const updated = ModLogService.updateConfig(guild.id, {
+      botLogChannelId: channel.id,
+      botLogChannelName: channel.name,
+      updatedBy: userTagOrId
+    });
+
+    return { success: true, channel, config: updated };
+  }
+
+  /**
+   * Sets the Honeypot log retention period (24 or 48 hours).
+   */
+  static setHoneypotRetention(guildId, hours, userTagOrId = 'System') {
+    const retention = Number(hours) === 48 ? 48 : 24;
+    const updated = ModLogService.updateConfig(guildId, {
+      honeypotRetentionHours: retention,
+      updatedBy: userTagOrId
+    });
+    return { success: true, retentionHours: retention, config: updated };
+  }
+
+  /**
+   * Returns a structured view of all three logging channels.
+   */
+  static getThreeChannelStatus(guild) {
+    if (!guild) return null;
+    const conf = ModLogService.getConfig(guild.id);
+    return {
+      guildId: guild.id,
+      enabled: conf.enabled,
+      channels: {
+        moderation: {
+          category: LogCategory.MODERATION,
+          name: '#mod-logs',
+          configuredId: conf.modLogChannelId || conf.channelId || null,
+          configuredName: conf.modLogChannelName || conf.channelName || null,
+          status: (conf.modLogChannelId || conf.channelId) ? 'configured' : 'unconfigured'
+        },
+        honeypot: {
+          category: LogCategory.HONEYPOT_SECURITY,
+          name: '#honeypot-logs',
+          configuredId: conf.honeypotLogChannelId || null,
+          configuredName: conf.honeypotLogChannelName || null,
+          retentionHours: conf.honeypotRetentionHours || 24,
+          status: conf.honeypotLogChannelId ? 'configured' : 'unconfigured'
+        },
+        botOperations: {
+          category: LogCategory.BOT_OPERATIONS,
+          name: '#bot-logs',
+          configuredId: conf.botLogChannelId || null,
+          configuredName: conf.botLogChannelName || null,
+          status: conf.botLogChannelId ? 'configured' : 'unconfigured'
+        }
+      }
+    };
   }
 
   /**
@@ -518,15 +663,31 @@ export class ModLogService {
   }
 
   /**
-   * Tests the configured mod-log channel by sending a test embed.
+   * Tests a configured log channel by category.
    */
-  static async testLogChannel(guild) {
+  static async testLogChannel(guild, category = LogCategory.MODERATION) {
     const conf = ModLogService.getConfig(guild.id);
-    if (!conf.channelId) {
-      return { success: false, error: 'No moderation log channel is currently configured for this server.' };
+    let targetChannelId = null;
+    let title = 'Moderation Log Test';
+    let color = 0xE5A93C;
+
+    if (category === LogCategory.HONEYPOT_SECURITY) {
+      targetChannelId = conf.honeypotLogChannelId || conf.channelId;
+      title = 'Honeypot Security Log Test';
+      color = 0xE74C3C;
+    } else if (category === LogCategory.BOT_OPERATIONS) {
+      targetChannelId = conf.botLogChannelId || conf.channelId;
+      title = 'Honey Bot Operations Log Test';
+      color = 0x3498DB;
+    } else {
+      targetChannelId = conf.modLogChannelId || conf.channelId;
     }
 
-    const validation = await ModLogService.validateLogChannel(guild, conf.channelId);
+    if (!targetChannelId) {
+      return { success: false, error: `No channel configured for category ${category}.`, category };
+    }
+
+    const validation = await ModLogService.validateLogChannel(guild, targetChannelId);
     if (!validation.valid) {
       ModLogService.updateConfig(guild.id, {
         lastDeliveryFailure: {
@@ -536,16 +697,17 @@ export class ModLogService {
         },
         failedCount: (conf.failedCount || 0) + 1
       });
-      return { success: false, error: validation.error, channel: validation.channel };
+      return { success: false, error: validation.error, channel: validation.channel, category };
     }
 
     const channel = validation.channel;
     try {
       const testEmbed = new EmbedBuilder()
-        .setTitle('Moderation Log Test')
-        .setDescription('This is a test message to confirm Honey Bot can deliver moderation records to this channel.')
-        .setColor(0x5865F2)
+        .setTitle(title)
+        .setDescription(`This is a test message to confirm Honey Bot can deliver ${category} records to this channel.`)
+        .setColor(color)
         .addFields(
+          { name: 'Category', value: category, inline: true },
           { name: 'Status', value: 'Delivery Verified', inline: true },
           { name: 'Permissions', value: 'View, Send & Embed OK', inline: true }
         )
@@ -556,9 +718,9 @@ export class ModLogService {
         lastDeliverySuccess: new Date().toISOString(),
         deliveredCount: (conf.deliveredCount || 0) + 1
       });
-      return { success: true, channel, messageId: sent.id };
+      return { success: true, channel, messageId: sent.id, category };
     } catch (err) {
-      logger.error('Failed to send test mod-log message', { error: err.message, channelId: channel.id });
+      logger.error('Failed to send test mod-log message', { error: err.message, channelId: channel.id, category });
       ModLogService.updateConfig(guild.id, {
         lastDeliveryFailure: {
           timestamp: new Date().toISOString(),
@@ -567,8 +729,25 @@ export class ModLogService {
         },
         failedCount: (conf.failedCount || 0) + 1
       });
-      return { success: false, error: `Failed to deliver message to #${channel.name}: ${err.message}`, channel };
+      return { success: false, error: `Failed to deliver message to #${channel.name}: ${err.message}`, channel, category };
     }
+  }
+
+  /**
+   * Tests all three logging destinations for a guild.
+   */
+  static async testAllChannels(guild) {
+    if (!guild) return { success: false, error: 'No guild context' };
+    const conf = ModLogService.getConfig(guild.id);
+    const results = {
+      moderation: await ModLogService.testLogChannel(guild, LogCategory.MODERATION),
+      honeypot: conf.honeypotLogChannelId ? await ModLogService.testLogChannel(guild, LogCategory.HONEYPOT_SECURITY) : { success: false, error: 'Unconfigured' },
+      botOperations: conf.botLogChannelId ? await ModLogService.testLogChannel(guild, LogCategory.BOT_OPERATIONS) : { success: false, error: 'Unconfigured' }
+    };
+    return {
+      success: results.moderation.success || results.honeypot.success || results.botOperations.success,
+      results
+    };
   }
 
   /**
@@ -790,41 +969,116 @@ export class ModLogService {
   }
 
   /**
-   * Categorizes an action into an event category for filtering.
+   * Categorizes an action into an authoritative functional category.
+   * Deterministically resolves category via ActionRegistry; never silently falls back to Moderation.
    */
   static getActionCategory(action) {
-    const act = String(action || '').toLowerCase();
-    if (/category|sync_category/i.test(act)) return 'categories';
-    if (/permission|overwrite/i.test(act)) return 'permissions';
-    if (/policy|access|modlog/i.test(act)) return 'policy';
-    if (/role/i.test(act)) return 'roles';
-    if (/channel/i.test(act)) return 'channels';
-    if (/timeout|kick|ban|unban|purge|mute|deafen|warn/i.test(act)) return 'moderation';
-    return 'moderation';
+    const classified = ActionRegistry.classify(action);
+    return classified.category;
   }
 
   /**
-   * Logs a moderation or administrative action to the guild's configured log channel.
+   * Classifies an event into one of the three authoritative logging channels:
+   * 1. MODERATION (#mod-logs)
+   * 2. HONEYPOT_SECURITY (#honeypot-logs)
+   * 3. BOT_OPERATIONS (#bot-logs)
+   */
+  static classifyCategory(action, actionData = {}) {
+    if (actionData.category && Object.values(LogCategory).includes(actionData.category)) {
+      return actionData.category;
+    }
+    if (actionData.metadata?.honeypotSecurity || action === 'honeypot_trigger' || action === 'honeypot_evidence') {
+      return LogCategory.HONEYPOT_SECURITY;
+    }
+
+    const act = String(action || '').toLowerCase();
+
+    // Explicit Moderation Actions
+    const moderationActions = [
+      'ban_member', 'unban_member', 'kick_member', 'softban_member',
+      'timeout_member', 'remove_timeout', 'voice_mute', 'voice_unmute',
+      'voice_deafen', 'voice_undeafen', 'voice_disconnect',
+      'purge_messages', 'delete_message', 'edit_message',
+      'issue_warning', 'clear_warnings', 'lock_channel', 'unlock_channel',
+      'set_channel_slowmode'
+    ];
+    if (moderationActions.includes(act) || act.includes('ban_') || act.includes('kick_') || act.includes('timeout_') || act.includes('warning')) {
+      return LogCategory.MODERATION;
+    }
+
+    // Honeypot triggers & security evidence
+    if (act.includes('honeypot_trigger') || act.includes('honeypot_detection')) {
+      return LogCategory.HONEYPOT_SECURITY;
+    }
+
+    // Routine server configuration, resource lifecycle, and bot health belong in BOT_OPERATIONS
+    return LogCategory.BOT_OPERATIONS;
+  }
+
+  /**
+   * Checks whether an action matches configured filter preferences.
+   * Supports both legacy lowercase string tokens ('moderation', 'roles', 'channels', 'categories', etc.)
+   * and standard FunctionalCategory names ('Music & Voice', 'Moderation & Member Safety', etc.).
+   */
+  static matchesEventFilter(filterEvents, functionalCategory, action) {
+    if (!Array.isArray(filterEvents) || filterEvents.includes('all')) return true;
+    const catLower = String(functionalCategory || '').toLowerCase();
+    const actLower = String(action || '').toLowerCase();
+
+    for (const filter of filterEvents) {
+      const f = String(filter || '').toLowerCase().trim();
+      if (!f || f === 'all') return true;
+      if (f === catLower || catLower.includes(f)) return true;
+      if (f === 'moderation' && (catLower.includes('moderation') || /kick|ban|timeout|warn|purge|honeypot/i.test(actLower))) return true;
+      if (f === 'roles' && (catLower.includes('role') || /role/i.test(actLower))) return true;
+      if (f === 'permissions' && (catLower.includes('permission') || /permission|overwrite/i.test(actLower))) return true;
+      if (f === 'channels' && (catLower.includes('channel') || /channel/i.test(actLower))) return true;
+      if (f === 'categories' && (catLower.includes('channel') || /category/i.test(actLower))) return true;
+      if (f === 'policy' && (catLower.includes('server') || /policy|access/i.test(actLower))) return true;
+      if (f === 'music' && (catLower.includes('music') || /music|voice|play|pause|track|skip/i.test(actLower))) return true;
+      if ((f === 'messages' || f === 'messaging') && (catLower.includes('message') || /message|embed|announcement/i.test(actLower))) return true;
+      if (f === 'panels' && (catLower.includes('panel') || /panel|ticket/i.test(actLower))) return true;
+      if ((f === 'diagnostics' || f === 'recovery') && (catLower.includes('diagnostic') || /diagnos|audit|undo|recover/i.test(actLower))) return true;
+      if (f === 'utilities' && (catLower.includes('util') || /dashboard|setup|lookup|nickname/i.test(actLower))) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Logs an action to the appropriate designated channel (#mod-logs, #honeypot-logs, or #bot-logs).
    * Completely decoupled from action execution: failures to log never throw or fail the action.
    */
   static async logAction(guild, actionData) {
     if (!guild) return { logged: false, reason: 'no_guild' };
 
     const conf = ModLogService.getConfig(guild.id);
-    if (!conf || !conf.enabled || !conf.channelId) {
+    if (!conf || !conf.enabled) {
       return { logged: false, reason: 'logging_disabled_or_unconfigured' };
+    }
+
+    // Determine target category
+    const category = actionData.category || ModLogService.classifyCategory(actionData.action, actionData);
+
+    // Resolve destination channel ID
+    let targetChannelId = null;
+    if (category === LogCategory.HONEYPOT_SECURITY) {
+      targetChannelId = conf.honeypotLogChannelId || conf.modLogChannelId || conf.channelId;
+    } else if (category === LogCategory.BOT_OPERATIONS) {
+      targetChannelId = conf.botLogChannelId || conf.modLogChannelId || conf.channelId;
+    } else {
+      // MODERATION
+      targetChannelId = conf.modLogChannelId || conf.channelId;
+    }
+
+    if (!targetChannelId) {
+      return { logged: false, reason: 'channel_unconfigured', category };
     }
 
     const {
       action,
       actor,
       target,
-      reason,
-      duration,
-      count,
       outcome = actionData.outcome || actionData.status || 'succeeded',
-      failureReason = null,
-      executionId = null,
       source = '/go'
     } = actionData;
 
@@ -840,10 +1094,10 @@ export class ModLogService {
       return { logged: false, reason: 'filtered_denied' };
     }
 
-    // Check event category filters
-    const eventCategory = ModLogService.getActionCategory(action);
+    // Check event category filters deterministically
+    const classified = ActionRegistry.classify(action, actionData);
     const filterEvents = prefs.filterEvents;
-    if (Array.isArray(filterEvents) && !filterEvents.includes('all') && !filterEvents.includes(eventCategory)) {
+    if (!ModLogService.matchesEventFilter(filterEvents, classified.category, action)) {
       return { logged: false, reason: 'filtered_event_category' };
     }
 
@@ -860,25 +1114,45 @@ export class ModLogService {
     }
 
     // Resolve channel
-    const channel = guild.channels?.cache?.get?.(conf.channelId) || await guild.channels?.fetch?.(conf.channelId).catch(() => null);
+    const channel = guild.channels?.cache?.get?.(targetChannelId) || await guild.channels?.fetch?.(targetChannelId).catch(() => null);
     if (!channel) {
-      logger.warn('Mod-log channel missing or deleted', { guildId: guild.id, channelId: conf.channelId });
+      logger.warn('Log channel missing or deleted', { guildId: guild.id, channelId: targetChannelId, category });
       ModLogService._enqueuePendingDelivery(guild.id, actionData, 'channel_missing');
-      return { logged: false, reason: 'channel_missing', queued: true };
+      return { logged: false, reason: 'channel_missing', queued: true, category };
     }
 
-    // Build embed
-    const embed = ModLogService.createModLogEmbed(actionData);
+    // Build category-specific embed
+    let embed;
+    if (category === LogCategory.HONEYPOT_SECURITY) {
+      embed = ModLogService.createHoneypotLogEmbed({
+        ...actionData,
+        retentionHours: conf.honeypotRetentionHours || 24
+      });
+    } else {
+      embed = ModLogService.createModLogEmbed(actionData);
+    }
 
     try {
-      await channel.send({ embeds: [embed] });
+      const sent = await channel.send({ embeds: [embed] });
+
+      // If Honeypot Security evidence, register for 24h/48h expiry cleanup
+      if (category === LogCategory.HONEYPOT_SECURITY && sent?.id) {
+        HoneypotRetentionService.recordLogMessage(
+          guild.id,
+          channel.id,
+          sent.id,
+          conf.honeypotRetentionHours || 24,
+          actionData.correlationId
+        );
+      }
+
       ModLogService.updateConfig(guild.id, {
         lastDeliverySuccess: new Date().toISOString(),
         deliveredCount: (conf.deliveredCount || 0) + 1
       });
-      return { logged: true, channelId: channel.id };
+      return { logged: true, channelId: channel.id, category, messageId: sent?.id };
     } catch (err) {
-      logger.warn('Failed to deliver mod-log embed, attempting plain-text fallback', { error: err.message, guildId: guild.id });
+      logger.warn('Failed to deliver log embed, attempting plain-text fallback', { error: err.message, guildId: guild.id, category });
       try {
         const plainText = ModLogService.formatPlainTextLog(actionData);
         await channel.send({ content: plainText });
@@ -886,13 +1160,121 @@ export class ModLogService {
           lastDeliverySuccess: new Date().toISOString(),
           deliveredCount: (conf.deliveredCount || 0) + 1
         });
-        return { logged: true, channelId: channel.id, fallback: true };
+        return { logged: true, channelId: channel.id, category, fallback: true };
       } catch (fallbackErr) {
-        logger.error('Failed to deliver mod-log entry via plain text', { error: fallbackErr.message, guildId: guild.id });
+        logger.error('Failed to deliver log entry via plain text', { error: fallbackErr.message, guildId: guild.id, category });
         ModLogService._enqueuePendingDelivery(guild.id, actionData, fallbackErr.message);
-        return { logged: false, error: fallbackErr.message, queued: true };
+        return { logged: false, error: fallbackErr.message, queued: true, category };
       }
     }
+  }
+
+  /**
+   * Formats a temporary security evidence embed for Honeypot events (#honeypot-logs).
+   */
+  static createHoneypotLogEmbed(data) {
+    const {
+      target,
+      channel,
+      outcome = 'succeeded',
+      failureReason = null,
+      correlationId = null,
+      evidence = {},
+      retentionHours = 24
+    } = data;
+
+    const embed = new EmbedBuilder()
+      .setTitle('[Honeypot Security Event] Honeypot Trigger Detected')
+      .setColor(0xE74C3C)
+      .setTimestamp();
+
+    const targetStr = target?.tag
+      ? `${target.tag} (<@${target.id}>)`
+      : (target?.id ? `<@${target.id}>` : (target || 'Unknown'));
+    embed.addFields({ name: 'Target User', value: targetStr, inline: true });
+
+    const channelStr = channel?.id ? `<#${channel.id}>` : (channel?.name ? `#${channel.name}` : (channel || 'Unknown'));
+    embed.addFields({ name: 'Honeypot Channel', value: channelStr, inline: true });
+
+    const kickText = outcome === 'succeeded' ? 'Kicked successfully' : `Kick failed: ${failureReason || 'Hierarchy/Permission'}`;
+    embed.addFields({ name: 'Kick Attempt', value: kickText, inline: true });
+
+    const signals = evidence.signals && evidence.signals.length > 0 ? evidence.signals.join(', ') : 'Strict mode intrusion';
+    embed.addFields({ name: 'Signals Detected', value: signals, inline: true });
+
+    if (evidence.contentSnippet) {
+      const snippet = String(evidence.contentSnippet).replace(/`/g, "'").slice(0, 300);
+      embed.addFields({ name: 'Captured Evidence', value: `\`\`\`\n${snippet}\n\`\`\``, inline: false });
+    }
+
+    embed.addFields(
+      { name: 'Retention & Expiry', value: `Expires in ${retentionHours}h (Automatic cleanup)`, inline: true },
+      { name: 'Correlation ID', value: `\`${correlationId || 'none'}\``, inline: true }
+    );
+
+    embed.setFooter({ text: 'Honeypot Security Evidence • Temporary log' });
+    return embed;
+  }
+
+  /**
+   * Formats an operational embed for Honey Bot operations & server changes (#bot-logs).
+   */
+  static createBotLogEmbed(data) {
+    const {
+      action,
+      actor,
+      target,
+      reason,
+      outcome = 'succeeded',
+      failureReason = null,
+      executionId = null,
+      changes = null,
+      source = '/go'
+    } = data;
+
+    const classified = ActionRegistry.classify(action, data);
+    let color = 0x3498DB; // Blue
+    if (outcome === 'failed') color = 0x992D22;
+    else if (outcome === 'partially_completed') color = 0xE67E22;
+
+    const embed = new EmbedBuilder()
+      .setTitle(`[Honey Bot Operations] ${classified.displayName || action}`)
+      .setColor(color)
+      .setTimestamp();
+
+    const actorStr = actor?.tag
+      ? `${actor.tag} (${actor.id ? `<@${actor.id}>` : 'System'})`
+      : (actor?.id ? `<@${actor.id}>` : (actor || 'Honey Bot System'));
+    embed.addFields({ name: 'Initiator', value: actorStr, inline: true });
+
+    let targetStr = 'Server';
+    if (target) {
+      if (typeof target === 'object') {
+        targetStr = target.tag
+          ? `${target.tag} (<@${target.id}>)`
+          : (target.name ? `${target.type === 4 ? '📁 ' : '#'}${target.name} (${target.id})` : `${target.id || 'N/A'}`);
+      } else {
+        targetStr = String(target);
+      }
+    }
+    embed.addFields({ name: 'Resource Affected', value: targetStr, inline: true });
+
+    const statusText = outcome === 'succeeded' ? 'SUCCESS' : (outcome === 'failed' ? `FAILED: ${failureReason || 'Error'}` : outcome.toUpperCase());
+    embed.addFields({ name: 'Status', value: statusText, inline: true });
+
+    if (changes) {
+      embed.addFields({ name: 'Changes / Details', value: String(changes).slice(0, 512), inline: false });
+    } else if (reason) {
+      embed.addFields({ name: 'Details', value: String(reason).slice(0, 512), inline: false });
+    }
+
+    embed.addFields(
+      { name: 'Event Source', value: String(source), inline: true },
+      { name: 'Execution ID', value: `\`${executionId || data.correlationId || 'N/A'}\``, inline: true }
+    );
+
+    embed.setFooter({ text: 'Honey Bot Operations & Health Audit' });
+    return embed;
   }
 
   /**
@@ -909,6 +1291,7 @@ export class ModLogService {
       outcome = 'succeeded',
       failureReason = null,
       executionId = null,
+      correlationId = null,
       source = '/go',
       scope = null,
       changes = null,
@@ -919,25 +1302,54 @@ export class ModLogService {
       remainingWork = null
     } = data;
 
-    // Determine category and color
-    const category = ModLogService.getActionCategory(action);
-    let color = 0x5865F2; // Blurple
-    if (category === 'categories' || category === 'channels') color = 0x3498DB; // Blue
-    else if (category === 'permissions') color = 0x9B59B6; // Purple
-    else if (category === 'roles') color = 0x1ABC9C; // Teal
-    else if (action.includes('ban') || action.includes('delete')) color = 0xED4245; // Red
-    else if (action.includes('kick')) color = 0xE67E22; // Orange
-    else if (action.includes('timeout')) color = 0xFEE75C; // Yellow
-    else if (action.includes('purge')) color = 0x95A5A6; // Gray
+    // 1. Authoritative Deterministic Classification
+    const classified = ActionRegistry.classify(action, data);
+    const sourceInfo = ActionRegistry.normalizeEventSource(source);
+    const truthful = ActionRegistry.determineTruthfulOutcome(data, classified.verificationStrategy);
 
-    if (outcome === 'partial') color = 0xE67E22; // Orange
-    if (outcome === 'failed' || outcome === 'denied') color = 0x992D22; // Dark Red
+    // 2. Color determination by functional category and outcome
+    let color = 0x5865F2; // Default blurple
+    switch (classified.category) {
+      case FunctionalCategory.MUSIC_VOICE:
+        color = 0x1DB954; // Audio green
+        break;
+      case FunctionalCategory.MODERATION_SAFETY:
+        const actStr = String(action).toLowerCase();
+        if (actStr.includes('ban') || actStr.includes('kick')) color = 0xED4245;
+        else if (actStr.includes('timeout') || actStr.includes('warn')) color = 0xFEE75C;
+        else color = 0xE67E22;
+        break;
+      case FunctionalCategory.ROLES_PERMISSIONS:
+        color = String(action).includes('permission') ? 0x9B59B6 : 0x1ABC9C;
+        break;
+      case FunctionalCategory.CHANNEL_MANAGEMENT:
+        color = 0x3498DB;
+        break;
+      case FunctionalCategory.SERVER_CONFIGURATION:
+        color = 0x95A5A6;
+        break;
+      case FunctionalCategory.MESSAGES_EMBEDS:
+        color = 0x5865F2;
+        break;
+      case FunctionalCategory.REACTION_ROLES_PANELS:
+        color = 0xE91E63;
+        break;
+      case FunctionalCategory.DIAGNOSTICS_RECOVERY:
+        color = 0xF1C40F;
+        break;
+      case FunctionalCategory.GENERAL_UTILITIES:
+        color = 0x7289DA;
+        break;
+      default:
+        color = 0x7F8C8D;
+        break;
+    }
 
-    const categoryTitle = category.charAt(0).toUpperCase() + category.slice(1);
-    const actionTitle = formatActionTitle(action);
+    if (truthful.outcome === OutcomeState.PARTIALLY_COMPLETED) color = 0xE67E22;
+    if (truthful.outcome === OutcomeState.FAILED || truthful.outcome === OutcomeState.DENIED) color = 0x992D22;
 
     const embed = new EmbedBuilder()
-      .setTitle(`[${categoryTitle}] ${actionTitle}`)
+      .setTitle(`[${classified.category}] ${classified.displayName}`)
       .setColor(color)
       .setTimestamp();
 
@@ -945,7 +1357,9 @@ export class ModLogService {
     const actorStr = actor?.tag
       ? `${actor.tag} (${actor.id ? `<@${actor.id}>` : 'External'})`
       : (actor?.id ? `<@${actor.id}>` : (actor || 'Unknown'));
-    const actorFieldName = category === 'moderation' ? 'Moderator' : 'Initiated by';
+    const isExternal = sourceInfo.eventSource === EventSource.EXTERNAL_EVENT;
+    const isModeration = classified.category === FunctionalCategory.MODERATION_SAFETY;
+    const actorFieldName = isExternal ? 'External Actor' : (isModeration ? 'Moderator' : 'Initiated by');
     embed.addFields({ name: actorFieldName, value: actorStr, inline: true });
 
     // Target
@@ -966,13 +1380,26 @@ export class ModLogService {
       embed.addFields({ name: 'Scope', value: String(scope), inline: true });
     }
 
-    // Outcome
-    let outcomeText = outcome === 'succeeded'
-      ? (category === 'moderation' ? 'Completed' : 'Succeeded and verified')
-      : (outcome === 'failed' ? `Failed: ${failureReason || 'Error'}` : outcome);
-    if (outcome === 'partial') outcomeText = 'Partially completed';
-    const outcomeFieldName = category === 'moderation' ? 'Outcome' : 'Result';
+    // Outcome / Result
+    let outcomeText;
+    if (truthful.outcome === OutcomeState.SUCCEEDED) {
+      outcomeText = isModeration ? 'Completed' : (truthful.verificationStatus === VerificationStatus.VERIFIED ? 'Succeeded and verified' : 'Succeeded');
+    } else if (truthful.outcome === OutcomeState.FAILED) {
+      outcomeText = `Failed: ${failureReason || 'Error'}`;
+    } else if (truthful.outcome === OutcomeState.DENIED) {
+      outcomeText = `Denied: ${failureReason || 'Unauthorized'}`;
+    } else {
+      outcomeText = truthful.outcome;
+    }
+    const outcomeFieldName = isModeration ? 'Outcome' : 'Result';
     embed.addFields({ name: outcomeFieldName, value: outcomeText, inline: true });
+
+    // Functional Category & Verification Status & Event Source
+    embed.addFields(
+      { name: 'Category', value: classified.category, inline: true },
+      { name: 'Verification Status', value: truthful.verificationStatus, inline: true },
+      { name: 'Event Source', value: sourceInfo.eventSource, inline: true }
+    );
 
     // Specific category/permission fields
     if (changes) {
@@ -1010,8 +1437,9 @@ export class ModLogService {
       embed.addFields({ name: 'Count', value: String(count), inline: true });
     }
 
-    const footerParts = [`Source: ${source}`];
+    const footerParts = [`Source: ${sourceInfo.interfaceName}`];
     if (executionId) footerParts.push(`Execution: ${executionId}`);
+    if (correlationId || data.correlationId) footerParts.push(`Correlation ID: ${correlationId || data.correlationId}`);
     embed.setFooter({ text: footerParts.join(' • ') });
 
     return embed;
@@ -1031,13 +1459,17 @@ export class ModLogService {
       outcome = 'succeeded',
       failureReason = null,
       executionId = null,
+      correlationId = null,
       source = '/go',
       changes = null,
       affectedChannels = null,
       remainingWork = null
     } = data;
 
-    const actionTitle = formatActionTitle(action);
+    const classified = ActionRegistry.classify(action, data);
+    const sourceInfo = ActionRegistry.normalizeEventSource(source);
+    const truthful = ActionRegistry.determineTruthfulOutcome(data, classified.verificationStrategy);
+
     const actorStr = actor?.tag ? `${actor.tag} (${actor.id || ''})` : (actor?.id ? `<@${actor.id}>` : (actor || 'Unknown'));
     let targetStr = 'N/A';
     if (target) {
@@ -1050,14 +1482,28 @@ export class ModLogService {
       }
     }
 
-    const outcomeText = outcome === 'succeeded' ? 'Succeeded and verified' : (outcome === 'failed' ? `Failed: ${failureReason || 'Error'}` : outcome);
+    const isModeration = classified.category === FunctionalCategory.MODERATION_SAFETY;
+    let outcomeText;
+    if (truthful.outcome === OutcomeState.SUCCEEDED) {
+      outcomeText = isModeration ? 'Completed' : (truthful.verificationStatus === VerificationStatus.VERIFIED ? 'Succeeded and verified' : 'Succeeded');
+    } else if (truthful.outcome === OutcomeState.FAILED) {
+      outcomeText = `Failed: ${failureReason || 'Error'}`;
+    } else if (truthful.outcome === OutcomeState.DENIED) {
+      outcomeText = `Denied: ${failureReason || 'Unauthorized'}`;
+    } else {
+      outcomeText = truthful.outcome;
+    }
+
     const lines = [
-      `📋 **[Moderation] ${actionTitle}**`,
+      `📋 **[${classified.category}] ${classified.displayName}**`,
       `• **Target:** ${targetStr}`,
-      `• **Action:** ${actionTitle}${duration ? ` for ${duration}m` : ''}${count ? ` (count: ${count})` : ''}`,
+      `• **Action:** ${classified.displayName}${duration ? ` for ${duration}m` : ''}${count ? ` (count: ${count})` : ''}`,
+      `• **Category:** ${classified.category}`,
       `• **Initiated by:** ${actorStr}`,
       `• **Reason:** ${reason || 'No reason provided'}`,
-      `• **Result:** ${outcomeText}`
+      `• **Result:** ${outcomeText}`,
+      `• **Verification Status:** ${truthful.verificationStatus}`,
+      `• **Event Source:** ${sourceInfo.eventSource}`
     ];
 
     if (changes) lines.push(`• **Changes:** ${changes}`);
@@ -1065,7 +1511,7 @@ export class ModLogService {
     if (remainingWork) lines.push(`• **Remaining work:** ${remainingWork}`);
 
     lines.push(`• **Time:** ${new Date().toISOString()}`);
-    lines.push(`• **Execution ID:** ${executionId || 'N/A'} (Source: ${source})`);
+    lines.push(`• **Execution ID:** ${executionId || 'N/A'} (Source: ${sourceInfo.interfaceName})`);
 
     return lines.join('\n');
   }

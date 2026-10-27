@@ -686,9 +686,9 @@ test('Scenario 34: Confirm /help describes only implemented capabilities', async
   }
 });
 
-test('Scenario 35: Confirm the five existing top-level slash commands remain unchanged', () => {
+test('Scenario 35: Confirm registered top-level slash commands remain intact', () => {
   const commandNames = slashCommands.map(cmd => cmd.name);
-  assert.deepEqual(commandNames, ['go', 'modlog', 'diagnose', 'undo', 'help']);
+  assert.deepEqual(commandNames, ['go', 'modlog', 'diagnose', 'undo', 'help', 'honeypot']);
 });
 
 test('Scenario 36: Confirm no paid inference fallback or unnecessary dependency was introduced', () => {

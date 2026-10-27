@@ -2,16 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { slashCommands } from '../src/commands.js';
 
-test('Five-Command Architecture: Honey Bot exposes exactly five top-level slash commands', () => {
+test('Command Architecture: Honey Bot exposes registered slash commands including /honeypot', () => {
   const registeredNames = slashCommands.map(cmd => cmd.name).sort();
-  const expectedNames = ['diagnose', 'go', 'help', 'modlog', 'undo'];
+  const expectedNames = ['diagnose', 'go', 'help', 'honeypot', 'modlog', 'undo'];
 
   assert.deepEqual(
     registeredNames,
     expectedNames,
     `Registered commands [${registeredNames.join(', ')}] must exactly match [${expectedNames.join(', ')}]`
   );
-  assert.equal(slashCommands.length, 5, 'Must expose exactly five slash commands, no more and no less.');
+  assert.equal(slashCommands.length, 6, 'Must expose exactly six slash commands including dedicated /honeypot.');
 });
 
 test('Five-Command Architecture: /go requires a single free-form string prompt option', () => {
@@ -55,3 +55,12 @@ test('Five-Command Architecture: /diagnose, /undo, and /help have optional promp
   assert.equal(helpJson.options[0].name, 'prompt');
   assert.equal(helpJson.options[0].required, false);
 });
+
+test('Command Module: handleCommandInteraction imports and defines Executor properly', async () => {
+  const { handleCommandInteraction } = await import('../src/commands.js');
+  assert.equal(typeof handleCommandInteraction, 'function');
+  const { Executor } = await import('../src/executor.js');
+  assert.ok(Executor);
+  assert.equal(typeof Executor.executeIntent, 'function');
+});
+

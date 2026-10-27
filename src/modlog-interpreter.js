@@ -69,6 +69,51 @@ export class ModlogInterpreter {
       };
     }
 
+    // 2a. Honeypot retention configuration: "Keep honeypot logs for 48 hours"
+    const retentionMatch = cleanPrompt.match(/(?:keep|set|configure)\s+(?:the\s+)?honeypot\s+logs?\s+(?:for\s+)?(24|48)\s*h(?:ours?)?/i);
+    if (retentionMatch) {
+      return {
+        intent: 'configure_honeypot_retention',
+        retentionHours: Number(retentionMatch[1]),
+        clarificationQuestion: null
+      };
+    }
+
+    // 2b. Honeypot log channel: "Use #honeypot-logs for temporary Honeypot evidence"
+    const hpMatch = cleanPrompt.match(/(?:use|set|configure|route)\s+(this(?:\s+channel)?|here|<#\d+>|#?[\w-]+)\s+(?:as|for)\s+(?:the\s+)?(?:temporary\s+)?honeypot\s+(?:evidence|logs?)/i) ||
+                    cleanPrompt.match(/(?:use|set)\s+(#?[\w-]+|<#\d+>)\s+for\s+(?:temporary\s+)?honeypot\s+(?:evidence|logs?)/i);
+    if (hpMatch) {
+      const rawTarget = hpMatch[1];
+      const channelRef = /this|here/i.test(rawTarget) ? 'current' : rawTarget;
+      return {
+        intent: 'configure_honeypot_channel',
+        targetChannel: channelRef,
+        clarificationQuestion: null
+      };
+    }
+
+    // 2c. Bot operations channel: "Send bot activity and role changes to #bot-logs"
+    const botMatch = cleanPrompt.match(/(?:send|route|log)\s+(?:bot\s+activity|role\s+changes|server\s+changes|operations?)(?:\s+and\s+role\s+changes)?\s+to\s+(this(?:\s+channel)?|here|<#\d+>|#?[\w-]+)/i) ||
+                     cleanPrompt.match(/(?:set|use|configure)\s+(this(?:\s+channel)?|here|<#\d+>|#?[\w-]+)\s+(?:as|for)\s+(?:the\s+)?(?:bot[- ]?logs?|operations?[- ]?logs?|bot\s+activity)/i);
+    if (botMatch) {
+      const rawTarget = botMatch[1];
+      const channelRef = /this|here/i.test(rawTarget) ? 'current' : rawTarget;
+      return {
+        intent: 'configure_bot_channel',
+        targetChannel: channelRef,
+        clarificationQuestion: null
+      };
+    }
+
+    // 2d. Test all logging channels: "Test all three channels"
+    if (/(?:test\s+(?:all\s+)?(?:three\s+)?(?:log(?:ging)?\s+)?channels?|test\s+all\s+logging\s+destinations?)/i.test(cleanPrompt)) {
+      return {
+        intent: 'test_all_channels',
+        targetChannel: null,
+        clarificationQuestion: null
+      };
+    }
+
     if (
       /^(?:set\s*up|setup|initialize)(?:\s+(?:a\s+|the\s+)?(?:mod[- ]?logs?|moderation\s+logs?|it)?(?:\s+channel)?(?:\s+for\s+this\s+server)?)?$/i.test(cleanPrompt) ||
       /(?:set\s*up|create|initialize)\s+(?:the\s+|a\s+)?(?:mod[- ]?logs?|moderation\s+logs?)(?:\s+channel)?(?:\s+in\s+this\s+server)?/i.test(cleanPrompt) ||

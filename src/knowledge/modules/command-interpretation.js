@@ -2,12 +2,13 @@
  * Module 2: Discord Command Interpretation
  * 
  * Maps human natural-language requests into the bot's authoritative registered commands.
- * Grounding Rule: The bot exposes EXACTLY 5 registered slash commands:
+ * Grounding Rule: The bot exposes 6 registered slash commands:
  *   1. /go <instruction>
  *   2. /modlog [query] [limit]
  *   3. /diagnose
  *   4. /undo
  *   5. /help [topic]
+ *   6. /honeypot <setup|status|disable|test>
  * 
  * Any natural-language administration task without a specialized top-level command
  * is executed via the universal autonomous engine powered by /go.
@@ -82,6 +83,20 @@ export const REGISTERED_SLASH_COMMANDS = {
       'list available commands',
       'show permissions required'
     ]
+  },
+  honeypot: {
+    command: '/honeypot',
+    name: 'honeypot',
+    description: 'Configure, inspect, enable, disable, and test honeypot decoy channels for compromised account defense.',
+    usage: '/honeypot <setup|status|disable|test>',
+    isAutonomous: false,
+    supportedPhrasings: [
+      'setup honeypot',
+      'honeypot status',
+      'test honeypot',
+      'disable honeypot',
+      'configure decoy channel'
+    ]
   }
 };
 
@@ -115,6 +130,15 @@ export function interpretCommandRoute(prompt) {
     return {
       command: '/modlog',
       commandName: 'modlog',
+      args: {}
+    };
+  }
+
+  // Honeypot fast-match
+  if (/^(?:setup|configure|check|view|test|disable)?\s*honeypot(?:\s+(?:status|setup|test|disable))?$/i.test(clean)) {
+    return {
+      command: '/honeypot',
+      commandName: 'honeypot',
       args: {}
     };
   }

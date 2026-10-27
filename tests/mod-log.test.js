@@ -164,7 +164,7 @@ test('ModLogService: createModLogEmbed creates clean embed with all required aud
   });
 
   const json = embed.toJSON();
-  assert.equal(json.title, '[Moderation] Ban Member');
+  assert.equal(json.title, '[Moderation & Member Safety] Ban Member');
 
   const fields = json.fields;
   const modField = fields.find(f => f.name === 'Moderator');

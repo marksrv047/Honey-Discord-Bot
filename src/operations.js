@@ -9,6 +9,9 @@ import { MemberResolver } from './member-resolver.js';
 import { ModLogService } from './mod-log.js';
 import { WarningManager } from './warnings.js';
 import { GuildConfigService } from './guild-config.js';
+import { EmbedService } from './embed-service.js';
+import { SelfRoleManager } from './self-roles.js';
+import { HoneypotService } from './honeypot-service.js';
 
 const logger = new Logger('Operations');
 
@@ -2584,11 +2587,11 @@ export class Operations {
   // =========================================================================
 
   static async connectVoice(guild, channelName, context) {
-    return await MusicService.connectVoice(guild, channelName, context?.invokingMember);
+    return await MusicService.connectVoice(guild, channelName, context?.invokingMember, 15000, context?.channel || context?.interaction?.channel);
   }
 
   static async playMusic(guild, query, context) {
-    return await MusicService.play(guild, context?.invokingMember, query);
+    return await MusicService.play(guild, context?.invokingMember, query, context?.channel || context?.interaction?.channel);
   }
 
   static async pauseMusic(guild, context) {
@@ -2621,6 +2624,27 @@ export class Operations {
 
   static async leaveVoice(guild, context) {
     return await MusicService.leave(guild);
+  }
+
+  static async shuffleMusic(guild, context) {
+    return await MusicService.shuffle(guild);
+  }
+
+  static async clearMusicQueue(guild, context) {
+    return await MusicService.clearQueue(guild);
+  }
+
+  static async setMusicLoop(guild, mode, context) {
+    return await MusicService.setLoopMode(guild, mode);
+  }
+
+  static async getMusicHelp(guild, context) {
+    const embed = MusicService.buildCapabilityEmbed(guild?.id, guild);
+    return {
+      success: true,
+      details: 'Displayed Honey Bot music capabilities and voice guide.',
+      embed
+    };
   }
 
   // =========================================================================
@@ -3447,6 +3471,171 @@ export class Operations {
       details: `Reset Honey Bot access configuration for this server to defaults (Revision ${reset.revision}). Only Server Administrators can now operate the bot.`,
       revision: reset.revision,
       verified: true
+    };
+  }
+
+  /**
+   * Publishes a rich Discord embed to a specified channel.
+   */
+  static async publishEmbed(guild, channelRef, options = {}, context = {}) {
+    return await EmbedService.publishEmbed(guild, channelRef, options, context);
+  }
+
+  /**
+   * Edits an existing bot-authored embed message.
+   */
+  static async editEmbed(guild, channelRef, messageId, options = {}, context = {}) {
+    return await EmbedService.editEmbed(guild, channelRef, messageId, options, context);
+  }
+
+  /**
+   * Deploys an interactive self-role panel (buttons, select menu, or reactions).
+   */
+  static async setupRolePanel(guild, options = {}, context = {}) {
+    return await SelfRoleManager.setupPanel(guild, options);
+  }
+
+  /**
+   * Rebuilds or repairs a damaged role panel.
+   */
+  static async repairRolePanel(guild, panelId, context = {}) {
+    return await SelfRoleManager.repairPanel(guild, panelId);
+  }
+
+  /**
+   * Removes and unregisters a role panel.
+   */
+  static async deleteRolePanel(guild, panelId, options = {}, context = {}) {
+    return await SelfRoleManager.removePanel(guild, panelId, options?.deleteMessage !== false);
+  }
+
+  /**
+   * Configures standardized channel permission presets (rules, welcome, staff).
+   */
+  static async configureChannelPreset(guild, channelRef, presetType = 'rules', options = {}, context = {}) {
+    const channel = typeof context?.resolveTarget === 'function'
+      ? await context.resolveTarget(channelRef, 'channel')
+      : guild.channels?.cache?.find?.(c => c.id === channelRef || c.name?.toLowerCase() === String(channelRef).replace(/^#/, '').toLowerCase());
+
+    if (!channel) {
+      return { success: false, error: `Channel "${channelRef}" not found.`, action: 'configure_channel_preset' };
+    }
+
+    const everyoneRole = guild.roles?.everyone || guild.roles?.cache?.get?.(guild.id);
+    const overwrites = [];
+
+    if (presetType === 'rules' || presetType === 'read_only' || presetType === 'announcements') {
+      if (everyoneRole) {
+        overwrites.push({
+          id: everyoneRole.id,
+          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+          deny: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AddReactions, PermissionFlagsBits.CreatePublicThreads, PermissionFlagsBits.CreatePrivateThreads]
+        });
+      }
+    } else if (presetType === 'welcome') {
+      if (everyoneRole) {
+        overwrites.push({
+          id: everyoneRole.id,
+          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+          deny: [PermissionFlagsBits.SendMessages]
+        });
+      }
+    } else if (presetType === 'staff' || presetType === 'private') {
+      if (everyoneRole) {
+        overwrites.push({
+          id: everyoneRole.id,
+          deny: [PermissionFlagsBits.ViewChannel]
+        });
+      }
+      const staffRoleName = options.staffRole || options.role || 'Staff';
+      const staffRole = guild.roles?.cache?.find?.(r => r.name.toLowerCase() === staffRoleName.toLowerCase());
+      if (staffRole) {
+        overwrites.push({
+          id: staffRole.id,
+          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+        });
+      }
+    }
+
+    // Apply overwrites
+    if (typeof channel.permissionOverwrites?.edit === 'function') {
+      for (const ow of overwrites) {
+        await channel.permissionOverwrites.edit(ow.id, {
+          ...(ow.allow ? Object.fromEntries(ow.allow.map(p => [p, true])) : {}),
+          ...(ow.deny ? Object.fromEntries(ow.deny.map(p => [p, false])) : {})
+        }, { reason: `Configured preset "${presetType}" via Honey Bot` });
+      }
+    }
+
+    return {
+      success: true,
+      action: 'configure_channel_preset',
+      preset: presetType,
+      channelId: channel.id,
+      channelName: channel.name,
+      details: `Configured #${channel.name} with "${presetType}" permission preset.`,
+      verified: true
+    };
+  }
+
+  /**
+   * Configures honeypot protection channel and options.
+   */
+  static async setupHoneypot(guild, options = {}, context = {}) {
+    const user = context?.invokingUser || context?.user || null;
+    return await HoneypotService.setupHoneypot(guild, {
+      ...options,
+      confirmedBy: options.strictMode ? user : null
+    });
+  }
+
+  /**
+   * Enables honeypot enforcement.
+   */
+  static async enableHoneypot(guild, context = {}) {
+    const user = context?.invokingUser || context?.user || null;
+    return await HoneypotService.enableHoneypot(guild, user);
+  }
+
+  /**
+   * Disables honeypot enforcement.
+   */
+  static async disableHoneypot(guild, context = {}) {
+    return await HoneypotService.disableHoneypot(guild);
+  }
+
+  /**
+   * Gets current honeypot status.
+   */
+  static async getHoneypotStatus(guild, context = {}) {
+    const config = HoneypotService.getConfig(guild?.id);
+    const channel = config.channelId && guild?.channels?.cache?.get ? guild.channels.cache.get(config.channelId) : null;
+    return {
+      success: true,
+      action: 'honeypot_status',
+      config,
+      channelId: config.channelId,
+      channelName: config.channelName,
+      enabled: config.enabled,
+      strictMode: config.strictMode,
+      details: `Honeypot is ${config.enabled ? 'ENABLED' : 'DISABLED'}. Mode: ${config.strictMode ? 'STRICT (Instant Kick)' : 'MONITORED'}. Channel: ${channel ? `<#${channel.id}>` : (config.channelName ? `#${config.channelName}` : 'None')}.`
+    };
+  }
+
+  /**
+   * Runs non-destructive honeypot diagnostic test.
+   */
+  static async testHoneypot(guild, context = {}) {
+    const config = HoneypotService.getConfig(guild?.id);
+    const testResult = await HoneypotService.runDiagnosticTest(guild, context?.invokingUser || null);
+    const healthy = testResult.healthy ?? testResult.passed;
+    return {
+      success: healthy,
+      action: 'honeypot_test',
+      ...testResult,
+      details: healthy
+        ? `Honeypot non-destructive test PASSED for #${config.channelName || 'channel'}. All checks healthy.`
+        : `Honeypot non-destructive test completed with issues: ${Object.entries(testResult.checks || {}).filter(([_, c]) => c.status !== 'healthy').map(([k]) => k).join(', ')}.`
     };
   }
 }

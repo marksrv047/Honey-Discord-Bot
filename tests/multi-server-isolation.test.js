@@ -809,12 +809,12 @@ test('31. Perform a dry-run authorization test without executing a mutation', as
   assert.match(testResult.details, /IS NOT AUTHORIZED/i);
 });
 
-test('32. Verify that all five existing slash commands remain unchanged', () => {
+test('32. Verify that registered slash commands remain intact', () => {
   const registeredNames = slashCommands.map(c => c.name).sort();
-  const expectedNames = ['diagnose', 'go', 'help', 'modlog', 'undo'].sort();
+  const expectedNames = ['diagnose', 'go', 'help', 'honeypot', 'modlog', 'undo'].sort();
 
   assert.deepEqual(registeredNames, expectedNames);
-  assert.equal(registeredNames.length, 5);
+  assert.equal(registeredNames.length, 6);
 });
 
 test('33. Verify that existing moderation, logging, undo, and diagnostics functionality still works', async () => {

@@ -557,6 +557,256 @@ export class CompletenessChecker {
       }
     }
 
+    // G. Reaction Roles & Self-Role Systems:
+    // "Create a reaction-role system for choosing game roles."
+    // "Build a self-role channel with selectable roles, interactive buttons, and persistent role assignment."
+    // "Create a self-role system for gaming, notifications, and pronouns."
+    const isSelfRoleSystem = /(?:create|set\s+up|build)\s+(?:a\s+)?(?:reaction[- ]role|self[- ]role)\s+(?:system|channel|menu|panel)/i.test(prompt) ||
+                             /(?:reaction[- ]roles?|self[- ]roles?)\s+(?:for|system|channel|menu|panel)/i.test(prompt);
+
+    if (isSelfRoleSystem) {
+      let panelType = 'buttons';
+      if (/reaction/i.test(prompt) && !/button/i.test(prompt)) {
+        panelType = 'reactions';
+      } else if (/dropdown|select\s+menu|selection/i.test(prompt) && !/button/i.test(prompt)) {
+        panelType = 'select';
+      }
+
+      // Extract requested role names
+      let roleNames = [];
+      const colonMatch = prompt.match(/(?:for|roles?:?)\s*:?\s*([a-zA-Z0-9_,\s-]+)$/i);
+      const forMatch = prompt.match(/(?:for\s+(?:choosing\s+)?(?:gaming|game\s+roles|roles?|pronouns?|notifications?|colors?)\b[\w\s,.-]*)/i);
+
+      if (/game\s+roles|gaming/i.test(prompt) && !/:\s*[a-zA-Z]/i.test(prompt) && !/gaming,\s*notifications/i.test(prompt)) {
+        roleNames = ['RPG', 'FPS', 'Strategy'];
+      } else if (/gaming,\s*notifications,\s*(?:and\s+)?pronouns/i.test(prompt)) {
+        roleNames = ['Gaming', 'Notifications', 'Pronouns'];
+      } else if (colonMatch) {
+        const parsed = colonMatch[1].split(/,\s*(?:and\s+)?|\s+and\s+/i).map(s => s.trim().replace(/^@/, '')).filter(s => s && !/^(choosing|game\s+roles|roles?|system|channel)$/i.test(s));
+        if (parsed.length > 0) roleNames = parsed;
+      }
+
+      if (roleNames.length === 0) {
+        roleNames = ['Member', 'Community', 'Updates'];
+      }
+
+      const channelName = /channel\s+([a-zA-Z0-9_-]+)/i.test(prompt)
+        ? prompt.match(/channel\s+([a-zA-Z0-9_-]+)/i)[1].toLowerCase()
+        : 'roles';
+
+      // 1. Ensure channel creation
+      const hasChannel = actions.some(a => a.action === 'create_channel' && a.name?.toLowerCase() === channelName.toLowerCase());
+      if (!hasChannel) {
+        actions.unshift({
+          action: 'create_channel',
+          name: channelName,
+          type: 'GUILD_TEXT'
+        });
+      }
+
+      // 2. Ensure each role creation
+      for (const rName of roleNames) {
+        const hasRole = actions.some(a => a.action === 'create_role' && a.name?.toLowerCase() === rName.toLowerCase());
+        if (!hasRole) {
+          actions.push({
+            action: 'create_role',
+            name: rName
+          });
+        }
+      }
+
+      // 3. Ensure role panel setup
+      const hasPanel = actions.some(a => a.action === 'setup_role_panel' || a.action === 'setup_role_menu');
+      if (!hasPanel) {
+        const defaultEmojis = ['🎮', '⚔️', '🛡️', '🔔', '✨'];
+        actions.push({
+          action: 'setup_role_panel',
+          channelName,
+          panelType,
+          title: panelType === 'reactions' ? '🎭 Reaction Roles' : '🎭 Self-Assignable Roles',
+          description: panelType === 'reactions'
+            ? 'React with the corresponding emoji to receive your role. Remove your reaction to remove the role.'
+            : 'Select your server roles using the interactive controls below:',
+          roles: roleNames.map((name, idx) => ({
+            name,
+            emoji: defaultEmojis[idx % defaultEmojis.length],
+            description: `Assign or remove the @${name} role`
+          }))
+        });
+      }
+    }
+
+    // H. Complete Welcome System:
+    // "Set up a complete welcome system with an embed, a welcome channel, and appropriate permissions."
+    const isWelcomeSystem = /(?:set\s+up|create)\s+(?:a\s+)?(?:complete\s+)?welcome\s+system/i.test(prompt);
+    if (isWelcomeSystem) {
+      const chName = 'welcome';
+      const hasCh = actions.some(a => a.action === 'create_channel' && a.name?.toLowerCase() === chName);
+      const hasPerm = actions.some(a => a.action === 'configure_channel_preset' && a.targetChannel?.toLowerCase() === chName);
+      const hasEmbed = actions.some(a => (a.action === 'publish_embed' || a.action === 'create_embed') && a.targetChannel?.toLowerCase() === chName);
+
+      if (!hasCh) {
+        actions.unshift({
+          action: 'create_channel',
+          name: chName,
+          type: 'GUILD_TEXT'
+        });
+      }
+      if (!hasPerm) {
+        actions.push({
+          action: 'configure_channel_preset',
+          targetChannel: chName,
+          preset: 'welcome'
+        });
+      }
+      if (!hasEmbed) {
+        actions.push({
+          action: 'publish_embed',
+          targetChannel: chName,
+          template: 'welcome',
+          title: '👋 Welcome to the Server!',
+          description: 'Welcome to our community! Please check #rules, grab your roles in #roles, and enjoy your time here.',
+          footer: 'Welcome Guidelines'
+        });
+      }
+    }
+
+    // I. Rules Channel + Permissions + Polished Embed:
+    // "Create a rules channel, configure its permissions, and publish the server rules in a polished embed."
+    const isRulesChannelEmbed = /(?:create|set\s+up)\s+(?:a\s+)?(?:new\s+)?rules\s+channel.*publish.*(?:rules|embed)/i.test(prompt) ||
+                                /(?:rules\s+channel.*permissions.*publish.*rules)/i.test(prompt);
+    if (isRulesChannelEmbed) {
+      const chName = 'rules';
+      const hasCh = actions.some(a => a.action === 'create_channel' && a.name?.toLowerCase() === chName);
+      const hasPerm = actions.some(a => a.action === 'configure_channel_preset' && a.targetChannel?.toLowerCase() === chName);
+      const hasEmbed = actions.some(a => (a.action === 'publish_embed' || a.action === 'create_embed') && a.targetChannel?.toLowerCase() === chName);
+
+      if (!hasCh) {
+        actions.unshift({
+          action: 'create_channel',
+          name: chName,
+          type: 'GUILD_TEXT'
+        });
+      }
+      if (!hasPerm) {
+        actions.push({
+          action: 'configure_channel_preset',
+          targetChannel: chName,
+          preset: 'rules'
+        });
+      }
+      if (!hasEmbed) {
+        actions.push({
+          action: 'publish_embed',
+          targetChannel: chName,
+          template: 'rules',
+          title: '📜 Server Rules & Guidelines',
+          description: 'Please read and follow these server rules to keep our community safe and welcoming.',
+          fields: [
+            { name: '1. Respect All Members', value: 'Treat everyone with kindness. Harassment, hate speech, and toxicity are strictly prohibited.', inline: false },
+            { name: '2. No Spam or Self-Promotion', value: 'Keep discussions in relevant channels and do not post unsolicited links.', inline: false },
+            { name: '3. Follow Discord Community Guidelines', value: 'All Discord Terms of Service and Community Guidelines apply here.', inline: false }
+          ],
+          footer: 'Server Administration'
+        });
+      }
+    }
+
+    // J. Three Roles + Embed Explaining How to Obtain Them:
+    // "Create three roles, organize them, and publish an embed explaining how members can obtain them."
+    const isThreeRolesEmbed = /(?:create|set\s+up)\s+(?:three|\d+)\s+roles.*publish.*embed.*obtain/i.test(prompt);
+    if (isThreeRolesEmbed) {
+      const rolesToCreate = ['Member', 'Contributor', 'VIP'];
+      for (const rName of rolesToCreate) {
+        if (!actions.some(a => a.action === 'create_role' && a.name?.toLowerCase() === rName.toLowerCase())) {
+          actions.push({
+            action: 'create_role',
+            name: rName
+          });
+        }
+      }
+
+      if (!actions.some(a => a.action === 'publish_embed' || a.action === 'create_embed')) {
+        actions.push({
+          action: 'publish_embed',
+          targetChannel: 'current',
+          template: 'information',
+          title: '🏆 Server Roles & How to Obtain Them',
+          description: 'Overview of server roles and requirements to obtain them:',
+          fields: [
+            { name: '@Member', value: 'Assigned automatically to participating community members.', inline: false },
+            { name: '@Contributor', value: 'Awarded to active contributors helping with projects and events.', inline: false },
+            { name: '@VIP', value: 'Awarded to dedicated supporters and recognized community leaders.', inline: false }
+          ],
+          footer: 'Role Information Guide'
+        });
+      }
+    }
+
+    // K. Rich Announcement Embed with Fields, Footer, Timestamp & Buttons:
+    // "Make an announcement embed with a title, description, fields, footer, timestamp, and buttons."
+    const isRichAnnouncementEmbed = /(?:make|create|publish|post)\s+(?:an?\s+)?(?:announcement\s+)?embed.*(?:title|description|fields|footer|timestamp|buttons)/i.test(prompt);
+    if (isRichAnnouncementEmbed) {
+      if (!actions.some(a => a.action === 'publish_embed' || a.action === 'create_embed')) {
+        actions.push({
+          action: 'publish_embed',
+          targetChannel: 'current',
+          template: 'announcement',
+          title: '📢 Server Announcement',
+          description: 'Important community announcement and server updates.',
+          fields: [
+            { name: 'New Features', value: 'Interactive embeds, self-role buttons, and server automation are now active.', inline: false },
+            { name: 'Getting Started', value: 'Explore the updated channels and role options.', inline: false }
+          ],
+          footer: 'Server Staff Team',
+          timestamp: true,
+          buttons: [
+            { label: 'Community Guidelines', style: 'Link', url: 'https://discord.com/guidelines' },
+            { label: 'Acknowledged', style: 'Success', customId: 'announce_ack' }
+          ]
+        });
+      }
+    }
+
+    // L. Complete Onboarding Flow:
+    // "Set up a complete onboarding flow, including roles, channels, instructions, and interactive components."
+    const isOnboardingFlow = /(?:set\s+up|create)\s+(?:a\s+)?(?:complete\s+)?onboarding\s+flow/i.test(prompt);
+    if (isOnboardingFlow) {
+      // 1. Roles
+      if (!actions.some(a => a.action === 'create_role' && a.name?.toLowerCase() === 'member')) {
+        actions.push({ action: 'create_role', name: 'Member' });
+      }
+      // 2. Welcome Channel + Embed
+      if (!actions.some(a => a.action === 'create_channel' && a.name?.toLowerCase() === 'welcome')) {
+        actions.push({ action: 'create_channel', name: 'welcome', type: 'GUILD_TEXT' });
+      }
+      if (!actions.some(a => a.action === 'configure_channel_preset' && a.targetChannel?.toLowerCase() === 'welcome')) {
+        actions.push({ action: 'configure_channel_preset', targetChannel: 'welcome', preset: 'welcome' });
+      }
+      if (!actions.some(a => a.action === 'publish_embed' && a.targetChannel?.toLowerCase() === 'welcome')) {
+        actions.push({
+          action: 'publish_embed',
+          targetChannel: 'welcome',
+          template: 'welcome',
+          title: '👋 Welcome to the Community!',
+          description: 'Follow the steps below to complete onboarding and get involved.'
+        });
+      }
+      // 3. Self-Roles Channel + Panel
+      if (!actions.some(a => a.action === 'create_channel' && a.name?.toLowerCase() === 'roles')) {
+        actions.push({ action: 'create_channel', name: 'roles', type: 'GUILD_TEXT' });
+      }
+      if (!actions.some(a => a.action === 'setup_role_panel')) {
+        actions.push({
+          action: 'setup_role_panel',
+          channelName: 'roles',
+          panelType: 'buttons',
+          title: '🎭 Select Your Roles',
+          roles: ['Member']
+        });
+      }
+    }
+
     // =========================================================================
     // 6. AMBIGUOUS TARGET VALIDATION (Do not guess missing targets)
     // =========================================================================
@@ -564,7 +814,11 @@ export class CompletenessChecker {
     const isAmbiguousRoleDelete = /^delete\s+(?:a\s+|the\s+)?role$/i.test(prompt);
     const isAmbiguousMemberMod = /^(?:timeout|kick|ban)\s+(?:someone|a\s+member|a\s+user)$/i.test(prompt);
     const isAmbiguousChannelRename = /^rename\s+(?:this\s+)?channel(?:,\s*update\s+its\s+topic)?(?:\s+and\s+set\s+slowmode.*)?$/i.test(prompt) && !prompt.includes(' to ');
+    const isAmbiguousMultiChannelEmbed = /(?:create|publish|post)\s+several\s+(?:announcement\s+)?embeds\s+(?:and\s+publish\s+them\s+)?in\s+the\s+channels\s+i\s+specify/i.test(prompt);
 
+    if (isAmbiguousMultiChannelEmbed) {
+      errors.push('Please specify which channels to publish the announcement embeds in (e.g. "#announcements and #updates").');
+    }
     if (isAmbiguousChannelDelete) {
       errors.push('No channel specified for deletion. Please specify the target channel (e.g. "delete channel #testing").');
     }
@@ -711,6 +965,37 @@ export class CompletenessChecker {
         ) {
           if (!current.dependsOn.includes(prev.id)) {
             current.dependsOn.push(prev.id);
+          }
+        }
+
+        // 6. Role Creation -> Role Panel dependency
+        if (prev.action === 'create_role' && (current.action === 'setup_role_panel' || current.action === 'setup_role_menu')) {
+          if (!current.dependsOn.includes(prev.id)) {
+            current.dependsOn.push(prev.id);
+          }
+        }
+
+        // 7. Channel Creation -> Preset Configuration & Embed Publishing
+        if (prev.action === 'create_channel') {
+          const chNameLower = (prev.name || '').toLowerCase();
+          const targetCh = String(current.targetChannel || current.channelName || '').toLowerCase();
+          if (chNameLower === targetCh || !targetCh || targetCh === 'current') {
+            if (['configure_channel_preset', 'publish_embed', 'create_embed', 'setup_role_panel', 'setup_role_menu'].includes(current.action)) {
+              if (!current.dependsOn.includes(prev.id)) {
+                current.dependsOn.push(prev.id);
+              }
+            }
+          }
+        }
+
+        // 8. Preset Configuration -> Embed Publishing in that channel
+        if (prev.action === 'configure_channel_preset' && (current.action === 'publish_embed' || current.action === 'create_embed')) {
+          const presetCh = String(prev.targetChannel || '').toLowerCase();
+          const targetCh = String(current.targetChannel || '').toLowerCase();
+          if (presetCh === targetCh) {
+            if (!current.dependsOn.includes(prev.id)) {
+              current.dependsOn.push(prev.id);
+            }
           }
         }
       }

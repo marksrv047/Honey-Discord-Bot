@@ -218,12 +218,106 @@ export const SetupRoleMenuSchema = z.object({
   channelName: z.string().default('roles'),
   title: z.string().default('Self-Assignable Roles'),
   description: z.string().default('Select the roles you want from the dropdown menu below:'),
-  roles: z.array(z.object({
-    name: z.string(),
-    description: z.string().optional(),
-    emoji: z.string().optional(),
-    color: HexColorSchema.optional()
-  })).min(1).max(25)
+  roles: z.array(z.union([
+    z.string(),
+    z.object({
+      name: z.string(),
+      roleName: z.string().optional(),
+      roleId: z.string().optional(),
+      description: z.string().optional(),
+      emoji: z.string().optional(),
+      color: z.string().optional()
+    })
+  ])).min(1).max(25)
+});
+
+export const SetupRolePanelSchema = z.object({
+  action: z.literal('setup_role_panel'),
+  channelName: z.string().default('roles'),
+  panelType: z.enum(['buttons', 'select', 'reactions']).default('buttons'),
+  selectionRule: z.enum(['multi', 'single']).default('multi'),
+  title: z.string().default('🎭 Self-Assignable Roles'),
+  description: z.string().optional(),
+  roles: z.array(z.union([
+    z.string(),
+    z.object({
+      name: z.string(),
+      roleName: z.string().optional(),
+      roleId: z.string().optional(),
+      emoji: z.string().optional(),
+      description: z.string().optional(),
+      color: z.string().optional()
+    })
+  ])).min(1).max(25)
+});
+
+export const PublishEmbedSchema = z.object({
+  action: z.literal('publish_embed'),
+  targetChannel: z.string().default('current'),
+  title: z.string().max(256).optional(),
+  description: z.string().max(4096).optional(),
+  message: z.string().optional(),
+  content: z.string().optional(),
+  color: z.string().optional(),
+  url: z.string().optional(),
+  author: z.union([z.string(), z.object({ name: z.string(), iconURL: z.string().optional(), url: z.string().optional() })]).optional(),
+  thumbnail: z.string().optional(),
+  image: z.string().optional(),
+  fields: z.array(z.object({
+    name: z.string().max(256),
+    value: z.string().max(1024),
+    inline: z.boolean().optional()
+  })).max(25).optional(),
+  footer: z.union([z.string(), z.object({ text: z.string(), iconURL: z.string().optional() })]).optional(),
+  timestamp: z.union([z.boolean(), z.string()]).optional(),
+  template: z.enum(['announcement', 'rules', 'welcome', 'information', 'faq', 'event', 'self_role']).optional(),
+  embeds: z.array(z.any()).max(10).optional(),
+  buttons: z.array(z.any()).optional(),
+  components: z.array(z.any()).optional()
+});
+
+export const CreateEmbedSchema = z.object({
+  action: z.literal('create_embed'),
+  targetChannel: z.string().default('current'),
+  title: z.string().max(256).optional(),
+  description: z.string().max(4096).optional(),
+  message: z.string().optional(),
+  content: z.string().optional(),
+  color: z.string().optional(),
+  url: z.string().optional(),
+  author: z.union([z.string(), z.object({ name: z.string(), iconURL: z.string().optional(), url: z.string().optional() })]).optional(),
+  thumbnail: z.string().optional(),
+  image: z.string().optional(),
+  fields: z.array(z.object({
+    name: z.string().max(256),
+    value: z.string().max(1024),
+    inline: z.boolean().optional()
+  })).max(25).optional(),
+  footer: z.union([z.string(), z.object({ text: z.string(), iconURL: z.string().optional() })]).optional(),
+  timestamp: z.union([z.boolean(), z.string()]).optional(),
+  template: z.enum(['announcement', 'rules', 'welcome', 'information', 'faq', 'event', 'self_role']).optional(),
+  embeds: z.array(z.any()).max(10).optional(),
+  buttons: z.array(z.any()).optional(),
+  components: z.array(z.any()).optional()
+});
+
+export const EditEmbedSchema = z.object({
+  action: z.literal('edit_embed'),
+  targetChannel: z.string().default('current'),
+  messageId: z.string().min(1),
+  title: z.string().max(256).optional(),
+  description: z.string().max(4096).optional(),
+  color: z.string().optional(),
+  fields: z.array(z.any()).optional(),
+  footer: z.any().optional(),
+  components: z.array(z.any()).optional()
+});
+
+export const ConfigureChannelPresetSchema = z.object({
+  action: z.literal('configure_channel_preset'),
+  targetChannel: z.string().default('current'),
+  preset: z.enum(['rules', 'welcome', 'staff', 'read_only', 'announcements']).default('rules'),
+  staffRole: z.string().optional()
 });
 
 export const SetupAutoModRuleSchema = z.object({
@@ -412,6 +506,47 @@ export const MusicLeaveSchema = z.object({
   action: z.literal('music_leave')
 });
 
+export const MusicShuffleSchema = z.object({
+  action: z.literal('music_shuffle')
+});
+
+export const MusicClearSchema = z.object({
+  action: z.literal('music_clear')
+});
+
+export const MusicLoopSchema = z.object({
+  action: z.literal('music_loop'),
+  mode: z.enum(['off', 'track', 'queue', 'song', 'all']).optional()
+});
+
+export const MusicHelpSchema = z.object({
+  action: z.literal('music_help')
+});
+
+export const HoneypotSetupSchema = z.object({
+  action: z.literal('honeypot_setup'),
+  targetChannel: z.string().optional(),
+  channel: z.string().optional(),
+  createChannel: z.boolean().optional(),
+  strictMode: z.boolean().optional()
+});
+
+export const HoneypotEnableSchema = z.object({
+  action: z.literal('honeypot_enable')
+});
+
+export const HoneypotDisableSchema = z.object({
+  action: z.literal('honeypot_disable')
+});
+
+export const HoneypotStatusSchema = z.object({
+  action: z.literal('honeypot_status')
+});
+
+export const HoneypotTestSchema = z.object({
+  action: z.literal('honeypot_test')
+});
+
 export const SetUserChannelPermissionSchema = z.object({
   action: z.literal('set_user_channel_permission'),
   targetMember: z.string().min(1),
@@ -575,6 +710,11 @@ export const ActionSchema = z.discriminatedUnion('action', [
   SetupModLogsSchema,
   SendAnnouncementSchema,
   SendMessageSchema,
+  PublishEmbedSchema,
+  CreateEmbedSchema,
+  EditEmbedSchema,
+  SetupRolePanelSchema,
+  ConfigureChannelPresetSchema,
   PurgeMessagesSchema,
   SearchMessagesSchema,
   PinMessageSchema,
@@ -602,7 +742,16 @@ export const ActionSchema = z.discriminatedUnion('action', [
   MusicQueueSchema,
   MusicNowPlayingSchema,
   MusicVolumeSchema,
-  MusicLeaveSchema
+  MusicLeaveSchema,
+  MusicShuffleSchema,
+  MusicClearSchema,
+  MusicLoopSchema,
+  MusicHelpSchema,
+  HoneypotSetupSchema,
+  HoneypotEnableSchema,
+  HoneypotDisableSchema,
+  HoneypotStatusSchema,
+  HoneypotTestSchema
 ]);
 
 /**

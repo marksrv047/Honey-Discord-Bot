@@ -143,8 +143,13 @@ async function handleExternalModerationEvent(guild, action, targetObj, auditLogT
     return;
   }
 
-  // Record to centralized mod log
+  // Categorize: external bans/kicks go to MODERATION, while channel/role changes go to BOT_OPERATIONS
+  const isModerationAction = ['ban_member', 'unban_member', 'kick_member'].includes(action);
+  const category = isModerationAction ? 'MODERATION' : 'BOT_OPERATIONS';
+
+  // Record to centralized logging service
   await ModLogService.logAction(guild, {
+    category,
     action,
     actor,
     target: targetObj,

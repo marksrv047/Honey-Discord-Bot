@@ -384,11 +384,11 @@ test('Dashboard: Intent Router resolves dashboard requests deterministically wit
   }
 });
 
-test('Dashboard: Five-Command slash command architecture remains strictly intact with no /dashboard', () => {
+test('Dashboard: Slash command architecture remains strictly intact with no /dashboard', () => {
   const commandNames = slashCommands.map(c => c.name).sort();
-  const expectedNames = ['diagnose', 'go', 'help', 'modlog', 'undo'];
+  const expectedNames = ['diagnose', 'go', 'help', 'honeypot', 'modlog', 'undo'];
 
   assert.deepEqual(commandNames, expectedNames);
-  assert.equal(slashCommands.length, 5);
+  assert.equal(slashCommands.length, 6);
   assert.equal(slashCommands.some(c => c.name === 'dashboard'), false, 'Must NOT register a top-level /dashboard slash command');
 });

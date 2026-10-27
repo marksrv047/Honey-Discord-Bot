@@ -175,31 +175,31 @@ export class HealthCheckEngine {
       }
     }
 
-    // Five-Command Architecture Verification
+    // Registered Slash Command Architecture Verification
     try {
       const { slashCommands } = await import(`./commands.js?t=${Date.now()}`);
       const commandNames = slashCommands.map(c => c.name).sort();
-      const expected = ['diagnose', 'go', 'help', 'modlog', 'undo'];
+      const expected = ['diagnose', 'go', 'help', 'honeypot', 'modlog', 'undo'];
       const matches = JSON.stringify(commandNames) === JSON.stringify(expected);
 
       if (matches) {
         checks.push({
-          name: 'Five-Command Architecture',
+          name: 'Registered Slash Commands',
           status: CheckStatus.PASSED,
-          message: `Registered exactly five agreed top-level slash commands: ${commandNames.join(', ')}.`
+          message: `Registered exactly six agreed top-level slash commands: ${commandNames.join(', ')}.`
         });
       } else {
         checks.push({
-          name: 'Five-Command Architecture',
+          name: 'Registered Slash Commands',
           status: CheckStatus.FAILED,
           severity: Severity.HIGH,
           message: `Unexpected command registration: found [${commandNames.join(', ')}], expected [${expected.join(', ')}].`,
-          remediation: 'Ensure commands.js exposes exactly /go, /modlog, /diagnose, /undo, /help.'
+          remediation: 'Ensure commands.js exposes exactly /go, /modlog, /diagnose, /undo, /help, /honeypot.'
         });
       }
     } catch (err) {
       checks.push({
-        name: 'Five-Command Architecture',
+        name: 'Registered Slash Commands',
         status: CheckStatus.FAILED,
         severity: Severity.HIGH,
         message: `Failed to inspect slashCommands: ${err.message}`,

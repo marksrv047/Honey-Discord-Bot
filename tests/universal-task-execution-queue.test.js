@@ -838,10 +838,10 @@ describe('Universal Task Understanding, Sequential Execution Queue & Crash Resil
     assert.ok(process.env.GROQ_API_KEY !== undefined || config.ai.groq.apiKey !== undefined);
   });
 
-  test('35. LLM: Exactly five slash commands remain intact (/go, /modlog, /diagnose, /undo, /help)', () => {
+  test('35. Slash commands remain intact', () => {
     const names = slashCommands.map(c => c.name).sort();
-    assert.deepEqual(names, ['diagnose', 'go', 'help', 'modlog', 'undo']);
-    assert.equal(names.length, 5);
+    assert.deepEqual(names, ['diagnose', 'go', 'help', 'honeypot', 'modlog', 'undo']);
+    assert.equal(names.length, 6);
   });
 
   test('36. Integration: Existing response formatting and logging pass seamlessly', () => {

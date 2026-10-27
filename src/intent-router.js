@@ -10,6 +10,8 @@ import { HelpManager } from './help.js';
 import { KnowledgeRetriever } from './knowledge/retrieval.js';
 import { NegationDetector } from './knowledge/negation-detector.js';
 import { ClarificationEngine } from './knowledge/clarification-engine.js';
+import { LinguisticNormalizer } from './linguistic-normalizer.js';
+import { LanguageExampleDataset } from './language-examples.js';
 
 const logger = new Logger('IntentRouter');
 
@@ -95,8 +97,8 @@ export class IntentRouter {
    * Resolves the user request into an actionable structured intent.
    */
   async route(userPrompt, executionContext, budget = new TaskBudget()) {
-    const trimmed = userPrompt.trim();
-    const cleanPrompt = trimmed.replace(/[.!?]+$/, '').trim();
+    const norm = LinguisticNormalizer.normalize(userPrompt);
+    const cleanPrompt = norm.cleanPrompt || userPrompt.trim().replace(/[.!?]+$/, '').trim();
 
     // =========================================================================
     // 0a. DASHBOARD & SERVER SETTINGS
@@ -109,6 +111,20 @@ export class IntentRouter {
       return {
         intent: 'open_dashboard',
         thought: 'User requested server configuration dashboard',
+        isHighImpact: false
+      };
+    }
+
+    // =========================================================================
+    // 0a2. FIRST-RUN SETUP & PERMISSION ONBOARDING
+    // =========================================================================
+    if (
+      /^(?:open|show|view|display|launch|run|start|begin)?\s*(?:the\s+)?(?:bot\s+|server\s+|installation\s+|first[- ]run\s+)?(?:setup|onboarding|permissions?\s+setup|install\s+setup|setup\s+panel|permission\s+check)$/i.test(cleanPrompt) ||
+      /^(?:setup|onboarding|install\s+bot|bot\s+setup|server\s+setup|check\s+(?:the\s+)?(?:bot\s+)?permissions?|bot\s+permissions?|reauthorize(?:\s+bot)?)$/i.test(cleanPrompt)
+    ) {
+      return {
+        intent: 'open_setup',
+        thought: 'User requested bot installation and permission setup panel',
         isHighImpact: false
       };
     }
@@ -165,17 +181,19 @@ export class IntentRouter {
       };
     }
 
-    const capabilityQuestionMatch = cleanPrompt.match(/^(?:can\s+you|are\s+you\s+able\s+to|do\s+you\s+support)\s+(.+)$/i);
+    const capabilityQuestionMatch = (userPrompt || '').match(/^(?:can\s+you|are\s+you\s+able\s+to|do\s+you\s+support)\s+(.+)$/i) ||
+      cleanPrompt.match(/^(?:can\s+you|are\s+you\s+able\s+to|do\s+you\s+support)\s+(.+)$/i);
     if (capabilityQuestionMatch) {
-      const queriedAction = capabilityQuestionMatch[1].trim();
-      const matchedCap = CapabilityRegistry.findMatchingCapability(queriedAction);
+      const queriedAction = capabilityQuestionMatch[1].trim().replace(/\?+$/, '');
+      const matchedCap = CapabilityRegistry.findMatchingCapability(queriedAction) ||
+        CapabilityRegistry.searchCapabilities(queriedAction)[0];
       if (matchedCap) {
         const auth = CapabilityRegistry.toAuthoritative(matchedCap);
-        const exampleText = auth.goExample ? ` For example: \`${auth.goExample}\`` : '';
+        const exampleText = auth.goExample ? ` For example: \`/go prompt: ${auth.goExample}\`` : ' Execute via `/go prompt: <instruction>`.';
         return {
           intent: 'conversational',
           thought: `Answered capability question about ${auth.title}`,
-          conversationalResponse: `Yes, I support **${auth.title}** (\`${auth.action}\`: ${auth.description.toLowerCase()}).${exampleText}`,
+          conversationalResponse: `Yes, Honey Bot supports **${auth.title}** (\`${auth.action}\`: ${auth.description.toLowerCase()}). Use \`/go prompt:\` to execute this action.${exampleText}`,
           isHighImpact: false
         };
       }
@@ -286,6 +304,65 @@ export class IntentRouter {
         args: { channel: channelName },
         isHighImpact: false,
         thought: `Connect to voice channel "${channelName}"`
+      };
+    }
+
+    // H1. Dedicated Honeypot System fast-paths
+    if (/^(?:set\s*up|setup|configure|create|initialize)\s+(?:a\s+|the\s+)?honeypot(?:\s+channel)?(?:\s+(?:called|named|in|to)\s+(#?[\w-]+))?$/i.test(cleanPrompt)) {
+      const chMatch = cleanPrompt.match(/(?:called|named|in|to)\s+(#?[\w-]+)/i);
+      const targetCh = chMatch ? chMatch[1].replace(/^#/, '') : 'honeypot';
+      const isStrict = /strict/i.test(cleanPrompt);
+      return {
+        intent: 'honeypot_setup',
+        targetType: 'channel',
+        targetRef: targetCh,
+        args: { channelName: targetCh, strictMode: isStrict },
+        isHighImpact: false,
+        thought: 'Set up honeypot channel configuration'
+      };
+    }
+
+    if (/^(?:enable|activate|turn\s+on|start)\s+(?:the\s+)?honeypot(?:\s+(?:channel|protection|enforcement))?$/i.test(cleanPrompt)) {
+      return {
+        intent: 'honeypot_enable',
+        targetType: 'server',
+        targetRef: 'current',
+        args: {},
+        isHighImpact: true,
+        thought: 'Enable honeypot enforcement'
+      };
+    }
+
+    if (/^(?:disable|deactivate|turn\s+off|stop)\s+(?:the\s+)?honeypot(?:\s+(?:channel|protection|enforcement))?$/i.test(cleanPrompt)) {
+      return {
+        intent: 'honeypot_disable',
+        targetType: 'server',
+        targetRef: 'current',
+        args: {},
+        isHighImpact: false,
+        thought: 'Disable honeypot enforcement'
+      };
+    }
+
+    if (/^(?:what(?:'s|\s+is)|check|view|show|display|get)\s+(?:the\s+)?honeypot(?:\s+(?:status|channel|config|configuration))?$/i.test(cleanPrompt) || /^honeypot\s+status$/i.test(cleanPrompt)) {
+      return {
+        intent: 'honeypot_status',
+        targetType: 'server',
+        targetRef: 'current',
+        args: {},
+        isHighImpact: false,
+        thought: 'Check honeypot configuration status'
+      };
+    }
+
+    if (/^(?:test|diagnose|check)\s+(?:the\s+)?honeypot(?:\s+(?:health|setup|configuration))?$/i.test(cleanPrompt) || /^honeypot\s+test$/i.test(cleanPrompt)) {
+      return {
+        intent: 'honeypot_test',
+        targetType: 'server',
+        targetRef: 'current',
+        args: {},
+        isHighImpact: false,
+        thought: 'Run non-destructive honeypot test'
       };
     }
 
@@ -1319,18 +1396,19 @@ export class IntentRouter {
     }
 
     // H. "slowmode <N>s" / "set slowmode to <N>s" / "make general slower" / "slow down #general"
-    const slowmodeMatch = cleanPrompt.match(/^(?:set\s+)?slowmode\s+(?:to\s+)?(\d+)\s*(?:s|seconds?)?(?:\s+(?:on|in)\s+(this\s+channel|<#\d+>|#?[\w-]+))?$/i) ||
-      cleanPrompt.match(/^(?:make\s+(this\s+channel|<#\d+>|#?[\w-]+)\s+(?:slower|slow)|slow\s+down\s+(this\s+channel|<#\d+>|#?[\w-]+))(?:\s+(?:to\s+)?(\d+)\s*s?)?$/i) ||
-      cleanPrompt.match(/^(?:make\s+(this\s+channel|<#\d+>|#?[\w-]+)\s+(\d+)\s*s?\s+slowmode)$/i);
+    const slowmodeMatch = cleanPrompt.match(/^(?:set\s+|put\s+)?slowmode\s+(?:to\s+)?(\d+)\s*(?:s|seconds?)?(?:\s+(?:on|in)\s+(this\s+channel|<#\d+>|#?[\w-]+))?$/i) ||
+      cleanPrompt.match(/^(?:put\s+slowmode\s+(?:on|in)\s+(this\s+channel|<#\d+>|#?[\w-]+)(?:\s+(?:to\s+)?(\d+)\s*(?:s|seconds?)?)?)$/i) ||
+      cleanPrompt.match(/^(?:make\s+(this\s+channel|<#\d+>|#?[\w-]+)\s+(?:slower|slow)|slow\s+down\s+(this\s+channel|<#\d+>|#?[\w-]+))(?:\s+(?:to\s+)?(\d+)\s*(?:s|seconds?)?)?$/i) ||
+      cleanPrompt.match(/^(?:make\s+(this\s+channel|<#\d+>|#?[\w-]+)\s+(\d+)\s*(?:s|seconds?)?\s+slowmode)$/i);
     if (slowmodeMatch) {
       let seconds = 10;
       let target = 'current';
       if (/slowmode\s+(?:to\s+)?(\d+)/i.test(cleanPrompt)) {
         seconds = parseInt(cleanPrompt.match(/slowmode\s+(?:to\s+)?(\d+)/i)[1], 10);
-      } else if (/to\s+(\d+)\s*s?/i.test(cleanPrompt)) {
-        seconds = parseInt(cleanPrompt.match(/to\s+(\d+)\s*s?/i)[1], 10);
-      } else if (/(\d+)\s*s?\s+slowmode/i.test(cleanPrompt)) {
-        seconds = parseInt(cleanPrompt.match(/(\d+)\s*s?\s+slowmode/i)[1], 10);
+      } else if (/(?:to|\s+)(\d+)\s*(?:s|seconds?)/i.test(cleanPrompt)) {
+        seconds = parseInt(cleanPrompt.match(/(?:to|\s+)(\d+)\s*(?:s|seconds?)/i)[1], 10);
+      } else if (/(\d+)\s*(?:s|seconds?)?\s+slowmode/i.test(cleanPrompt)) {
+        seconds = parseInt(cleanPrompt.match(/(\d+)\s*(?:s|seconds?)?\s+slowmode/i)[1], 10);
       }
 
       const targetMatch = cleanPrompt.match(/(?:(?:on|in|make|down)\s+)(this(?:\s+channel)?|<#\d+>|#?[\w-]+)/i);
@@ -1399,12 +1477,14 @@ export class IntentRouter {
       };
     }
 
-    // L. "timeout <target> for <N> minutes for/because <reason>"
-    const timeoutMatch = cleanPrompt.match(/^(?:timeout|mute)\s+(<@!?\d+>|@?[\w.-]+)\s+(?:for\s+)?(\d+|ten|five|fifteen|twenty|thirty|one|two)\s*(?:m|minutes?|mins?)?(?:\s+(?:for|because(?:\s+of)?)\s+(.+))?$/i);
+    // L. "timeout/mute/silence/shush <target> for <N> minutes for/because <reason>" or "put <target> in timeout for <N> minutes"
+    const timeoutMatch = cleanPrompt.match(/^(?:timeout|mute|silence|shush)\s+(?:the\s+(?:user|member)\s+)?(<@!?\d+>|@?[\w.-]+)\s+(?:for\s+)?(\d+|one|two|five|ten|fifteen|twenty|thirty)\s*(?:m|minutes?|mins?)?(?:\s+(?:for|because(?:\s+of)?|due\s+to|reason:?)\s+(.+))?$/i) ||
+      cleanPrompt.match(/^put\s+(?:the\s+(?:user|member)\s+)?(<@!?\d+>|@?[\w.-]+)\s+(?:in|on)\s+timeout(?:\s+for\s+(\d+|one|two|five|ten|fifteen|twenty|thirty)\s*(?:m|minutes?|mins?)?)?(?:\s+(?:for|because(?:\s+of)?|due\s+to|reason:?)\s+(.+))?$/i);
     if (timeoutMatch) {
       const target = timeoutMatch[1].replace(/^@/, '');
       const wordsToNum = { one: 1, two: 2, five: 5, ten: 10, fifteen: 15, twenty: 20, thirty: 30 };
-      const durationMinutes = parseInt(timeoutMatch[2], 10) || wordsToNum[timeoutMatch[2].toLowerCase()] || 10;
+      const rawDur = timeoutMatch[2];
+      const durationMinutes = rawDur ? (parseInt(rawDur, 10) || wordsToNum[rawDur.toLowerCase()] || 10) : 10;
       const reason = timeoutMatch[3] ? timeoutMatch[3].trim().replace(/^of\s+/i, '') : 'No reason provided';
       logger.info('Routed through fast-path: timeout_member', { target, durationMinutes, reason });
       return {
@@ -1422,8 +1502,20 @@ export class IntentRouter {
       cleanPrompt.match(/^(?:create|add|make)\s+role\s+["']?([^"']+)["']?(?:\s+(?:with\s+)?color\s+["']?([^"']+)["']?)?$/i);
     if (createRoleMatch) {
       const roleName = createRoleMatch[1].trim();
+      if (createRoleMatch[2] && (resolveColor(createRoleMatch[2]) === null || /^(?:a\s+)?color$/i.test(createRoleMatch[2].trim()))) {
+        logger.info('Role creation requested with missing color parameter', { roleName });
+        return {
+          intent: 'create_role',
+          targetType: 'role',
+          targetRef: roleName,
+          args: { name: roleName },
+          missingParams: ['color'],
+          clarificationNeeded: `What color should the ${roleName} role have?`,
+          thought: `Create role @${roleName} awaiting color parameter`
+        };
+      }
       const rawColor = createRoleMatch[2] ? createRoleMatch[2].trim() : '#99AAB5';
-      const resolvedColor = resolveColor(rawColor) || rawColor;
+      const resolvedColor = resolveColor(rawColor) || '#99AAB5';
       logger.info('Routed through fast-path: create_role', { roleName, resolvedColor });
       return {
         intent: 'create_role',
@@ -1805,19 +1897,91 @@ export class IntentRouter {
       };
     }
 
-    // U. Follow-up role recolor: "change its color to blue too" / "recolor it to blue" / "change its color to <color>"
-    const recolorRoleFollowupMatch = cleanPrompt.match(/^(?:change\s+its\s+color\s+to\s+|recolor\s+it\s+to\s+|set\s+its\s+color\s+to\s+)([#a-zA-Z0-9_\s-]+?)(?:\s+too)?$/i);
-    if (recolorRoleFollowupMatch) {
-      const rawColor = recolorRoleFollowupMatch[1].trim().replace(/^["']|["']$/g, '');
+    // U. Comprehensive Role Recolor:
+    // Handles all canonical variations:
+    // - "Make the role blue."
+    // - "Change its colour to blue."
+    // - "Recolour @Artist in blue."
+    // - "Set @Artist's role color to blue."
+    // - "Make @Artist blue."
+    // - "Change @Artist's color to blue."
+    // - "Recolor @Artist blue."
+    let recolorRoleMatch = false;
+    let targetRoleRef = null;
+    let extractedColorRaw = null;
+
+    // Pattern 1: "recolor/recolour [role] <target> [in/to/as] <color>"
+    const p1 = cleanPrompt.match(/^(?:recolou?r|colou?r)\s+(?:the\s+)?(?:role\s+)?(<@&?\d+>|@?[\w\s.-]+?)\s+(?:in|to|as)?\s*([#a-zA-Z0-9_\s-]+?)(?:\s+too)?$/i);
+    if (p1 && resolveColor(p1[2].trim())) {
+      targetRoleRef = p1[1].trim();
+      extractedColorRaw = p1[2].trim();
+      recolorRoleMatch = true;
+    }
+
+    // Pattern 2: "set/change/update [the] <target>'s [role] color to/in/as <color>"
+    if (!recolorRoleMatch) {
+      const p2 = cleanPrompt.match(/^(?:set|change|update)\s+(?:the\s+)?(<@&?\d+>|@?[\w\s.-]+?)['’]s\s+(?:role\s+)?colou?r\s+(?:to|as|in)\s+([#a-zA-Z0-9_\s-]+?)(?:\s+too)?$/i);
+      if (p2 && resolveColor(p2[2].trim())) {
+        targetRoleRef = p2[1].trim();
+        extractedColorRaw = p2[2].trim();
+        recolorRoleMatch = true;
+      }
+    }
+
+    // Pattern 3: "make [the] [role] <target> [to/as/in] <color>" (e.g. "make @Artist blue", "make the role blue")
+    if (!recolorRoleMatch) {
+      const p3 = cleanPrompt.match(/^(?:make)\s+(?:the\s+)?(?:role\s+)?(<@&?\d+>|@?[\w\s.-]+?)(?:['’]s\s+colou?r)?\s+(?:to\s+|as\s+|in\s+)?([#a-zA-Z0-9_\s-]+?)(?:\s+too)?$/i);
+      if (p3 && resolveColor(p3[2].trim())) {
+        const candidateTarget = p3[1].trim();
+        if (!/^(?:slower|faster|slow|private|public|secret)$/i.test(p3[2].trim()) && !/^(?:general|chat|channel)$/i.test(candidateTarget)) {
+          targetRoleRef = candidateTarget;
+          extractedColorRaw = p3[2].trim();
+          recolorRoleMatch = true;
+        }
+      }
+    }
+
+    // Pattern 4: "change its/the role color to <color>" / "set its/the role color to <color>"
+    if (!recolorRoleMatch) {
+      const p4 = cleanPrompt.match(/^(?:change|set|update|make)\s+(?:its\s+colou?r|the\s+colou?r|it|the\s+role|that\s+role)\s+(?:to|as|in)?\s*([#a-zA-Z0-9_\s-]+?)(?:\s+too)?$/i);
+      if (p4 && resolveColor(p4[1].trim())) {
+        targetRoleRef = 'that role';
+        extractedColorRaw = p4[1].trim();
+        recolorRoleMatch = true;
+      }
+    }
+
+    // Pattern 5: "recolor it to <color>" / "recolor to <color>"
+    if (!recolorRoleMatch) {
+      const p5 = cleanPrompt.match(/^(?:recolou?r)\s+(?:it|the\s+role|that\s+role)?\s*(?:to|as|in)?\s*([#a-zA-Z0-9_\s-]+?)(?:\s+too)?$/i);
+      if (p5 && resolveColor(p5[1].trim())) {
+        targetRoleRef = 'that role';
+        extractedColorRaw = p5[1].trim();
+        recolorRoleMatch = true;
+      }
+    }
+
+    if (recolorRoleMatch && extractedColorRaw) {
+      const rawColor = extractedColorRaw.replace(/^["']|["']$/g, '');
       const resolvedColor = resolveColor(rawColor) || rawColor;
-      logger.info('Routed through fast-path: recolor that role', { resolvedColor });
+      
+      let finalTargetRole = targetRoleRef ? targetRoleRef.replace(/^@/, '') : 'that role';
+      if (/^(?:it|the\s+role|that\s+role|its|role)$/i.test(finalTargetRole)) {
+        finalTargetRole = executionContext?.recentContext?.lastMentionedRole ||
+          executionContext?.recentContext?.lastMentionedRoleName ||
+          executionContext?.recentContext?.lastCreatedRole ||
+          executionContext?.recentContext?.lastRole ||
+          'that role';
+      }
+
+      logger.info('Routed through fast-path: recolor role', { targetRole: finalTargetRole, resolvedColor });
       return {
         intent: 'edit_role',
         targetType: 'role',
-        targetRef: 'that role',
-        args: { targetRole: 'that role', color: resolvedColor },
+        targetRef: finalTargetRole,
+        args: { targetRole: finalTargetRole, color: resolvedColor },
         isHighImpact: false,
-        thought: `Change that role color to ${resolvedColor}`
+        thought: `Set role "${finalTargetRole}" color to ${resolvedColor}`
       };
     }
 
@@ -1837,6 +2001,58 @@ export class IntentRouter {
     // =========================================================================
     // MUSIC & VOICE PLAYBACK FAST-PATH INTENTS
     // =========================================================================
+
+    // M0. "music help" / "music capabilities" / "music status"
+    if (/^(?:music\s+(?:help|capabilities?|info|status|guide)|(?:voice|audio)\s+(?:help|capabilities?)|how\s+to\s+play\s+music)$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: music_help');
+      return {
+        intent: 'music_help',
+        targetType: null,
+        args: {},
+        isHighImpact: false,
+        thought: 'Display music engine capabilities and voice playback help'
+      };
+    }
+
+    // M0b. "shuffle" / "shuffle music" / "shuffle queue"
+    if (/^(?:shuffle(?:\s+(?:music|queue|songs?|tracks?))?|randomize\s+queue)$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: music_shuffle');
+      return {
+        intent: 'music_shuffle',
+        targetType: null,
+        args: {},
+        isHighImpact: false,
+        thought: 'Shuffle music queue'
+      };
+    }
+
+    // M0c. "clear queue" / "empty queue" / "purge queue"
+    if (/^(?:clear\s+queue|empty\s+queue|purge\s+queue)$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: music_clear');
+      return {
+        intent: 'music_clear',
+        targetType: null,
+        args: {},
+        isHighImpact: false,
+        thought: 'Clear music queue'
+      };
+    }
+
+    // M0d. "loop track" / "loop queue" / "loop off" / "repeat song"
+    const loopMatch = cleanPrompt.match(/^(?:(?:set\s+)?loop(?:\s+mode)?|repeat)(?:\s+(off|track|song|queue|all))?$/i);
+    if (loopMatch) {
+      let mode = (loopMatch[1] || 'track').toLowerCase();
+      if (mode === 'song') mode = 'track';
+      if (mode === 'all') mode = 'queue';
+      logger.info('Routed through fast-path: music_loop', { mode });
+      return {
+        intent: 'music_loop',
+        targetType: null,
+        args: { mode },
+        isHighImpact: false,
+        thought: `Set loop mode to ${mode}`
+      };
+    }
 
     // M1. "play <query / URL>" / "play song <query>"
     const musicPlayMatch = cleanPrompt.match(/^(?:play(?:\s+(?:song|music|track))?|stream(?:\s+music)?)\s+(.+)$/i);
@@ -1948,6 +2164,164 @@ export class IntentRouter {
         args: {},
         isHighImpact: false,
         thought: 'Disconnect from voice channel'
+      };
+    }
+
+    // =========================================================================
+    // ADVANCED SERVER PLATFORM FAST-PATHS
+    // =========================================================================
+
+    // S1. Emergency Server Lockdown
+    if (/^(?:emergency\s+)?lockdown(?:\s+(?:the\s+)?server)?$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: lockdown_server');
+      return {
+        intent: 'lockdown_server',
+        targetType: 'server',
+        targetRef: 'current',
+        args: { reason: 'Emergency lockdown initiated via /go' },
+        isHighImpact: true,
+        thought: 'Enable emergency server lockdown across public channels'
+      };
+    }
+
+    if (/^(?:lift|disable|end|stop|unlock)\s+(?:the\s+)?(?:server\s+)?lockdown$/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: lift_lockdown');
+      return {
+        intent: 'lift_lockdown',
+        targetType: 'server',
+        targetRef: 'current',
+        args: { reason: 'Lockdown lifted via /go' },
+        isHighImpact: true,
+        thought: 'Lift emergency server lockdown and restore permissions'
+      };
+    }
+
+    // S2. Server Layout Templates
+    const applyTemplateMatch = cleanPrompt.match(/^(?:apply|use|install)\s+(?:server\s+)?template\s+["']?([^"'\n]+?)["']?$/i);
+    if (applyTemplateMatch) {
+      const tmpl = applyTemplateMatch[1].trim();
+      logger.info('Routed through fast-path: apply_server_template', { template: tmpl });
+      return {
+        intent: 'apply_server_template',
+        targetType: 'server',
+        targetRef: tmpl,
+        args: { template: tmpl },
+        isHighImpact: true,
+        thought: `Apply server layout template "${tmpl}"`
+      };
+    }
+
+    const previewTemplateMatch = cleanPrompt.match(/^preview\s+(?:server\s+)?template\s+["']?([^"'\n]+?)["']?$/i);
+    if (previewTemplateMatch) {
+      const tmpl = previewTemplateMatch[1].trim();
+      logger.info('Routed through fast-path: preview_server_template', { template: tmpl });
+      return {
+        intent: 'preview_server_template',
+        targetType: 'server',
+        targetRef: tmpl,
+        args: { template: tmpl },
+        isHighImpact: false,
+        thought: `Preview server layout template "${tmpl}"`
+      };
+    }
+
+    // S3. Ticket System
+    if (/^(?:set\s*up|setup|create)\s+(?:a\s+|the\s+)?ticket\s+system/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: setup_ticket_system');
+      return {
+        intent: 'setup_ticket_system',
+        targetType: 'channel',
+        targetRef: 'tickets',
+        args: {},
+        isHighImpact: false,
+        thought: 'Setup support ticket panel and routing'
+      };
+    }
+
+    // S4. Member Verification & Welcome
+    const verifyMatch = cleanPrompt.match(/^(?:set\s*up|setup|publish)\s+verification(?:\s+(?:in|to)\s+(#?[\w-]+))?$/i);
+    if (verifyMatch) {
+      const ch = verifyMatch[1] || 'current';
+      logger.info('Routed through fast-path: setup_verification', { channel: ch });
+      return {
+        intent: 'setup_verification',
+        targetType: 'channel',
+        targetRef: ch,
+        args: { channel: ch },
+        isHighImpact: false,
+        thought: `Setup verification button panel in ${ch}`
+      };
+    }
+
+    const welcomeMatch = cleanPrompt.match(/^(?:configure|setup)\s+welcome(?:\s+(?:in|to)\s+(#?[\w-]+))?$/i);
+    if (welcomeMatch) {
+      const ch = welcomeMatch[1] || 'current';
+      logger.info('Routed through fast-path: configure_welcome', { channel: ch });
+      return {
+        intent: 'configure_welcome',
+        targetType: 'channel',
+        targetRef: ch,
+        args: { channel: ch },
+        isHighImpact: false,
+        thought: `Configure welcome messages for ${ch}`
+      };
+    }
+
+    // S5. Community Utilities (Polls, Suggestions, Starboard)
+    const pollMatch = cleanPrompt.match(/^(?:create|start)\s+(?:a\s+)?poll(?:\s*:\s*|\s+)(.+)$/i);
+    if (pollMatch) {
+      const parts = pollMatch[1].split('?');
+      const question = (parts[0] ? parts[0] + '?' : pollMatch[1]).trim();
+      const options = parts[1] ? parts[1].split(/[,;]/).map(o => o.trim()).filter(Boolean) : ['Yes', 'No'];
+      logger.info('Routed through fast-path: create_poll', { question, options });
+      return {
+        intent: 'create_poll',
+        targetType: 'channel',
+        targetRef: 'current',
+        args: { question, options: options.length >= 2 ? options : ['Yes', 'No'] },
+        isHighImpact: false,
+        thought: `Create community poll: ${question}`
+      };
+    }
+
+    const sugMatch = cleanPrompt.match(/^(?:submit\s+)?suggestion(?:\s*:\s*|\s+)(.+)$/i);
+    if (sugMatch) {
+      const content = sugMatch[1].trim();
+      logger.info('Routed through fast-path: submit_suggestion', { content });
+      return {
+        intent: 'submit_suggestion',
+        targetType: 'channel',
+        targetRef: 'current',
+        args: { content },
+        isHighImpact: false,
+        thought: `Submit suggestion: ${content}`
+      };
+    }
+
+    const starboardMatch = cleanPrompt.match(/^(?:configure|setup)\s+starboard(?:\s+(?:in|to)\s+(#?[\w-]+))?$/i);
+    if (starboardMatch) {
+      const ch = starboardMatch[1] || 'starboard';
+      logger.info('Routed through fast-path: configure_starboard', { channel: ch });
+      return {
+        intent: 'configure_starboard',
+        targetType: 'channel',
+        targetRef: ch,
+        args: { channel: ch, threshold: 3 },
+        isHighImpact: false,
+        thought: `Configure starboard in ${ch}`
+      };
+    }
+
+    // S6. Server Analytics & Metrics
+    if (/^(?:show|view|get|display)\s+(?:the\s+)?(?:server\s+)?(?:analytics|metrics|stats|growth)/i.test(cleanPrompt)) {
+      logger.info('Routed through fast-path: view_analytics');
+      return {
+        intent: 'view_analytics',
+        targetType: 'server',
+        targetRef: 'current',
+        args: {},
+        isHighImpact: false,
+        thought: 'Retrieve aggregated privacy-safe server analytics'
       };
     }
 

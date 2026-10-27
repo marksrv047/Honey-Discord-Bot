@@ -1,54 +1,47 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, ComponentType } from 'discord.js';
 import { SecurityGate } from './security-gate.js';
-import { Logger } from './logger.js';
-
-const logger = new Logger('ConfirmationManager');
 
 /**
  * Handles confirmation workflow for high-impact or destructive operations.
  */
 export class ConfirmationManager {
   /**
-   * Maps internal action identifiers to clean, user-facing titles.
+   * High-impact actions that unconditionally require administrator confirmation.
    */
-  static formatActionTitle(actionName) {
-    if (!actionName) return 'Action';
-    const titles = {
-      update_server_name: 'Update server name',
-      update_server_description: 'Update server description',
-      update_server_icon: 'Update server icon',
-      update_server_banner: 'Update server banner',
-      create_role: 'Create role',
-      edit_role: 'Edit role',
-      delete_role: 'Delete role',
-      assign_role: 'Assign role',
-      remove_role: 'Remove role',
-      create_channel: 'Create channel',
-      edit_channel: 'Edit channel',
-      delete_channel: 'Delete channel',
-      rename_channel: 'Rename channel',
-      create_category: 'Create category',
-      rename_category: 'Rename category',
-      delete_category: 'Delete category',
-      move_channel_to_category: 'Move channel to category',
-      set_channel_permission: 'Set channel permission',
-      set_category_permission: 'Set category permission',
-      sync_category_permissions: 'Sync category permissions',
-      timeout_member: 'Timeout member',
-      remove_timeout: 'Remove timeout',
-      kick_member: 'Kick member',
-      ban_member: 'Ban member',
-      unban_member: 'Unban member',
-      purge_messages: 'Purge messages',
-      setup_ticket_system: 'Setup ticket system',
-      audit_server: 'Audit server',
-      configure_guild_policy: 'Configure server policy',
-      reset_guild_policy: 'Reset server policy'
-    };
-    if (titles[actionName]) return titles[actionName];
-    return String(actionName)
-      .replace(/_/g, ' ')
-      .replace(/\b\w/g, c => c.toUpperCase());
+  static HIGH_IMPACT_ACTIONS = new Set([
+    'delete_channel',
+    'delete_category',
+    'delete_role',
+    'ban_member',
+    'kick_member',
+    'purge_messages',
+    'softban_member',
+    'update_server_name',
+    'reset_guild_policy'
+  ]);
+
+  /**
+   * Determines whether an individual action is classified as high-impact.
+   */
+  static isHighImpactAction(action) {
+    if (!action) return false;
+    const actionName = typeof action === 'string' ? action : action.action;
+    if (!actionName) return false;
+    if (this.HIGH_IMPACT_ACTIONS.has(actionName)) return true;
+    if (actionName === 'purge_messages' && (action.count || 0) > 20) return true;
+    if (actionName.startsWith('undo_')) return true;
+    return false;
+  }
+
+  /**
+   * Determines whether a full action plan requires interactive confirmation.
+   */
+  static requiresConfirmation(plan) {
+    if (!plan) return false;
+    if (plan.isHighImpact) return true;
+    const actions = Array.isArray(plan.actions) ? plan.actions : [];
+    if (actions.length > 3) return true;
+    return actions.some(a => this.isHighImpactAction(a));
   }
 
   /**
@@ -56,18 +49,23 @@ export class ConfirmationManager {
    * Returns true if confirmed, false if cancelled or timed out.
    */
   static async requestConfirmation(interaction, plan, timeoutMs = 60000) {
-    const actions = Array.isArray(plan?.actions) ? plan.actions : [];
+    if (!interaction) return false;
+
+    const actions = Array.isArray(plan?.actions) ? plan.actions.filter(Boolean) : [];
 
     // 1. Truncate thought process if too long
     const thought = (plan?.thoughtProcess || 'Executing requested administrative changes.').slice(0, 500);
 
     // 2. Format and truncate action list safely within Discord's 4096 character limit
     const actionLines = actions.map((a, i) => {
-      const title = ConfirmationManager.formatActionTitle(a.action);
+      const title = ConfirmationManager.formatActionTitle(a?.action);
       const summary = ConfirmationManager.formatActionSummary(a);
       return `\`${i + 1}.\` **${title}** ${summary}`.trim();
     });
-    let actionText = actionLines.join('\n');
+
+    let actionText = actionLines.length > 0
+      ? actionLines.join('\n')
+      : '*No specific actions specified.*';
 
     if (actionText.length > 2500) {
       const truncatedLines = actionLines.slice(0, 15);
@@ -84,17 +82,25 @@ export class ConfirmationManager {
       .setTitle('Confirmation Required')
       .setDescription(description.slice(0, 4000)) // Hard guarantee under Discord's 4096 limit
       .setColor(0xE67E22)
-      .setFooter({ text: `Requester: ${interaction.user?.tag || interaction.user?.username || 'User'} • Expires in ${timeoutMs / 1000}s` });
+      .setFooter({
+        text: `Requester: ${interaction.user?.tag || interaction.user?.username || 'User'} • Expires in ${Math.round(timeoutMs / 1000)}s`.slice(0, 2048)
+      });
 
-    const token = SecurityGate.generateConfirmationToken(interaction.user.id, interaction.guild?.id || 'guild', actions);
+    const userId = interaction.user?.id || 'user';
+    const guildId = interaction.guild?.id || 'guild';
+    const interactionId = interaction.id || `int_${Date.now()}`;
+
+    const token = SecurityGate.generateConfirmationToken(userId, guildId, actions);
+    const confirmCustomId = `confirm_${interactionId}_${token}`;
+    const cancelCustomId = `cancel_${interactionId}_${token}`;
 
     const confirmBtn = new ButtonBuilder()
-      .setCustomId(`confirm_${interaction.id}_${token}`)
+      .setCustomId(confirmCustomId)
       .setLabel('Confirm & Execute')
       .setStyle(ButtonStyle.Danger);
 
     const cancelBtn = new ButtonBuilder()
-      .setCustomId(`cancel_${interaction.id}_${token}`)
+      .setCustomId(cancelCustomId)
       .setLabel('Cancel')
       .setStyle(ButtonStyle.Secondary);
 
@@ -102,112 +108,139 @@ export class ConfirmationManager {
 
     // Edit deferred/replied interaction or reply directly
     const shouldEdit = interaction.deferred || interaction.replied || typeof interaction.reply !== 'function';
-    let reply;
-    if (shouldEdit) {
-      await interaction.editReply({ content: '', embeds: [embed], components: [row] });
-      reply = typeof interaction.fetchReply === 'function'
-        ? await interaction.fetchReply().catch(() => null)
-        : null;
-    } else {
-      reply = await interaction.reply({ content: '', embeds: [embed], components: [row], fetchReply: true });
-    }
+    let message = null;
 
-    // Fallback: if fetchReply wasn't available or failed, use mock/editReply return value
-    if (!reply && typeof interaction.editReply === 'function') {
-      reply = await interaction.editReply({ content: '', embeds: [embed], components: [row] });
-    }
-
-    if (!reply || typeof reply.awaitMessageComponent !== 'function') {
-      logger.warn('Could not establish message component collector for confirmation');
+    try {
+      if (shouldEdit && typeof interaction.editReply === 'function') {
+        message = await interaction.editReply({ content: '', embeds: [embed], components: [row] });
+      } else if (typeof interaction.reply === 'function') {
+        message = await interaction.reply({ content: '', embeds: [embed], components: [row], fetchReply: true });
+      } else if (typeof interaction.followUp === 'function') {
+        message = await interaction.followUp({ content: '', embeds: [embed], components: [row], fetchReply: true });
+      }
+    } catch {
       return false;
     }
 
-    try {
-      const response = await reply.awaitMessageComponent({
-        filter: async (i) => {
-          const isTargetCustomId = i.customId === `confirm_${interaction.id}_${token}` ||
-                                   i.customId === `cancel_${interaction.id}_${token}`;
-          if (!isTargetCustomId) return false;
+    // Ensure we have a valid message instance to await component interactions on
+    if (!message || typeof message.awaitMessageComponent !== 'function') {
+      if (typeof interaction.fetchReply === 'function') {
+        message = await interaction.fetchReply().catch(() => null);
+      }
+    }
 
-          if (i.user.id !== interaction.user.id) {
-            await i.reply({
-              content: 'Only the user who initiated this command can confirm or cancel it.',
-              ephemeral: true
-            }).catch(() => {});
+    if (!message || typeof message.awaitMessageComponent !== 'function') {
+      return false;
+    }
+
+    // Await user button interaction
+    let response = null;
+    try {
+      response = await message.awaitMessageComponent({
+        filter: i => {
+          if (interaction.user?.id && i.user?.id !== interaction.user.id) {
+            if (typeof i.reply === 'function') {
+              i.reply({
+                content: '⛔ Only the operator who initiated this command can confirm or cancel it.',
+                ephemeral: true
+              }).catch(() => {});
+            }
             return false;
           }
-          return true;
+          return i.customId === confirmCustomId || i.customId === cancelCustomId;
         },
         time: timeoutMs,
         componentType: ComponentType.Button
       });
-
-      if (response.customId === `confirm_${interaction.id}_${token}`) {
-        // Cryptographically re-verify token before proceeding
-        const isValid = SecurityGate.verifyConfirmationToken(token, interaction.user.id, interaction.guild?.id || 'guild', actions);
-        if (!isValid) {
-          try {
-            await response.update({
-              content: 'Security Refusal: Confirmation token verification failed. Action parameters were altered or token was reused.',
-              embeds: [],
-              components: []
-            });
-          } catch {}
-          return false;
+    } catch {
+      // Timeout or collector error
+      try {
+        if (interaction.deferred || interaction.replied || typeof interaction.editReply === 'function') {
+          await interaction.editReply({
+            content: '⏳ **Confirmation timed out.** Operation aborted safely with no changes.',
+            embeds: [],
+            components: []
+          }).catch(() => {});
         }
+      } catch {}
+      return false;
+    }
 
-        try {
-          if (!response.replied && !response.deferred) {
-            await response.update({
-              content: 'Confirmation received. Proceeding with execution...',
-              embeds: [],
-              components: []
-            });
-          }
-        } catch (updateErr) {
-          logger.warn('Failed to update confirmation response message, proceeding with execution', { error: updateErr.message });
-        }
-        return true;
-      } else {
-        try {
-          if (!response.replied && !response.deferred) {
-            await response.update({
-              content: 'Operation cancelled. No server changes were made.',
-              embeds: [],
-              components: []
-            });
-          }
-        } catch (updateErr) {
-          logger.warn('Failed to update cancellation message', { error: updateErr.message });
+    // Process confirm vs cancel
+    if (response.customId === confirmCustomId) {
+      // Cryptographically re-verify token before proceeding
+      const isValid = SecurityGate.verifyConfirmationToken(token, userId, guildId, actions);
+      if (!isValid) {
+        if (typeof response.update === 'function') {
+          await response.update({
+            content: '🛑 **Security Refusal:** Confirmation token verification failed. Action parameters were altered or token was reused.',
+            embeds: [],
+            components: []
+          }).catch(() => {});
         }
         return false;
       }
-    } catch (err) {
-      const isTimeout = err?.code === 'InteractionCollectorError' || err?.message?.includes('time') || err?.name === 'TimeoutError';
-      if (!isTimeout) {
-        logger.warn('Confirmation encountered error during collection', { error: err?.message, code: err?.code });
-      }
 
-      if (interaction.deferred || interaction.replied || typeof interaction.editReply === 'function') {
-        const timeoutContent = isTimeout
-          ? 'Confirmation timed out. Operation aborted safely.'
-          : 'Confirmation aborted safely.';
-        await interaction.editReply({
-          content: timeoutContent,
+      if (typeof response.update === 'function') {
+        await response.update({
+          content: '✅ **Confirmation received.** Proceeding with execution...',
           embeds: [],
           components: []
-        }).catch(() => {});
+        }).catch(async () => {
+          if (typeof interaction.editReply === 'function') {
+            await interaction.editReply({
+              content: '✅ **Confirmation received.** Proceeding with execution...',
+              embeds: [],
+              components: []
+            }).catch(() => {});
+          }
+        });
+      }
+      return true;
+    } else {
+      if (typeof response.update === 'function') {
+        await response.update({
+          content: '🛑 **Operation cancelled.** No server changes were made.',
+          embeds: [],
+          components: []
+        }).catch(async () => {
+          if (typeof interaction.editReply === 'function') {
+            await interaction.editReply({
+              content: '🛑 **Operation cancelled.** No server changes were made.',
+              embeds: [],
+              components: []
+            }).catch(() => {});
+          }
+        });
       }
       return false;
     }
   }
 
   /**
+   * Maps internal action identifiers to clean, user-facing title strings.
+   */
+  static formatActionTitle(actionName) {
+    if (!actionName || typeof actionName !== 'string') return 'Action';
+    return actionName
+      .replace(/_/g, ' ')
+      .replace(/^./, s => s.toUpperCase());
+  }
+
+  /**
    * Formats action parameters for clean preview display.
    */
   static formatActionSummary(action) {
-    if (!action) return '';
-    switch (action.action) {
+    if (!action || typeof action !== 'object') return '';
+    const act = action.action || '';
+
+    if (act.startsWith('undo_')) {
+      const base = act.replace(/^undo_/, '').replace(/_/g, ' ');
+      const target = action.target || action.targetName || action.targetChannel || action.targetRole || action.targetMember || '';
+      return target ? `Reverse ${base} on \`${target}\`` : `Reverse ${base}`;
+    }
+
+    switch (act) {
       case 'update_server_name':
         return `to "${action.name || ''}"`;
       case 'update_server_description':
@@ -217,51 +250,55 @@ export class ConfirmationManager {
       case 'update_server_banner':
         return `(Updated from URL)`;
       case 'create_role':
-        return `\`${action.name || 'new role'}\` (${action.color || 'default'})`;
+        return `\`${action.name || action.roleName || 'new role'}\` (${action.color || 'default'})`;
       case 'edit_role':
-        return `Role \`${action.targetRole || ''}\``;
+        return `Role \`${action.targetRole || action.role || action.name || ''}\``;
       case 'delete_role':
-        return `Role \`${action.targetRole || ''}\``;
+        return `Role \`${action.targetRole || action.role || action.roleName || action.name || ''}\``;
       case 'assign_role':
-        return `Role \`${action.targetRole || action.role || ''}\` to \`${action.targetMember || action.targetMemberId || 'member'}\``;
+        return `Role \`${action.targetRole || action.role || ''}\` to \`${action.targetMember || action.target || ''}\``;
       case 'remove_role':
-        return `Role \`${action.targetRole || action.role || ''}\` from \`${action.targetMember || action.targetMemberId || 'member'}\``;
+        return `Role \`${action.targetRole || action.role || ''}\` from \`${action.targetMember || action.target || ''}\``;
       case 'create_channel':
-        return `\`#${action.name || 'unnamed'}\` (${action.type || 'GUILD_TEXT'})`;
+        return `\`#${action.name || action.channelName || 'unnamed'}\` (${action.type || 'GUILD_TEXT'})`;
       case 'edit_channel':
-        return `Channel \`${action.targetChannel || ''}\``;
-      case 'delete_channel':
-        return `Channel \`${action.targetChannel || ''}\``;
+        return `Channel \`${action.targetChannel || action.channel || action.name || ''}\``;
       case 'rename_channel':
-        return `\`#${action.targetChannel || action.targetRef || ''}\` to "${action.name || ''}"`;
+        return `Channel \`${action.targetChannel || action.channel || 'current'}\` to \`#${action.newName || action.name || ''}\``;
+      case 'delete_channel':
+        return `Channel \`${action.targetChannel || action.channel || action.channelName || action.name || ''}\``;
       case 'create_category':
-        return `\`${action.name || 'unnamed'}\``;
+        return `Category \`${action.name || 'new category'}\``;
       case 'rename_category':
-        return `\`${action.targetCategory || action.targetRef || ''}\` to "${action.name || ''}"`;
+        return `Category \`${action.targetCategory || action.category || 'current'}\` to \`${action.newName || action.name || ''}\``;
       case 'delete_category':
-        return `Category \`${action.targetCategory || action.targetRef || ''}\``;
-      case 'move_channel_to_category':
-        return `\`${action.targetChannel || ''}\` to \`${action.category || action.targetCategory || ''}\``;
-      case 'set_channel_permission':
-        return `for \`${action.targetRoleOrMember || ''}\` on \`${action.targetChannel || ''}\``;
-      case 'set_category_permission':
-        return `for \`${action.targetRoleOrMember || ''}\` on \`${action.targetCategory || ''}\``;
-      case 'sync_category_permissions':
-        return `Category \`${action.targetCategory || ''}\``;
-      case 'timeout_member':
-        return `User \`${action.targetMember || ''}\` for ${action.durationMinutes || 0}m`;
-      case 'remove_timeout':
-        return `User \`${action.targetMember || ''}\``;
-      case 'kick_member':
-        return `User \`${action.targetMember || ''}\``;
-      case 'ban_member':
-        return `User \`${action.targetMember || ''}\` (${action.reason || 'No reason'})`;
-      case 'unban_member':
-        return `User \`${action.targetMember || action.targetMemberId || ''}\``;
+        return `Category \`${action.targetCategory || action.category || ''}\``;
+      case 'lock_channel':
+        return `Channel \`${action.targetChannel || action.channel || 'current'}\``;
+      case 'unlock_channel':
+        return `Channel \`${action.targetChannel || action.channel || 'current'}\``;
+      case 'set_channel_slowmode':
+        return `${action.seconds || 0}s in \`${action.targetChannel || action.channel || 'current'}\``;
       case 'purge_messages':
-        return `${action.count || 5} messages in \`${action.targetChannel || action.targetRef || 'channel'}\``;
+        return `${action.count || 5} messages in \`${action.targetChannel || action.channel || 'current'}\``;
+      case 'set_channel_permission':
+        return `for \`${action.targetRoleOrMember || action.member || action.role || ''}\` on \`${action.targetChannel || action.channel || ''}\``;
+      case 'timeout_member':
+        return `User \`${action.targetMember || action.target || action.user || ''}\` for ${action.durationMinutes || action.duration || 0}m`;
+      case 'remove_timeout':
+        return `User \`${action.targetMember || action.target || action.user || ''}\``;
+      case 'change_nickname':
+        return `User \`${action.targetMember || action.target || ''}\` to "${action.nickname || action.newNickname || ''}"`;
+      case 'remove_nickname':
+        return `User \`${action.targetMember || action.target || ''}\``;
+      case 'kick_member':
+        return `User \`${action.targetMember || action.target || action.user || ''}\``;
+      case 'ban_member':
+        return `User \`${action.targetMember || action.target || action.user || ''}\` (${action.reason || 'No reason'})`;
+      case 'unban_member':
+        return `User \`${action.targetMember || action.target || action.user || ''}\``;
       case 'setup_ticket_system':
-        return `panel in \`#${action.channelName || 'tickets'}\``;
+        return `panel in \`#${action.channelName || action.name || 'tickets'}\``;
       case 'audit_server':
         return `scope: ${action.scope || 'all'}`;
       case 'configure_guild_policy':
@@ -269,8 +306,10 @@ export class ConfirmationManager {
       case 'reset_guild_policy':
         return `(reset to server default access rules)`;
       default:
+        if (action.targetRole || action.targetChannel || action.targetMember || action.target) {
+          return `Target: \`${action.targetRole || action.targetChannel || action.targetMember || action.target}\``;
+        }
         return '';
     }
   }
 }
-

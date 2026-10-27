@@ -22,6 +22,11 @@
   3. **Phase C (Post-Verification):** Re-fetches Discord live state after mutation to confirm changes succeeded before posting the report.
 - **Interactive Ticket System:** Generates a complete persistent ticket panel with Discord buttons (`🎫 Open Ticket`), creates private 1-on-1 channels, and includes a `🔒 Close Ticket` button.
 - **Safety Safeguards & Rollback (`/undo`):** High-impact or destructive actions (e.g., deleting channels/roles, banning members) trigger interactive button confirmation. All created resources are tracked in an in-memory ledger for one-click reversal.
+- **Three-Channel Audit & Logging System (`/modlog`):** Dedicated multi-channel separation for moderation, honeypot security, and bot operations:
+  - `#mod-logs`: Server-wide permanent moderation audit trail (bans, unbans, kicks, timeouts, warnings, message purges) with truthful actor attribution.
+  - `#honeypot-logs`: Temporary honeypot security evidence with automated 24h or 48h retention cleanup (deleting only bot log messages, never touching moderation logs).
+  - `#bot-logs`: Bot operational lifecycle events, server configuration mutations (roles, channels, permissions), and system health.
+- **Intrusion Honeypot Protection (`/honeypot`):** Specialized trap channel for compromised-account and raid bot detection, with strict mode instant kick and dual-record correlation linkage.
 
 ---
 
@@ -130,15 +135,37 @@ GEMINI_MODEL=gemini-2.0-flash
 
 ## 🧪 Running Automated Tests
 
-Run the comprehensive 25-test suite:
+Run the complete 574-test suite across all 54 test modules:
 ```powershell
 npm test
 ```
 
 ---
 
-## 💡 Example Natural Language Prompts (`/go`)
+## 📋 Slash Commands & Administration
 
+| Command | Purpose | Required Permissions |
+|---|---|---|
+| `/go <prompt>` | Primary natural language administrative operations | `Administrator` or `ManageGuild` |
+| `/modlog [prompt]` | Configure, inspect, and test the Three-Channel Logging system (`#mod-logs`, `#honeypot-logs`, `#bot-logs`) and set retention | `ManageGuild` |
+| `/honeypot` | Configure, inspect, toggle, and test the intrusion honeypot trap | `ManageGuild` |
+| `/diagnose` | Autonomous health monitoring, subsystem inspection, and self-recovery | `ManageGuild` |
+| `/undo` | Safe one-click rollback of previous mutating actions | `ManageGuild` |
+| `/help` | Interactive capability manual and command documentation | None |
+
+---
+
+## 💡 Example Natural Language Prompts (`/go` & `/modlog`)
+
+- **Three-Channel Logging Configuration:**
+  - `/modlog prompt: Set #mod-logs as the moderation logging channel`
+  - `/modlog prompt: Use #honeypot-logs for temporary Honeypot evidence`
+  - `/modlog prompt: Send bot activity and role changes to #bot-logs`
+  - `/modlog prompt: Keep Honeypot logs for 48 hours`
+  - `/modlog prompt: Test all three logging channels`
+- **Honeypot Trap Management:**
+  - `/honeypot setup` (Configures a dedicated honeypot channel with hidden read-only permissions)
+  - `/honeypot toggle` (Enables strict mode: instant kick on unauthorized message)
 - **Full Community Setup:**
   `/go prompt: Set up a gaming community with categories for Announcements, General Chat, and Voice Lounges. Create roles for Gamer (green) and Mod (cyan).`
 - **Private VIP Area:**

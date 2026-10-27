@@ -6,6 +6,13 @@ import { ActionLedger } from './recovery.js';
 import { ModLogService } from './mod-log.js';
 import { slashCommands } from './commands.js';
 import { TaskQueue, TaskQueueState } from './task-queue.js';
+import { SelfRoleManager } from './self-roles.js';
+import { PermissionAuditService, FeatureStatus } from './permission-audit.js';
+import { globalLifecycle } from './bot-lifecycle.js';
+import { globalCommandRegistry } from './command-registry.js';
+import { defaultPendingTaskManager } from './pending-task-manager.js';
+import { defaultConversationMemoryManager } from './conversation-memory.js';
+import { defaultContextResolutionPipeline } from './context-resolution-pipeline.js';
 
 const logger = new Logger('DiagnosticService');
 
@@ -97,7 +104,38 @@ export class DiagnosticService {
       return 'undo_troubleshooting';
     }
 
-    // 5. Moderation log persistence & delivery
+    // 5. Moderation log troubleshooting & diagnostics
+    if (
+      /(why\s+aren'?t\s+moderation\s+logs?\s+working|why\s+(are\s+)?logs?\s+not\s+(appearing|working|posting)|modlogs?\s+not\s+working)/i.test(clean)
+    ) {
+      return 'why_arent_modlogs_working';
+    }
+
+    if (
+      /(why\s+can'?t\s+(you|honey|the\s+bot)\s+create\s+roles?|why\s+are\s+roles?\s+(failing|blocked)|can'?t\s+create\s+roles?)/i.test(clean)
+    ) {
+      return 'why_cant_create_roles';
+    }
+
+    if (
+      /(check\s+whether\s+honeypot\s+is\s+configured|is\s+honeypot\s+configured|honeypot\s+configured\s+correctly)/i.test(clean)
+    ) {
+      return 'check_honeypot_configured';
+    }
+
+    if (
+      /(check\s+whether\s+music\s+(playback\s+is\s+)?ready|is\s+music\s+ready|is\s+playback\s+ready)/i.test(clean)
+    ) {
+      return 'check_music_ready';
+    }
+
+    if (
+      /(check\s+(bot\s+|honey\s+bot'?s?\s+)?permissions?|what\s+permissions\s+are\s+missing|audit\s+permissions?|missing\s+permissions?|permission\s+diagnostics?)/i.test(clean)
+    ) {
+      return 'permission_audit';
+    }
+
+    // 5b. Moderation log persistence & delivery
     if (
       /(moderation\s+logs?|modlog).*(persisted|persisting|saved|working|healthy|delivery)/i.test(clean) ||
       /check.*(moderation\s+logs?|modlog).*(persisted|status|channel|delivery)/i.test(clean) ||
@@ -151,8 +189,7 @@ export class DiagnosticService {
     if (
       /(discord|gateway)\s+(connection|connectivity|status)/i.test(clean) ||
       /(test|check).*(discord|gateway)/i.test(clean) ||
-      /is\s+(the\s+)?gateway\s+connected/i.test(clean) ||
-      /check\s+(bot\s+)?permissions/i.test(clean)
+      /is\s+(the\s+)?gateway\s+connected/i.test(clean)
     ) {
       return 'discord_connectivity';
     }
@@ -169,6 +206,34 @@ export class DiagnosticService {
       /(music|voice|audio|playback|stream|sound|player|vc)/i.test(clean)
     ) {
       return 'music_voice_health';
+    }
+
+    // 13. Self-roles & reaction-roles panel health
+    if (
+      /(self[- ]roles?|reaction[- ]roles?|role\s+panels?|role\s+menu)/i.test(clean)
+    ) {
+      return 'self_roles_health';
+    }
+
+    // 14. Honeypot & intrusion trap health
+    if (
+      /(honeypot|intrusion|trap|spambot\s+protection|honeypot\s+health|honeypot\s+status)/i.test(clean)
+    ) {
+      return 'honeypot_health';
+    }
+
+    // 15. Ghost-Online & command responsiveness
+    if (
+      /(is\s+(the\s+)?bot\s+online\s+but\s+unresponsive|why\s+is\s+(the\s+)?bot\s+online\s+but\s+not\s+responding|bot\s+unresponsive|online\s+but\s+unresponsive|ghost\s+online|why\s+aren'?t\s+commands\s+working|commands?\s+not\s+responding|check\s+responsiveness)/i.test(clean)
+    ) {
+      return 'ghost_online';
+    }
+
+    // 16. Pending tasks & conversational memory
+    if (
+      /(pending\s+tasks?|conversational\s+memory|memory\s+status|pending\s+operations?|context\s+memory|follow[- ]up\s+tasks?)/i.test(clean)
+    ) {
+      return 'pending_tasks_memory';
     }
 
     return 'general_health';
@@ -235,6 +300,21 @@ export class DiagnosticService {
         case 'feature_availability':
           return await this.diagnoseFeatureAvailability(context, correlationId);
 
+        case 'permission_audit':
+          return await this.diagnosePermissionAudit(context, correlationId);
+
+        case 'why_cant_create_roles':
+          return await this.diagnoseWhyCantCreateRoles(context, correlationId);
+
+        case 'why_arent_modlogs_working':
+          return await this.diagnoseWhyArentModlogsWorking(context, correlationId);
+
+        case 'check_honeypot_configured':
+          return await this.diagnoseCheckHoneypotConfigured(context, correlationId);
+
+        case 'check_music_ready':
+          return await this.diagnoseCheckMusicReady(context, correlationId);
+
         case 'discord_connectivity':
           return await this.diagnoseDiscordConnectivity(context, correlationId);
 
@@ -243,6 +323,18 @@ export class DiagnosticService {
 
         case 'music_voice_health':
           return await this.diagnoseMusicVoiceHealth(context, correlationId);
+
+        case 'self_roles_health':
+          return await this.diagnoseSelfRolesHealth(context, correlationId);
+
+        case 'honeypot_health':
+          return await this.diagnoseHoneypotHealth(context, correlationId);
+
+        case 'ghost_online':
+          return await this.diagnoseGhostOnline(context, correlationId);
+
+        case 'pending_tasks_memory':
+          return await this.diagnosePendingTasksMemory(context, correlationId);
 
         case 'general_health':
         default:
@@ -870,16 +962,425 @@ export class DiagnosticService {
   }
 
   /**
+   * Comprehensive Permission & Capability Audit Diagnostic.
+   */
+  static async diagnosePermissionAudit(context = {}, correlationId) {
+    const guild = context.guild;
+    if (!guild) {
+      return {
+        task: 'permission_audit',
+        status: DiagnosticStatus.FAILED,
+        response: 'Server context required to evaluate Discord permissions.',
+        correlationId
+      };
+    }
+
+    const audit = await PermissionAuditService.auditGuild(guild, context);
+    const status = audit.overallStatus === 'ready'
+      ? DiagnosticStatus.HEALTHY
+      : (audit.overallStatus === 'partially_ready' ? DiagnosticStatus.DEGRADED : DiagnosticStatus.FAILED);
+
+    let summary = `**🛡️ Honey Bot Permission & Capability Audit**\n`;
+    summary += `Server: **${audit.guildName}** (ID: \`${audit.guildId}\`)\n`;
+    summary += `Overall Status: **${audit.overallStatus.toUpperCase()}**\n\n`;
+
+    // Feature breakdown
+    summary += `**Feature Readiness Breakdown:**\n`;
+    for (const [domain, cap] of Object.entries(audit.capabilities || {})) {
+      const icon = cap.classification === FeatureStatus.READY ? '✅' : (cap.classification === FeatureStatus.PARTIAL ? '⚠️' : '❌');
+      summary += `  ${icon} **${cap.label}**: \`${cap.classification || cap.status.toUpperCase()}\`\n`;
+    }
+
+    // Missing permissions
+    if (audit.missingRecommended?.length > 0 && !audit.hasAdministrator) {
+      summary += `\n**Missing Permissions (${audit.missingRecommended.length}):**\n`;
+      for (const perm of audit.missingRecommended.slice(0, 8)) {
+        summary += `  • \`${perm}\` — Check Discord Server Settings > Roles\n`;
+      }
+      if (audit.missingRecommended.length > 8) {
+        summary += `  *...and ${audit.missingRecommended.length - 8} more.*\n`;
+      }
+    } else if (audit.hasAdministrator) {
+      summary += `\n*Bot has Administrator permission. Note: Role hierarchy restrictions still strictly apply.*\n`;
+    }
+
+    // Role Hierarchy
+    if (audit.roleHierarchy?.hierarchyWarning) {
+      summary += `\n**⚠️ Role Hierarchy Warning:**\n${audit.roleHierarchy.hierarchyWarning}\n`;
+    }
+
+    // Gateway Intents
+    if (audit.intents?.missingPrivileged?.length > 0) {
+      summary += `\n**⚠️ Missing Privileged Gateway Intents:**\n`;
+      for (const priv of audit.intents.missingPrivileged) {
+        summary += `  • **${priv.name}**: Enable in ${priv.setting}\n`;
+      }
+    }
+
+    summary += `\n*Commands not requiring missing permissions remain fully operational.*`;
+
+    return {
+      task: 'permission_audit',
+      status,
+      response: summary,
+      audit,
+      correlationId
+    };
+  }
+
+  /**
+   * Diagnoses why role creation or management is failing.
+   */
+  static async diagnoseWhyCantCreateRoles(context = {}, correlationId) {
+    const guild = context.guild;
+    if (!guild) {
+      return {
+        task: 'why_cant_create_roles',
+        status: DiagnosticStatus.FAILED,
+        response: 'Server context required to diagnose role management.',
+        correlationId
+      };
+    }
+
+    const audit = await PermissionAuditService.auditGuild(guild, context);
+    const botMember = guild.members?.me || await guild.members?.fetchMe?.().catch(() => null);
+    const hasManageRoles = Boolean(botMember?.permissions?.has?.(PermissionFlagsBits.ManageRoles) || botMember?.permissions?.has?.(PermissionFlagsBits.Administrator));
+    const roleCap = audit.capabilities?.roles;
+
+    if (!hasManageRoles) {
+      return {
+        task: 'why_cant_create_roles',
+        status: DiagnosticStatus.FAILED,
+        response:
+          '**Role Creation Diagnostic: Missing Permission**\n\n' +
+          '• **Affected Feature:** Role Creation and Assignment\n' +
+          '• **Root Cause:** Honey Bot lacks the `ManageRoles` permission in this server.\n' +
+          '• **Why Required:** Discord requires the `ManageRoles` permission to create, edit, or delete roles.\n' +
+          '• **Action Required:** Open Discord **Server Settings > Roles**, select Honey Bot\'s role, and enable **Manage Roles**.\n' +
+          '• **Other Features Status:** Channel management, moderation (for lower targets), and music playback remain usable.',
+        correlationId
+      };
+    }
+
+    if (audit.roleHierarchy?.hierarchyWarning) {
+      return {
+        task: 'why_cant_create_roles',
+        status: DiagnosticStatus.DEGRADED,
+        response:
+          '**Role Creation Diagnostic: Role Hierarchy Constraint**\n\n' +
+          '• **Affected Feature:** Role Modification & Assignment of Higher Roles\n' +
+          '• **Root Cause:** Discord Role Hierarchy Constraint.\n' +
+          `• **Details:** ${audit.roleHierarchy.hierarchyWarning}\n` +
+          '• **Why Required:** Discord enforces strict role hierarchy: a bot cannot edit, assign, or delete any role positioned equal to or higher than its own highest role, even if granted Administrator.\n' +
+          '• **Action Required:** Open Discord **Server Settings > Roles** and drag Honey Bot\'s role higher in the list.\n' +
+          '• **Other Features Status:** Creating new roles and managing roles below Honey Bot remain fully operational.',
+        correlationId
+      };
+    }
+
+    return {
+      task: 'why_cant_create_roles',
+      status: DiagnosticStatus.HEALTHY,
+      response:
+        '**Role Creation Diagnostic: Ready**\n\n' +
+        'Honey Bot has the `ManageRoles` permission and role hierarchy is satisfied. You can create roles using `/go prompt: create a role called VIP in gold`.',
+      correlationId
+    };
+  }
+
+  /**
+   * Diagnoses why moderation logs are not working or appearing.
+   */
+  static async diagnoseWhyArentModlogsWorking(context = {}, correlationId) {
+    const guild = context.guild;
+    if (!guild) {
+      return {
+        task: 'why_arent_modlogs_working',
+        status: DiagnosticStatus.FAILED,
+        response: 'Server context required to diagnose moderation logging.',
+        correlationId
+      };
+    }
+
+    const conf = ModLogService.getConfig(guild.id);
+    const modChannelId = conf?.modLogChannelId || conf?.channelId;
+
+    if (!modChannelId) {
+      return {
+        task: 'why_arent_modlogs_working',
+        status: DiagnosticStatus.DEGRADED,
+        response:
+          '**Moderation Log Diagnostic: Missing Configuration**\n\n' +
+          '• **Affected Feature:** Moderation Logging\n' +
+          '• **Root Cause:** No moderation log channel is configured for this server.\n' +
+          '• **Why Required:** Honey Bot requires a designated text channel to deliver audit reports.\n' +
+          '• **Action Required:** Run `/modlog prompt: Set #mod-logs as the moderation logging channel`.\n' +
+          '• **Other Features Status:** Moderation actions (/go ban, kick, timeout) continue to execute, but audit records cannot be delivered until a channel is configured.',
+        correlationId
+      };
+    }
+
+    const channel = guild.channels?.cache?.get?.(modChannelId) || await guild.channels?.fetch?.(modChannelId).catch(() => null);
+    if (!channel) {
+      return {
+        task: 'why_arent_modlogs_working',
+        status: DiagnosticStatus.FAILED,
+        response:
+          `**Moderation Log Diagnostic: Channel Missing**\n\n` +
+          `• **Affected Feature:** Moderation Log Delivery\n` +
+          `• **Root Cause:** The configured channel (ID: \`${modChannelId}\`) no longer exists in Discord.\n` +
+          `• **Action Required:** Configure a new log channel using \`/modlog prompt: Set #mod-logs as the moderation logging channel\`.\n` +
+          `• **Other Features Status:** Logging deliveries are queued safely in memory/disk and will not crash the bot.`,
+        correlationId
+      };
+    }
+
+    const botMember = guild.members?.me || await guild.members?.fetchMe?.().catch(() => null);
+    if (botMember && typeof botMember.permissionsIn === 'function') {
+      const perms = botMember.permissionsIn(channel);
+      const canView = perms.has(PermissionFlagsBits.ViewChannel);
+      const canSend = perms.has(PermissionFlagsBits.SendMessages);
+      const canEmbed = perms.has(PermissionFlagsBits.EmbedLinks);
+
+      if (!canView || !canSend || !canEmbed) {
+        const missing = [];
+        if (!canView) missing.push('ViewChannel');
+        if (!canSend) missing.push('SendMessages');
+        if (!canEmbed) missing.push('EmbedLinks');
+
+        return {
+          task: 'why_arent_modlogs_working',
+          status: DiagnosticStatus.FAILED,
+          response:
+            `**Moderation Log Diagnostic: Inaccessible Channel**\n\n` +
+            `• **Affected Feature:** Moderation Log Delivery\n` +
+            `• **Root Cause:** Honey Bot lacks ${missing.join(', ')} permission in channel #${channel.name}.\n` +
+            `• **Why Required:** The bot must have channel visibility, message posting, and embed permissions to post audit reports.\n` +
+            `• **Action Required:** Open **#${channel.name} > Edit Channel > Permissions** and allow Honey Bot to View Channel, Send Messages, and Embed Links.\n` +
+            `• **Other Features Status:** Moderation actions continue to execute normally; undelivered logs are preserved in queue.`,
+          correlationId
+        };
+      }
+    }
+
+    const hasViewAuditLog = Boolean(botMember?.permissions?.has?.(PermissionFlagsBits.ViewAuditLog) || botMember?.permissions?.has?.(PermissionFlagsBits.Administrator));
+    if (!hasViewAuditLog) {
+      return {
+        task: 'why_arent_modlogs_working',
+        status: DiagnosticStatus.DEGRADED,
+        response:
+          `**Moderation Log Diagnostic: Partial Attribution**\n\n` +
+          `• **Affected Feature:** External Moderation Event Attribution\n` +
+          `• **Root Cause:** Honey Bot lacks the \`ViewAuditLog\` permission.\n` +
+          `• **Impact:** Logs are delivered, but actions performed by staff outside Honey Bot (e.g. native Discord ban) will attribute "External Actor" without identifying the specific moderator.\n` +
+          `• **Action Required:** Grant **View Audit Log** to Honey Bot in Server Settings > Roles.`,
+        correlationId
+      };
+    }
+
+    return {
+      task: 'why_arent_modlogs_working',
+      status: DiagnosticStatus.HEALTHY,
+      response:
+        `**Moderation Log Diagnostic: Operational**\n\n` +
+        `Moderation logging is fully configured and operational in channel #${channel.name}. All required channel permissions and ViewAuditLog are verified.`,
+      correlationId
+    };
+  }
+
+  /**
+   * Diagnoses whether Honeypot is configured and ready.
+   */
+  static async diagnoseCheckHoneypotConfigured(context = {}, correlationId) {
+    const guild = context.guild;
+    if (!guild) {
+      return {
+        task: 'check_honeypot_configured',
+        status: DiagnosticStatus.FAILED,
+        response: 'Server context required to diagnose Honeypot subsystem.',
+        correlationId
+      };
+    }
+
+    const { HoneypotService } = await import('./honeypot-service.js');
+    const conf = HoneypotService.getConfig(guild.id);
+
+    if (!conf?.channelId || !conf.enabled) {
+      return {
+        task: 'check_honeypot_configured',
+        status: DiagnosticStatus.DEGRADED,
+        response:
+          '**Honeypot Diagnostic: Not Configured**\n\n' +
+          '• **Affected Feature:** Intrusion Honeypot & Compromised-Account Protection\n' +
+          '• **Root Cause:** Honeypot channel is not configured or is currently disabled.\n' +
+          '• **Action Required:** Run `/honeypot setup` to automatically generate a secured honeypot trap channel.\n' +
+          '• **Other Features Status:** All moderation, channel, and role commands remain operational.',
+        correlationId
+      };
+    }
+
+    const testRes = await HoneypotService.runDiagnosticTest(guild, context.invokingUser);
+    const status = testRes.healthy ? DiagnosticStatus.HEALTHY : DiagnosticStatus.DEGRADED;
+
+    return {
+      task: 'check_honeypot_configured',
+      status,
+      response: testRes.healthy
+        ? `**Honeypot Diagnostic: Operational**\n\nHoneypot trap is active in channel #${conf.channelName || conf.channelId} (Mode: ${conf.strictMode ? 'Strict (Instant Kick)' : 'Monitored'}). Bot has required KickMembers permission.`
+        : `**Honeypot Diagnostic: Issues Detected**\n\n${testRes.findings?.map(f => `• **${f.title}**: ${f.issue}`).join('\n') || 'Configuration or permission issues detected.'}`,
+      checks: testRes.checks,
+      correlationId
+    };
+  }
+
+  /**
+   * Diagnoses whether music playback is ready.
+   */
+  static async diagnoseCheckMusicReady(context = {}, correlationId) {
+    const guild = context.guild;
+    if (!guild) {
+      return {
+        task: 'check_music_ready',
+        status: DiagnosticStatus.FAILED,
+        response: 'Server context required to diagnose music readiness.',
+        correlationId
+      };
+    }
+
+    const botMember = guild.members?.me || await guild.members?.fetchMe?.().catch(() => null);
+    const hasConnect = Boolean(botMember?.permissions?.has?.(PermissionFlagsBits.Connect) || botMember?.permissions?.has?.(PermissionFlagsBits.Administrator));
+    const hasSpeak = Boolean(botMember?.permissions?.has?.(PermissionFlagsBits.Speak) || botMember?.permissions?.has?.(PermissionFlagsBits.Administrator));
+
+    if (!hasConnect || !hasSpeak) {
+      const missing = [];
+      if (!hasConnect) missing.push('Connect');
+      if (!hasSpeak) missing.push('Speak');
+
+      return {
+        task: 'check_music_ready',
+        status: DiagnosticStatus.FAILED,
+        response:
+          `**Music Readiness Diagnostic: Missing Permission**\n\n` +
+          `• **Affected Feature:** Voice & Music Playback\n` +
+          `• **Root Cause:** Honey Bot lacks ${missing.join(' and ')} permission in this server.\n` +
+          `• **Why Required:** Needed to join voice channels and transmit audio streams.\n` +
+          `• **Action Required:** Open Discord **Server Settings > Roles**, find Honey Bot's role, and enable **Connect** and **Speak**.\n` +
+          `• **Other Features Status:** Text commands, moderation, and channel management remain fully operational.`,
+        correlationId
+      };
+    }
+
+    const { MusicService } = await import('./music-service.js');
+    const diag = MusicService.getDiagnostics();
+
+    return {
+      task: 'check_music_ready',
+      status: diag.healthy ? DiagnosticStatus.HEALTHY : DiagnosticStatus.DEGRADED,
+      response:
+        `**Music Readiness Diagnostic: Ready**\n\n` +
+        `Honey Bot has \`Connect\` and \`Speak\` permissions. Audio player engine is ${diag.healthy ? 'healthy' : 'degraded'}. Join a voice channel and use \`/go prompt: play <song>\` to start listening.`,
+      correlationId
+    };
+  }
+
+  /**
+   * Diagnoses whether Honey Bot is in a Ghost-Online state (Gateway connected, but command dispatcher broken).
+   */
+  static async diagnoseGhostOnline(context = {}, correlationId) {
+    const client = context.client;
+    const watchdog = client?.watchdog || null;
+    const ghost = watchdog && typeof watchdog.detectGhostOnline === 'function'
+      ? watchdog.detectGhostOnline()
+      : { isGhostOnline: false, reason: null };
+    const lifecycleState = globalLifecycle.getState();
+    const registryCheck = globalCommandRegistry.verifyConsistency();
+    const isGatewayOnline = Boolean(client?.isReady?.());
+
+    if (ghost.isGhostOnline || !registryCheck.valid || lifecycleState === 'FAILED') {
+      const reasons = [];
+      if (ghost.isGhostOnline) reasons.push(ghost.reason);
+      if (!registryCheck.valid) reasons.push(`Command registry mismatch (${registryCheck.missingHandlers.length} missing handlers)`);
+      if (lifecycleState === 'FAILED') reasons.push(`Startup lifecycle in FAILED state (${globalLifecycle.lastError || 'critical error'})`);
+
+      return {
+        task: 'ghost_online',
+        status: DiagnosticStatus.FAILED,
+        response:
+          '**Ghost-Online Condition Detected: Unresponsive Command Pipeline**\n\n' +
+          '• **Condition:** Honey Bot appears "Online" in Discord member list, but cannot process slash commands.\n' +
+          `• **Root Cause:** ${reasons.join('; ')}\n` +
+          '• **Impact:** Interactions with `/go`, `/help`, or other commands will fail or time out.\n' +
+          '• **Recommended Action:** Execute a graceful service restart through your hosting platform supervisor, or run post-update validation.',
+        correlationId
+      };
+    }
+
+    return {
+      task: 'ghost_online',
+      status: DiagnosticStatus.HEALTHY,
+      response:
+        '**Responsiveness Diagnostic: Healthy**\n\n' +
+        `• **Discord Gateway:** ${isGatewayOnline ? 'Connected' : 'Offline'}\n` +
+        `• **Application Lifecycle:** \`${lifecycleState}\` (Ready to serve commands)\n` +
+        `• **Command Registry:** All ${registryCheck.commandCount} commands mapped to runtime handlers.\n` +
+        '• **Interaction Dispatcher:** Operational. No hung or timed-out commands detected.',
+      correlationId
+    };
+  }
+
+  /**
+   * Diagnoses pending-task memory and conversational continuity health.
+   */
+  static async diagnosePendingTasksMemory(context = {}, correlationId) {
+    const taskStats = defaultPendingTaskManager.getStats();
+    const memoryStats = defaultConversationMemoryManager.getStats();
+    const pipelineStats = defaultContextResolutionPipeline.getStats();
+
+    const isHealthy = taskStats.executing <= 5;
+    const responseText =
+      '**Conversational Memory & Pending Tasks Diagnostic**\n\n' +
+      `• **Status:** ${isHealthy ? 'Healthy & Operating within Limits' : 'Degraded'}\n` +
+      `• **Active Pending Tasks Waiting for Input:** ${taskStats.activeWaiting}\n` +
+      `• **Tasks Currently Executing:** ${taskStats.executing}\n` +
+      `• **Total Pending Tasks Stored:** ${taskStats.totalTasks}\n` +
+      `• **Expired / Cleaned Tasks:** ${taskStats.expired}\n` +
+      `• **Tracked Active Conversations:** ${memoryStats.activeConversations}\n` +
+      `• **Total Recent Conversation Turns:** ${memoryStats.totalTurns}\n` +
+      `• **Serialized Memory Size:** ~${Math.round(memoryStats.approximateSerializedBytes / 1024)} KB\n` +
+      `• **Successful Follow-Up Resolutions:** ${pipelineStats.resolvedFollowUps}\n` +
+      `• **Corrections Applied:** ${pipelineStats.correctionsApplied}\n` +
+      `• **Explicitly Cancelled Tasks:** ${pipelineStats.cancelledTasks}\n` +
+      `• **Concurrent Execution Lock Preventions:** ${pipelineStats.concurrentLockBlocks}`;
+
+    return {
+      task: 'pending_tasks_memory',
+      status: isHealthy ? DiagnosticStatus.HEALTHY : DiagnosticStatus.DEGRADED,
+      response: responseText,
+      structured: {
+        taskStats,
+        memoryStats,
+        pipelineStats
+      },
+      correlationId
+    };
+  }
+
+  /**
    * General system health check.
-   * Summarizes gateway, model connectivity, moderation logging, and command registration.
+   * Summarizes gateway, model connectivity, moderation logging, command registration, and ghost-online state.
    */
   static async diagnoseGeneralHealth(context = {}, correlationId) {
     const client = context.client;
     const guild = context.guild;
     const provider = (config.ai.provider || 'gemini').toLowerCase();
+    const watchdog = client?.watchdog || null;
 
-    // 1. Gateway
+    // 1. Gateway & Ghost-Online
     const isGatewayOnline = client?.isReady?.() ?? true;
+    const ghostCheck = watchdog && typeof watchdog.detectGhostOnline === 'function'
+      ? watchdog.detectGhostOnline()
+      : { isGhostOnline: false };
+    const lifecycleState = globalLifecycle.getState();
 
     // 2. Model reachability
     const modelCheck = await AIProvider.checkConnectivity(provider);
@@ -893,8 +1394,9 @@ export class DiagnosticService {
       modlogPending = (conf?.pendingDeliveries || []).length;
     }
 
-    // 4. Five commands registered
-    const commandCount = slashCommands?.length ?? 5;
+    // 4. Six commands registered & registry consistency
+    const registryCheck = globalCommandRegistry.verifyConsistency();
+    const commandCount = registryCheck.commandCount || 6;
 
     // 5. Task queue health
     const allTasks = TaskQueue.loadAllTasks();
@@ -911,6 +1413,15 @@ export class DiagnosticService {
     if (!isGatewayOnline) {
       status = DiagnosticStatus.FAILED;
       summary = 'Honey Bot is disconnected from Discord Gateway.';
+    } else if (ghostCheck.isGhostOnline) {
+      status = DiagnosticStatus.FAILED;
+      summary = `Honey Bot is connected to Discord Gateway, but the command execution system is unresponsive: ${ghostCheck.reason}.`;
+    } else if (lifecycleState === 'FAILED') {
+      status = DiagnosticStatus.FAILED;
+      summary = `Honey Bot startup lifecycle is in FAILED state: ${globalLifecycle.lastError || 'Initialization error'}.`;
+    } else if (!registryCheck.valid) {
+      status = DiagnosticStatus.DEGRADED;
+      summary = `Honey Bot command registry has ${registryCheck.missingHandlers.length} missing handler(s).`;
     } else if (modelCheck.status === 'failed') {
       status = DiagnosticStatus.DEGRADED;
       summary = `Honey Bot is connected to Discord, but the configured AI model (${provider}) is unreachable: ${modelCheck.error}.`;
@@ -922,7 +1433,7 @@ export class DiagnosticService {
       summary = `Honey Bot is connected to Discord. The configured model is reachable, but moderation-log delivery is degraded. ${modlogPending} log ${modlogPending > 1 ? 'deliveries are' : 'delivery is'} pending.`;
     } else {
       status = DiagnosticStatus.HEALTHY;
-      summary = `Honey Bot is connected to Discord. The configured model (${provider}) is reachable and operational. All 5 top-level slash commands are registered. Task queue is healthy.`;
+      summary = `Honey Bot is connected to Discord. The configured model (${provider}) is reachable and operational. All 6 slash commands are registered and verified. Task queue is healthy.`;
     }
 
     const checks = {
@@ -930,13 +1441,17 @@ export class DiagnosticService {
         status: isGatewayOnline ? 'healthy' : 'failed',
         details: isGatewayOnline ? `Online (Ping: ${context.client?.ws?.ping ?? 0}ms)` : 'Disconnected'
       },
+      'Command Responsiveness': {
+        status: !ghostCheck.isGhostOnline && lifecycleState !== 'FAILED' ? 'healthy' : 'failed',
+        details: ghostCheck.isGhostOnline ? `Ghost-Online: ${ghostCheck.reason}` : `Lifecycle: ${lifecycleState}`
+      },
       'AI Model Reachability': {
         status: modelCheck.status === 'succeeded' ? 'healthy' : 'failed',
         details: modelCheck.status === 'succeeded' ? `Operational (${provider})` : (modelCheck.error || 'Unreachable')
       },
       'Slash Commands': {
-        status: 'healthy',
-        details: `${commandCount} registered (/go, /modlog, /diagnose, /undo, /help)`
+        status: registryCheck.valid ? 'healthy' : 'degraded',
+        details: `${commandCount} registered (/go, /modlog, /diagnose, /undo, /help, /honeypot)`
       },
       'Task Execution Queue': {
         status: stuckTasks.length === 0 ? 'healthy' : 'degraded',
@@ -945,6 +1460,10 @@ export class DiagnosticService {
       'Moderation Logging': {
         status: modlogPending === 0 ? 'healthy' : 'degraded',
         details: modlogConfigured ? (modlogPending === 0 ? 'Active & operational' : `${modlogPending} deliveries pending`) : 'Not configured'
+      },
+      'Pending Tasks & Memory': {
+        status: 'healthy',
+        details: `Tasks Waiting: ${defaultPendingTaskManager.getStats().activeWaiting}, Tracked Turns: ${defaultConversationMemoryManager.getStats().totalTurns}`
       }
     };
 
@@ -1027,42 +1546,129 @@ export class DiagnosticService {
   static async diagnoseMusicVoiceHealth(context = {}, correlationId) {
     const guild = context.guild;
     const { MusicService } = await import('./music-service.js');
-    const subscription = guild ? MusicService.getSubscription(guild.id) : null;
-    const ffmpegOk = Boolean(process.env.FFMPEG_PATH);
-    const hasVoiceConnection = Boolean(subscription?.voiceConnection);
-    const isPlaying = subscription?.audioPlayer?.state?.status === 'playing';
-    const track = subscription?.currentTrack;
+    const diag = MusicService.getDiagnostics(guild?.id);
+    const ffmpegOk = diag.ffmpegAvailable;
+    const hasVoiceConnection = diag.connected;
+    const isPlaying = diag.playerStatus === 'playing';
+    const track = diag.currentTrack;
 
     const checks = {
       'FFmpeg Audio Transcoder': {
         status: ffmpegOk ? 'healthy' : 'failed',
-        details: ffmpegOk ? 'FFmpeg installed and ready.' : 'FFmpeg binary missing in environment.'
+        details: ffmpegOk ? `FFmpeg ready (${diag.ffmpegPath})` : 'FFmpeg binary missing in environment.'
+      },
+      'Opus Audio Encoder': {
+        status: diag.opusAvailable ? 'healthy' : 'failed',
+        details: diag.opusAvailable ? 'Opus encoder active (opusscript / libopus).' : 'Opus encoder unavailable.'
       },
       'Voice Connection': {
-        status: hasVoiceConnection ? 'healthy' : 'degraded',
-        details: hasVoiceConnection ? `Connected to voice channel (State: ${subscription.voiceConnection.state?.status}).` : 'Not currently connected to any voice channel.'
+        status: hasVoiceConnection ? 'healthy' : (diag.voiceStatus !== 'disconnected' ? 'degraded' : 'healthy'),
+        details: `Voice status: ${diag.voiceStatus} (Channel: ${diag.channelId || 'none'})`
       },
       'Audio Player': {
-        status: isPlaying ? 'healthy' : 'degraded',
-        details: isPlaying ? `Playing: "${track?.title || 'Unknown'}"` : `Status: ${subscription?.audioPlayer?.state?.status || 'idle'}`
+        status: isPlaying ? 'healthy' : (diag.playerStatus === 'autopaused' ? 'failed' : 'healthy'),
+        details: isPlaying
+          ? `Playing: "${track?.title || 'Unknown'}" (${diag.playbackDuration}ms rendered)`
+          : `Status: ${diag.playerStatus} (Lifecycle: ${diag.lifecycleState})`
       },
       'Queue State': {
         status: 'healthy',
-        details: `${subscription?.queue?.length || 0} track(s) in queue.`
+        details: `${diag.queueLength} track(s) in queue | Volume: ${diag.volume}% | Loop: ${diag.loopMode}`
       }
     };
 
-    const status = ffmpegOk ? (isPlaying ? DiagnosticStatus.HEALTHY : DiagnosticStatus.DEGRADED) : DiagnosticStatus.FAILED;
-    const summary = ffmpegOk
-      ? (hasVoiceConnection
-          ? (isPlaying ? `Music subsystem is actively playing "${track?.title}".` : `Connected to voice, audio player status is ${subscription?.audioPlayer?.state?.status || 'idle'}.`)
-          : 'Voice and music subsystem is operational. Connect to a voice channel and use `/go prompt: play <song>` to start playback.')
-      : 'FFmpeg transcoder is unavailable. Voice audio playback cannot function without FFmpeg.';
+    // If safe repair requested, trigger MusicService.repairGuildPlayback
+    if (context.repair || /(?:repair|fix|reset)\s+(?:music|voice|audio|player)/i.test(context.cleanPrompt || '')) {
+      const repairOutcome = await MusicService.repairGuildPlayback(guild?.id);
+      checks['Self-Repair'] = {
+        status: 'healthy',
+        details: repairOutcome.actionsTaken.join(' ')
+      };
+    }
+
+    const status = !ffmpegOk
+      ? DiagnosticStatus.FAILED
+      : (diag.playerStatus === 'autopaused'
+          ? DiagnosticStatus.FAILED
+          : (isPlaying || !hasVoiceConnection ? DiagnosticStatus.HEALTHY : DiagnosticStatus.DEGRADED));
+
+    const summary = !ffmpegOk
+      ? 'FFmpeg transcoder is unavailable. Voice audio playback cannot function without FFmpeg.'
+      : (isPlaying
+          ? `Music subsystem is actively delivering audio for "${track?.title}".`
+          : (hasVoiceConnection
+              ? `Connected to voice channel. Player state: ${diag.playerStatus} (Lifecycle: ${diag.lifecycleState}).`
+              : 'Voice and music subsystem is operational. Connect to a voice channel and use `/go prompt: play <song>` to start playback.'));
 
     return {
       task: 'music_voice_health',
       status,
       checks,
+      response: summary,
+      correlationId
+    };
+  }
+
+  /**
+   * Diagnoses persistent self-role panels, button handlers, and reaction role mappings.
+   */
+  static async diagnoseSelfRolesHealth(context = {}, correlationId) {
+    const guild = context.guild;
+    if (!guild) {
+      return {
+        task: 'self_roles_health',
+        status: DiagnosticStatus.UNKNOWN,
+        response: 'Self-roles diagnostic requires an active Discord server context.',
+        correlationId
+      };
+    }
+
+    const diag = await SelfRoleManager.diagnosePanels(guild);
+    let status = diag.healthy ? DiagnosticStatus.HEALTHY : DiagnosticStatus.DEGRADED;
+    let summary = `**Self-Role & Reaction-Role Panel Health**\n\n• Registered Panels: ${diag.totalPanels}\n• Bot Manage Roles Permission: ${diag.hasManageRoles ? 'Granted' : 'Missing'}`;
+
+    if (diag.findings.length > 0) {
+      status = DiagnosticStatus.DEGRADED;
+      summary += '\n\n**Detected Issues:**\n' + diag.findings.map(f => `• [${f.severity}] **${f.title}**: ${f.issue}`).join('\n');
+    } else if (diag.totalPanels > 0) {
+      summary += '\n• All registered self-role and reaction-role panels are healthy, verified in channel cache, and bot permissions satisfy hierarchy requirements.';
+    } else {
+      summary += '\n• No self-role or reaction-role panels are currently configured in this server.';
+    }
+
+    return {
+      task: 'self_roles_health',
+      status,
+      response: summary,
+      correlationId
+    };
+  }
+
+  /**
+   * Evaluates Honeypot channel configuration, permissions, and active enforcement.
+   */
+  static async diagnoseHoneypotHealth(context = {}, correlationId) {
+    const guild = context.guild;
+    if (!guild) {
+      return {
+        task: 'honeypot_health',
+        status: DiagnosticStatus.FAILED,
+        response: 'Valid Discord guild context required to diagnose honeypot subsystem.',
+        correlationId
+      };
+    }
+
+    const { HoneypotService } = await import('./honeypot-service.js');
+    const testRes = await HoneypotService.runDiagnosticTest(guild, context.invokingUser);
+    const status = testRes.healthy ? DiagnosticStatus.HEALTHY : DiagnosticStatus.DEGRADED;
+    const summary = testRes.healthy
+      ? 'Honeypot subsystem is healthy and verified operational in this server.'
+      : 'Honeypot subsystem has detected configuration or permission issues.';
+
+    return {
+      task: 'honeypot_health',
+      status,
+      checks: testRes.checks,
       response: summary,
       correlationId
     };

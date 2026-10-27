@@ -362,6 +362,60 @@ export class Verifier {
           };
         }
 
+        case 'publish_embed':
+        case 'create_embed': {
+          const verified = Boolean(executionResult?.success && (executionResult.messageId || executionResult.messagesSent > 0));
+          return {
+            action: actionObj.action,
+            status: verified ? 'COMPLETED' : 'FAILED',
+            verificationStatus: verified ? VerificationStatus.PASSED : VerificationStatus.FAILED,
+            intendedChange: `Publish embed to #${executionResult.channelName || actionObj.targetChannel}`,
+            observedOutcome: verified ? `Published embed to #${executionResult.channelName || actionObj.targetChannel} (Message ID: ${executionResult.messageId || 'confirmed'})` : 'Embed publishing failed',
+            verified,
+            details: executionResult.details || (verified ? 'Embed verified in target channel' : 'Embed could not be published')
+          };
+        }
+
+        case 'edit_embed': {
+          const verified = Boolean(executionResult?.success);
+          return {
+            action: actionObj.action,
+            status: verified ? 'COMPLETED' : 'FAILED',
+            verificationStatus: verified ? VerificationStatus.PASSED : VerificationStatus.FAILED,
+            intendedChange: `Edit embed in #${executionResult.channelName || actionObj.targetChannel}`,
+            observedOutcome: verified ? `Embed updated in #${executionResult.channelName || actionObj.targetChannel}` : 'Embed update failed',
+            verified,
+            details: executionResult.details || (verified ? 'Embed updated successfully' : 'Embed could not be updated')
+          };
+        }
+
+        case 'setup_role_panel':
+        case 'setup_role_menu': {
+          const verified = Boolean(executionResult?.success && executionResult.panelId);
+          return {
+            action: actionObj.action,
+            status: verified ? 'COMPLETED' : 'FAILED',
+            verificationStatus: verified ? VerificationStatus.PASSED : VerificationStatus.FAILED,
+            intendedChange: `Deploy self-role panel in #${executionResult.channelName || actionObj.channelName || 'roles'}`,
+            observedOutcome: verified ? `Self-role panel live in #${executionResult.channelName || 'roles'} (${executionResult.rolesCount || executionResult.roles?.length || 0} roles registered)` : 'Self-role panel setup failed',
+            verified,
+            details: executionResult.details || (verified ? 'Self-role panel deployed and registered in persistence' : 'Self-role panel deployment failed')
+          };
+        }
+
+        case 'configure_channel_preset': {
+          const verified = Boolean(executionResult?.success);
+          return {
+            action: actionObj.action,
+            status: verified ? 'COMPLETED' : 'FAILED',
+            verificationStatus: verified ? VerificationStatus.PASSED : VerificationStatus.FAILED,
+            intendedChange: `Configure ${actionObj.preset || 'preset'} permissions on #${executionResult.channelName || actionObj.targetChannel}`,
+            observedOutcome: verified ? `Channel permissions verified for #${executionResult.channelName || actionObj.targetChannel}` : 'Permission configuration failed',
+            verified,
+            details: executionResult.details || 'Channel permissions updated'
+          };
+        }
+
         default:
           return {
             action: actionObj.action,

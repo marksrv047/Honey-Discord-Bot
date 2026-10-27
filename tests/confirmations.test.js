@@ -133,3 +133,105 @@ test('Confirmations: formatActionSummary formats extended operations cleanly', (
     'User `user_123`'
   );
 });
+
+test('Confirmations: formatActionSummary formats undo, rename, lock, and slowmode operations', () => {
+  assert.equal(
+    ConfirmationManager.formatActionSummary({ action: 'undo_create_channel', target: 'announcements' }),
+    'Reverse create channel on `announcements`'
+  );
+  assert.equal(
+    ConfirmationManager.formatActionSummary({ action: 'rename_channel', targetChannel: 'old-name', newName: 'new-name' }),
+    'Channel `old-name` to `#new-name`'
+  );
+  assert.equal(
+    ConfirmationManager.formatActionSummary({ action: 'lock_channel', targetChannel: 'general' }),
+    'Channel `general`'
+  );
+  assert.equal(
+    ConfirmationManager.formatActionSummary({ action: 'set_channel_slowmode', targetChannel: 'general', seconds: 15 }),
+    '15s in `general`'
+  );
+  assert.equal(
+    ConfirmationManager.formatActionSummary({ action: 'change_nickname', targetMember: 'Alex', nickname: 'Phoenix' }),
+    'User `Alex` to "Phoenix"'
+  );
+  assert.equal(
+    ConfirmationManager.formatActionSummary(null),
+    ''
+  );
+  assert.equal(
+    ConfirmationManager.formatActionTitle(null),
+    'Action'
+  );
+});
+
+test('Confirmations: isHighImpactAction and requiresConfirmation detect destructive plans', () => {
+  assert.equal(ConfirmationManager.isHighImpactAction({ action: 'delete_channel' }), true);
+  assert.equal(ConfirmationManager.isHighImpactAction({ action: 'ban_member' }), true);
+  assert.equal(ConfirmationManager.isHighImpactAction({ action: 'purge_messages' }), true);
+  assert.equal(ConfirmationManager.isHighImpactAction({ action: 'create_role' }), false);
+
+  assert.equal(ConfirmationManager.requiresConfirmation({ isHighImpact: true, actions: [] }), true);
+  assert.equal(ConfirmationManager.requiresConfirmation({ actions: [{ action: 'delete_role' }] }), true);
+  assert.equal(ConfirmationManager.requiresConfirmation({ actions: [{ action: 'create_role' }] }), false);
+  assert.equal(ConfirmationManager.requiresConfirmation(null), false);
+});
+
+test('Confirmations: requestConfirmation returns false when user clicks cancel', async () => {
+  let updatedContent = '';
+  const mockInteraction = {
+    id: 'int_cancel',
+    user: { id: 'user_cancel', username: 'CancellingUser' },
+    deferred: true,
+    editReply: async (payload) => {
+      const cancelCustomId = payload.components[0].components[1].data.custom_id;
+      return {
+        awaitMessageComponent: async () => ({
+          customId: cancelCustomId,
+          update: async (upPayload) => {
+            updatedContent = upPayload.content;
+          }
+        })
+      };
+    }
+  };
+
+  const confirmed = await ConfirmationManager.requestConfirmation(mockInteraction, {
+    actions: [{ action: 'delete_channel', targetChannel: 'general' }]
+  });
+
+  assert.equal(confirmed, false);
+  assert.match(updatedContent, /Operation cancelled/);
+});
+
+test('Confirmations: requestConfirmation returns false when timeout occurs', async () => {
+  let timedOutContent = '';
+  const mockInteraction = {
+    id: 'int_timeout',
+    user: { id: 'user_timeout', username: 'TimeoutUser' },
+    deferred: true,
+    editReply: async (payload) => {
+      if (payload.components && payload.components.length > 0) {
+        return {
+          awaitMessageComponent: async () => {
+            throw new Error('Collector timed out');
+          }
+        };
+      }
+      timedOutContent = payload.content;
+    }
+  };
+
+  const confirmed = await ConfirmationManager.requestConfirmation(mockInteraction, {
+    actions: [{ action: 'ban_member', targetMember: 'bad_actor' }]
+  }, 100);
+
+  assert.equal(confirmed, false);
+  assert.match(timedOutContent, /Confirmation timed out/);
+});
+
+test('Confirmations: requestConfirmation safely returns false for null interaction', async () => {
+  const result = await ConfirmationManager.requestConfirmation(null, { actions: [] });
+  assert.equal(result, false);
+});
+

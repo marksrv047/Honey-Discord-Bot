@@ -7,104 +7,32 @@ import {
   EmbedBuilder
 } from 'discord.js';
 import { Logger } from './logger.js';
+import { SelfRoleManager } from './self-roles.js';
 
 const logger = new Logger('RoleMenu');
 
 export class RoleMenuManager {
   /**
    * Deploys an interactive self-assignable role dropdown menu.
+   * Delegates to SelfRoleManager for persistent tracking and multi-panel support.
    */
   static async setupRoleMenu(guild, options = {}) {
-    const channelName = options.channelName || 'roles';
-    const title = options.title || '🎭 Self-Assignable Roles';
-    const description = options.description || 'Select a role from the dropdown below to assign or remove it:';
-    const roleConfigs = options.roles || [];
-
-    if (roleConfigs.length === 0) {
-      throw new Error('At least one role configuration is required to create a role menu.');
-    }
-
-    // 1. Ensure or find channel
-    let channel = guild.channels.cache.find(c => c.name.toLowerCase() === channelName.toLowerCase());
-    if (!channel) {
-      channel = await guild.channels.create({
-        name: channelName,
-        type: ChannelType.GuildText,
-        topic: 'Pick your self-assignable roles here!',
-        permissionOverwrites: [
-          {
-            id: guild.roles?.everyone?.id || guild.id,
-            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
-            deny: [PermissionFlagsBits.SendMessages]
-          }
-        ],
-        reason: 'Auto-created for Self-Assignable Roles Menu'
-      });
-      logger.info('Created role menu channel', { channelName: channel.name });
-    }
-
-    // 2. Ensure each role exists
-    const menuOptions = [];
-
-    for (const rConfig of roleConfigs.slice(0, 25)) {
-      let role = guild.roles.cache.find(r => r.name.toLowerCase() === rConfig.name.toLowerCase());
-      if (!role) {
-        role = await guild.roles.create({
-          name: rConfig.name,
-          color: rConfig.color || '#99AAB5',
-          mentionable: false,
-          reason: 'Created for self-assignable role menu'
-        });
-        logger.info('Created role for menu', { roleName: role.name });
-      }
-
-      const optionBuilder = new StringSelectMenuOptionBuilder()
-        .setLabel(role.name)
-        .setValue(role.id)
-        .setDescription(rConfig.description || `Toggle the ${role.name} role`);
-
-      if (rConfig.emoji) {
-        try {
-          optionBuilder.setEmoji(rConfig.emoji);
-        } catch {
-          // Ignore invalid emoji
-        }
-      }
-
-      menuOptions.push(optionBuilder);
-    }
-
-    // 3. Build Select Menu and Embed
-    const selectMenu = new StringSelectMenuBuilder()
-      .setCustomId('self_assign_roles')
-      .setPlaceholder('Choose a role to toggle...')
-      .addOptions(menuOptions);
-
-    const row = new ActionRowBuilder().addComponents(selectMenu);
-
-    const embed = new EmbedBuilder()
-      .setTitle(title)
-      .setDescription(description)
-      .setColor(0x9B59B6)
-      .setFooter({ text: 'Click a role again at any time to remove it' });
-
-    const sent = await channel.send({
-      embeds: [embed],
-      components: [row]
+    return await SelfRoleManager.setupPanel(guild, {
+      ...options,
+      panelType: options.panelType || 'select'
     });
-
-    return {
-      success: true,
-      channel: channel.name,
-      messageId: sent.id,
-      rolesCreatedOrLinked: menuOptions.length
-    };
   }
 
   /**
    * Handles persistent interaction when a member uses the role select menu.
    */
   static async handleSelectMenuInteraction(interaction) {
+    // 1. Try modern SelfRoleManager first
+    if (interaction.customId?.startsWith('role:sel:')) {
+      return await SelfRoleManager.handleSelectMenuInteraction(interaction);
+    }
+
+    // 2. Legacy fallback for old panels with customId 'self_assign_roles'
     if (!interaction.isStringSelectMenu() || interaction.customId !== 'self_assign_roles') {
       return false;
     }

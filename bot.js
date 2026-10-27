@@ -18,18 +18,36 @@ try {
 }
 
 import http from 'node:http';
-import { Client, GatewayIntentBits, Events, ActivityType } from 'discord.js';
+import { Client, GatewayIntentBits, Partials, Events, ActivityType } from 'discord.js';
 import { config, validateConfig } from './src/config.js';
 import { handleCommandInteraction } from './src/commands.js';
 import { TicketManager } from './src/tickets.js';
 import { RoleMenuManager } from './src/role-menu.js';
+import { SelfRoleManager } from './src/self-roles.js';
 import { registerGatewayEventListeners } from './src/gateway-events.js';
 import { ActionLedger } from './src/recovery.js';
 import { MusicService } from './src/music-service.js';
 import { DashboardManager } from './src/dashboard.js';
 import { ChannelGuard } from './src/channel-guard.js';
+import { HoneypotService } from './src/honeypot-service.js';
+import { OnboardingManager } from './src/onboarding.js';
 import { ExperienceStore } from './src/experience-store.js';
+import { SecurityEngine } from './src/security-engine.js';
+import { CaseManager } from './src/case-manager.js';
+import { MemberOnboardingManager } from './src/member-onboarding.js';
+import { ApplicationManager } from './src/applications.js';
+import { WorkflowEngine, WorkflowTrigger } from './src/workflow-engine.js';
+import { CommunityUtils } from './src/community-utils.js';
+import { TaskScheduler } from './src/scheduler.js';
+import { AnalyticsService } from './src/analytics-service.js';
+import { TaskQueue } from './src/task-queue.js';
+import { Watchdog, WatchdogEvent } from './src/watchdog.js';
 import { Logger } from './src/logger.js';
+import { StartupManager } from './src/startup-manager.js';
+import { InstanceLock } from './src/instance-lock.js';
+import { globalLifecycle } from './src/bot-lifecycle.js';
+import { defaultPendingTaskManager } from './src/pending-task-manager.js';
+import { defaultContextResolutionPipeline } from './src/context-resolution-pipeline.js';
 
 const logger = new Logger('Bot');
 
@@ -37,10 +55,61 @@ let botLoginStatus = 'initializing';
 let lastLoginError = null;
 let lastDebugInfo = 'No gateway packet received yet';
 
-// Built-in 24/7 Cloud Web Health-Check Server (Required for Koyeb, Render, etc.)
+// Autonomous Health Watchdog Engine
+const watchdog = new Watchdog();
+
+// Built-in 24/7 Cloud Web Health-Check Server (Supports Liveness, Readiness, and Subsystem breakdown)
 const port = process.env.PORT || 3050;
 const server = http.createServer(async (req, res) => {
-  if (req.url === '/test-discord') {
+  const url = req.url ? req.url.split('?')[0] : '/';
+
+  // 1. Liveness Check (/healthz or /live): Confirms hosting process & event loop are alive
+  if (url === '/healthz' || url === '/live') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({
+      status: 'alive',
+      processAlive: true,
+      uptimeSeconds: Math.floor(process.uptime()),
+      pid: process.pid,
+      timestamp: new Date().toISOString()
+    }, null, 2));
+  }
+
+  // 2. Readiness Check (/ready or /readyz): Confirms Discord gateway is connected & ready and storage is accessible
+  // Point external monitoring (e.g. UptimeRobot) to this endpoint for reliable alerts!
+  if (url === '/ready' || url === '/readyz') {
+    const isReady = watchdog.isSystemReady();
+    const statusCode = isReady ? 200 : 503;
+    res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({
+      status: isReady ? 'ready' : 'not_ready',
+      discordReady: watchdog.isDiscordReady(),
+      processAlive: watchdog.isProcessAlive(),
+      botUser: client?.user ? client.user.tag : null,
+      reconnectAttempt: watchdog.reconnectAttempt,
+      timestamp: new Date().toISOString()
+    }, null, 2));
+  }
+
+  // 3. Subsystem Health Breakdown (/health): Independent state tracking across all 10 subsystems (zero secrets)
+  if (url === '/health') {
+    const detailed = watchdog.getDetailedHealth();
+    const statusCode = detailed.overallReady ? 200 : 503;
+    res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify(detailed, null, 2));
+  }
+
+  // 4. Watchdog Diagnostic Event Log (/health/events)
+  if (url === '/health/events') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      events: watchdog.getEvents(50)
+    }, null, 2));
+  }
+
+  // 5. Direct Discord API Test (/test-discord)
+  if (url === '/test-discord') {
     try {
       const start = Date.now();
       const resDiscord = await fetch('https://discord.com/api/v10/gateway/bot', {
@@ -56,12 +125,14 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // 6. Root Endpoint (Backward Compatible): Distinguishes website availability from Discord bot health
   const isDiscordReady = Boolean(client && client.isReady());
   const statusCode = isDiscordReady ? 200 : 503;
 
   res.writeHead(statusCode, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({
-    status: isDiscordReady ? 'online' : 'discord_unavailable',
+    websiteStatus: 'online',
+    discordStatus: isDiscordReady ? 'connected' : 'offline',
     discordReady: isDiscordReady,
     bot: client.user ? client.user.tag : botLoginStatus,
     discordTokenConfigured: Boolean(config.discord.token),
@@ -69,7 +140,13 @@ const server = http.createServer(async (req, res) => {
     loginError: lastLoginError,
     gatewayDebug: lastDebugInfo,
     uptime: Math.floor(process.uptime()),
-    zeroCostAI: config.ai.provider
+    zeroCostAI: config.ai.provider,
+    endpoints: {
+      liveness: '/healthz',
+      readiness: '/readyz',
+      subsystems: '/health',
+      events: '/health/events'
+    }
   }, null, 2));
 });
 
@@ -118,38 +195,56 @@ if (!validation.valid) {
   logger.warn('Configuration issues detected:', { issues: validation.issues });
 }
 
-// Initialize Discord Client with essential guild administration intents
+// Initialize Discord Client with essential guild administration intents and partials
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildModeration,
-    GatewayIntentBits.GuildVoiceStates
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessageReactions
+  ],
+  partials: [
+    Partials.Message,
+    Partials.Channel,
+    Partials.Reaction
   ]
 });
 
-// Voice state update listener for automatic music cleanup and idle disconnect
+// Attach client to Autonomous Health Watchdog
+watchdog.client = client;
+client.watchdog = watchdog;
+
+// Voice state update listener for automatic music cleanup and 5-minute idle disconnect
 client.on(Events.VoiceStateUpdate, (oldState, newState) => {
-  const guildId = oldState.guild?.id || newState.guild?.id;
-  const sub = MusicService.getSubscription(guildId);
-  if (!sub) return;
-
-  const botId = client.user?.id;
-  // If bot itself was disconnected from voice
-  if (oldState.member?.id === botId && !newState.channelId) {
-    logger.info('Bot was disconnected from voice channel', { guildId });
-    sub.destroy();
-    return;
+  try {
+    MusicService.handleVoiceStateUpdate(oldState, newState, client.user?.id);
+  } catch (err) {
+    logger.error('Error in VoiceStateUpdate handler', { error: err.message });
   }
+});
 
-  // If bot is in a voice channel, check if all other users left
-  const voiceChannel = oldState.channel || newState.channel;
-  if (voiceChannel && botId && voiceChannel.members?.has?.(botId)) {
-    const nonBots = voiceChannel.members.filter(m => !m.user?.bot);
-    if (nonBots.size === 0) {
-      logger.info('All users left voice channel, scheduling idle disconnect', { guildId });
-      sub.resetIdleTimer();
+// Reaction Role Listeners: messageReactionAdd & messageReactionRemove
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+  try {
+    if (reaction.partial) {
+      await reaction.fetch().catch(() => {});
     }
+    await SelfRoleManager.handleReactionAdd(reaction, user);
+    await CommunityUtils.handleReaction(reaction, user, client);
+  } catch (err) {
+    logger.error('Error in MessageReactionAdd handler', { error: err.message });
+  }
+});
+
+client.on(Events.MessageReactionRemove, async (reaction, user) => {
+  try {
+    if (reaction.partial) {
+      await reaction.fetch().catch(() => {});
+    }
+    await SelfRoleManager.handleReactionRemove(reaction, user);
+  } catch (err) {
+    logger.error('Error in MessageReactionRemove handler', { error: err.message });
   }
 });
 
@@ -168,17 +263,20 @@ client.on('warn', (warning) => {
 
 client.on('error', (err) => {
   lastLoginError = err.message;
+  watchdog.trackError({ context: 'discord_client_error', error: err.message });
   logger.error('Discord Client Error:', { error: err.message });
 });
 
 client.on('shardError', (err, shardId) => {
   lastLoginError = `Shard ${shardId} Error: ${err.message}`;
+  watchdog.recordEvent(WatchdogEvent.GATEWAY_DISCONNECT, 'error', { shardId, error: err.message });
   logger.error(`Discord Shard ${shardId} Error:`, { error: err.message });
 });
 
 client.on('shardDisconnect', (event, shardId) => {
   lastLoginError = `Shard ${shardId} disconnected (code: ${event?.code || 'unknown'})`;
   botLoginStatus = 'disconnected';
+  watchdog.recordEvent(WatchdogEvent.GATEWAY_DISCONNECT, 'warn', { shardId, code: event?.code });
   logger.warn(`Discord Shard ${shardId} disconnected. Triggering reconnect check in 10s...`);
   scheduleReconnect(10000);
 });
@@ -186,11 +284,12 @@ client.on('shardDisconnect', (event, shardId) => {
 client.on('shardResume', (shardId, replayedEvents) => {
   botLoginStatus = 'connected';
   lastLoginError = null;
+  watchdog.recordEvent(WatchdogEvent.GATEWAY_RECONNECT, 'info', { shardId, replayedEvents });
   logger.info(`Discord Shard ${shardId} connection resumed (${replayedEvents} events replayed).`);
 });
 
 // Event: Client Ready
-client.once(Events.ClientReady, (readyClient) => {
+client.once(Events.ClientReady, async (readyClient) => {
   botLoginStatus = 'connected';
   logger.info(`✅ Agent online as ${readyClient.user.tag}`);
   logger.info(`🤖 Zero-Cost AI Provider: ${config.ai.provider.toUpperCase()} (${config.ai[config.ai.provider]?.model || 'default'})`);
@@ -203,22 +302,142 @@ client.once(Events.ClientReady, (readyClient) => {
 
   // Load and reconcile action history
   ActionLedger.loadAllHistory(readyClient);
+
+  // Reconcile in-flight tasks from persistent storage
+  try {
+    await TaskQueue.reconcileOnStartup(readyClient);
+  } catch (err) {
+    logger.error('Error reconciling task queue on startup', { error: err.message });
+  }
+
+  // Start background monitoring engines
+  CaseManager.startScheduler(readyClient);
+  TaskScheduler.startScheduler(readyClient);
+
+  watchdog.recordEvent(WatchdogEvent.GATEWAY_RECONNECT, 'info', {
+    user: readyClient.user.tag,
+    guilds: readyClient.guilds.cache.size
+  });
 });
 
-// Event: Message handling (ChannelGuard auto-moderation & mention response)
+// Event: Message handling (SecurityEngine, ChannelGuard, FAQs & Analytics)
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
 
-  // 1. ChannelGuard: Intercept unauthorized messages or spam in guarded/honeypot channels
-  try {
-    await ChannelGuard.handleMessage(message, client);
-  } catch (err) {
-    logger.error('Error in ChannelGuard.handleMessage', { error: err.message });
+  // Track channel message volume in privacy-conscious analytics
+  if (message.guild) {
+    AnalyticsService.recordMessage(message.guild.id, message.channel.id);
   }
 
-  // 2. Mention response in chat
+  // 0. Pending Task Follow-up check: process natural answers to outstanding questions in this channel
+  if (message.guild && message.author && !message.content.startsWith('/')) {
+    const activeTask = defaultPendingTaskManager.getPendingTask(
+      message.guild.id,
+      message.author.id,
+      message.channel.id
+    );
+    if (activeTask) {
+      try {
+        const resolution = await defaultContextResolutionPipeline.resolve(message.content, {
+          guild: message.guild,
+          member: message.member,
+          user: message.author,
+          channel: message.channel,
+          interaction: null,
+          executionContext: { guild: message.guild, invokingMember: message.member, invokingUser: message.author }
+        });
+        if (resolution.handled) {
+          if (resolution.message) {
+            await message.reply({ content: resolution.message }).catch(() => {});
+          }
+          return;
+        }
+      } catch (err) {
+        logger.error('Error handling chat message pending task resolution', { error: err.message });
+      }
+    }
+  }
+
+  // 1. Comprehensive Anti-Spam & ChannelGuard / Honeypot
+  try {
+    const securityCheck = await SecurityEngine.evaluateMessage(message, client);
+    if (securityCheck.isViolation) {
+      if (message.guild) AnalyticsService.recordSpamBlock(message.guild.id);
+      return; // Message handled and blocked
+    }
+
+    const handled = await HoneypotService.handleMessage(message, client);
+    if (!handled) {
+      await ChannelGuard.handleMessage(message, client);
+    }
+  } catch (err) {
+    logger.error('Error in Honeypot / ChannelGuard / Security message handler', { error: err.message });
+  }
+
+  // 2. Community Auto-Responses / FAQ
+  try {
+    const autoReplied = await CommunityUtils.checkAutoResponse(message);
+    if (autoReplied) return;
+  } catch {}
+
+  // 3. Automation Workflow Trigger on Message Create
+  if (message.guild) {
+    WorkflowEngine.trigger(WorkflowTrigger.MESSAGE_CREATE, {
+      guild: message.guild,
+      channel: message.channel,
+      message,
+      user: message.author,
+      member: message.member
+    }).catch(() => {});
+  }
+
+  // 4. Mention response in chat
   if (message.mentions.has(client.user)) {
     await message.reply(`Hello <@${message.author.id}>. I am Honey, a server administration assistant. Use \`/go <instruction>\` to execute server changes, or \`/diagnose\` for diagnostics.`).catch(() => {});
+  }
+});
+
+// Event: GuildMemberAdd -> Anti-Raid detection, member onboarding & auto-roles
+client.on(Events.GuildMemberAdd, async (member) => {
+  try {
+    if (member.guild) {
+      AnalyticsService.recordJoin(member.guild.id);
+      await SecurityEngine.handleMemberJoin(member, client);
+      await MemberOnboardingManager.handleMemberJoin(member, client);
+      await WorkflowEngine.trigger(WorkflowTrigger.MEMBER_JOIN, {
+        guild: member.guild,
+        member,
+        user: member.user
+      });
+    }
+  } catch (err) {
+    logger.error('Error handling GuildMemberAdd', { guildId: member.guild?.id, error: err.message });
+  }
+});
+
+// Event: GuildMemberRemove -> Farewell notifications & member departure analytics
+client.on(Events.GuildMemberRemove, async (member) => {
+  try {
+    if (member.guild) {
+      AnalyticsService.recordLeave(member.guild.id);
+      await MemberOnboardingManager.handleMemberLeave(member);
+      await WorkflowEngine.trigger(WorkflowTrigger.MEMBER_LEAVE, {
+        guild: member.guild,
+        member,
+        user: member.user
+      });
+    }
+  } catch (err) {
+    logger.error('Error handling GuildMemberRemove', { guildId: member.guild?.id, error: err.message });
+  }
+});
+
+// Event: Guild Create -> Automatic Onboarding Setup Flow
+client.on(Events.GuildCreate, async (guild) => {
+  try {
+    await OnboardingManager.handleGuildCreate(guild);
+  } catch (err) {
+    logger.error('Error handling GuildCreate onboarding', { guildId: guild?.id, error: err.message });
   }
 });
 
@@ -227,7 +446,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     // 1. Handle Slash Commands (/go, /undo, /diagnose, /modlog, /help, etc.)
     if (interaction.isChatInputCommand()) {
-      await handleCommandInteraction(interaction);
+      await handleCommandInteraction(interaction, { watchdog });
       return;
     }
 
@@ -237,9 +456,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
+    // 2a. Handle First-Run Setup & Permission Onboarding Interactions (Buttons, Select Menus)
+    if (interaction.customId?.startsWith('setup:')) {
+      const handled = await OnboardingManager.handleInteraction(interaction);
+      if (handled) return;
+    }
+
     // 2b. Handle Interactive Dashboard Components (Buttons, Select Menus, Modals)
     if (interaction.customId?.startsWith('dash:')) {
       const handled = await DashboardManager.handleInteraction(interaction);
+      if (handled) return;
+    }
+
+    // 2c. Handle Interactive Honeypot Components (Buttons, Select Menus)
+    if (interaction.customId?.startsWith('honeypot:')) {
+      const handled = await HoneypotService.handleInteraction(interaction);
       if (handled) return;
     }
 
@@ -270,8 +501,51 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    // 3. Handle Persistent Ticket Buttons (Open Ticket / Close Ticket) & Confirmation Buttons
+    // 2d. Handle Modals (Tickets, Applications)
+    if (interaction.isModalSubmit()) {
+      if (interaction.customId === 'ticket_create_modal') {
+        const handled = await TicketManager.handleModalSubmit(interaction);
+        if (handled) return;
+      }
+      if (interaction.customId?.startsWith('app:submit:')) {
+        const handled = await ApplicationManager.handleModalSubmit(interaction);
+        if (handled) return;
+      }
+    }
+
+    // 3. Handle Persistent Ticket Buttons, Self-Role Buttons & Confirmation Buttons
     if (interaction.isButton()) {
+      // Verification workflow
+      if (interaction.customId === 'onboard:verify_member') {
+        const handled = await MemberOnboardingManager.handleVerificationInteraction(interaction);
+        if (handled) return;
+      }
+
+      // Application review buttons
+      if (interaction.customId?.startsWith('app:')) {
+        const handled = await ApplicationManager.handleButtonInteraction(interaction);
+        if (handled) return;
+      }
+
+      // Community buttons (Polls, Suggestions, Event RSVPs)
+      if (interaction.customId?.startsWith('poll:')) {
+        const handled = await CommunityUtils.handleVote(interaction);
+        if (handled) return;
+      }
+      if (interaction.customId?.startsWith('sug:')) {
+        const handled = await CommunityUtils.handleSuggestionInteraction(interaction);
+        if (handled) return;
+      }
+      if (interaction.customId?.startsWith('rsvp:')) {
+        const handled = await TaskScheduler.handleRsvpInteraction(interaction);
+        if (handled) return;
+      }
+
+      if (interaction.customId?.startsWith('role:')) {
+        const handled = await SelfRoleManager.handleButtonInteraction(interaction);
+        if (handled) return;
+      }
+
       const handled = await TicketManager.handleButtonInteraction(interaction);
       if (handled) return;
 
@@ -314,6 +588,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   } catch (err) {
     logger.error('Unhandled interaction error', { error: err.message, stack: err.stack });
+    watchdog.trackError({ context: 'interaction_error', command: interaction?.commandName || 'interaction', error: err.message });
     try {
       if (interaction.deferred) {
         await interaction.editReply({ content: '❌ An unhandled system error occurred.', embeds: [], components: [] }).catch(() => {});
@@ -328,15 +603,26 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 // Graceful Shutdown & Process Diagnostics
 process.on('unhandledRejection', (reason) => {
-  logger.error('Unhandled Promise Rejection', { reason: reason instanceof Error ? reason.message : reason });
+  const errMsg = reason instanceof Error ? reason.message : String(reason);
+  watchdog.trackError({ context: 'unhandled_rejection', error: errMsg });
+  logger.error('Unhandled Promise Rejection', { reason: errMsg });
 });
 
 process.on('uncaughtException', (err) => {
+  watchdog.trackError({ context: 'uncaught_exception', error: err.message });
   logger.error('Uncaught Exception', { error: err.message, stack: err.stack });
 });
 
 const shutdown = () => {
   logger.info('Shutting down agent cleanly...');
+  try {
+    InstanceLock.release();
+    watchdog.stop();
+    TaskQueue.shutdown();
+    CaseManager.stopScheduler();
+    TaskScheduler.stopScheduler();
+    MusicService.shutdownAll();
+  } catch {}
   client.destroy();
   process.exit(0);
 };
@@ -388,5 +674,16 @@ async function startDiscordLogin() {
   }
 }
 
-// Initial login
-startDiscordLogin();
+// Start Autonomous Health Watchdog monitor
+watchdog.start();
+
+// Atomic Startup Manager Execution
+const startupManager = new StartupManager({
+  lifecycle: globalLifecycle,
+  client,
+  watchdog
+});
+
+startupManager.runStartup().catch(err => {
+  logger.error('StartupManager execution error', { error: err.message });
+});

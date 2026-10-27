@@ -1,5 +1,6 @@
 import { ChannelType, PermissionFlagsBits } from 'discord.js';
 import { checkRoleHierarchy, auditServerPermissions } from './permissions.js';
+import { PermissionAuditService } from './permission-audit.js';
 import { classifyDiscordError, ActionLedger } from './recovery.js';
 import { Verifier } from './verification.js';
 import { TicketManager } from './tickets.js';
@@ -12,6 +13,15 @@ import { ModLogService } from './mod-log.js';
 import { MusicService } from './music-service.js';
 import { DashboardManager } from './dashboard.js';
 import { ChannelGuard } from './channel-guard.js';
+import { SecurityEngine } from './security-engine.js';
+import { CaseManager } from './case-manager.js';
+import { MemberOnboardingManager } from './member-onboarding.js';
+import { ServerTemplateEngine } from './server-templates.js';
+import { ApplicationManager } from './applications.js';
+import { WorkflowEngine } from './workflow-engine.js';
+import { CommunityUtils } from './community-utils.js';
+import { TaskScheduler } from './scheduler.js';
+import { AnalyticsService } from './analytics-service.js';
 import { Logger } from './logger.js';
 
 const logger = new Logger('Executor');
@@ -41,20 +51,32 @@ export class Executor {
       lock_channel: 6,
       unlock_channel: 6,
       set_channel_permission: 6,
-      assign_role: 7,
-      remove_role: 7,
-      change_nickname: 8,
-      timeout_member: 8,
-      remove_timeout: 8,
-      kick_member: 9,
-      ban_member: 9,
-      unban_member: 9,
-      delete_channel: 10,
-      delete_role: 10,
-      setup_ticket_system: 11,
-      audit_server: 12,
-      list_channels: 13,
-      list_roles: 13
+      configure_channel_preset: 6,
+      publish_embed: 7,
+      create_embed: 7,
+      send_announcement: 7,
+      send_message: 7,
+      setup_role_panel: 8,
+      setup_role_menu: 8,
+      honeypot_setup: 8,
+      honeypot_enable: 8,
+      honeypot_disable: 8,
+      assign_role: 9,
+      remove_role: 9,
+      change_nickname: 10,
+      timeout_member: 10,
+      remove_timeout: 10,
+      kick_member: 11,
+      ban_member: 11,
+      unban_member: 11,
+      delete_channel: 12,
+      delete_role: 12,
+      setup_ticket_system: 13,
+      audit_server: 14,
+      list_channels: 15,
+      list_roles: 15,
+      honeypot_status: 15,
+      honeypot_test: 15
     };
 
     return [...actions].sort((a, b) => {
@@ -172,6 +194,16 @@ export class Executor {
   static async executeSingleAction(guild, action, executionId, invokingMember) {
     // Immutable Security Gate check on every single mutation pathway
     SecurityGate.evaluateActionSequence([action], invokingMember, guild);
+
+    // Permission & Role Hierarchy Pre-Flight Verification
+    const preflight = PermissionAuditService.validateActionPreflight(guild, action);
+    if (!preflight.capable) {
+      return {
+        success: false,
+        error: preflight.reason,
+        missingPermissions: preflight.missingPermissions
+      };
+    }
 
     switch (action.action) {
       case 'update_server_name': {
@@ -995,6 +1027,124 @@ export class Executor {
         return await Operations.leaveVoice(guild, ctx);
       }
 
+      case 'music_shuffle': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
+        return await Operations.shuffleMusic(guild, ctx);
+      }
+
+      case 'music_clear': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
+        return await Operations.clearMusicQueue(guild, ctx);
+      }
+
+      case 'music_loop': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
+        return await Operations.setMusicLoop(guild, action.mode || action.args?.mode || 'track', ctx);
+      }
+
+      case 'music_help': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : { invokingMember };
+        return await Operations.getMusicHelp(guild, ctx);
+      }
+
+      case 'publish_embed':
+      case 'create_embed': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId,
+          resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).replace(/^#/, '').toLowerCase())
+        };
+        const targetCh = action.targetChannel || action.channel || action.targetRef || 'current';
+        return await Operations.publishEmbed(guild, targetCh, action, ctx);
+      }
+
+      case 'edit_embed': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId,
+          resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).replace(/^#/, '').toLowerCase())
+        };
+        const targetCh = action.targetChannel || action.channel || action.targetRef || 'current';
+        const msgId = action.messageId || action.message;
+        return await Operations.editEmbed(guild, targetCh, msgId, action, ctx);
+      }
+
+      case 'setup_role_panel':
+      case 'setup_role_menu': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        return await Operations.setupRolePanel(guild, action, ctx);
+      }
+
+      case 'repair_role_panel': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        return await Operations.repairRolePanel(guild, action.panelId, ctx);
+      }
+
+      case 'delete_role_panel': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        return await Operations.deleteRolePanel(guild, action.panelId, action, ctx);
+      }
+
+      case 'configure_channel_preset': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId,
+          resolveTarget: async (ref) => /current|this/i.test(ref) ? invokingMember.guild?.channels?.cache?.first() : guild.channels.cache.find(c => c.id === ref || c.name.toLowerCase() === String(ref).replace(/^#/, '').toLowerCase())
+        };
+        const targetCh = action.targetChannel || action.channel || action.targetRef || 'current';
+        const preset = action.preset || action.presetType || 'rules';
+        return await Operations.configureChannelPreset(guild, targetCh, preset, action, ctx);
+      }
+
+      case 'honeypot_setup': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        return await Operations.setupHoneypot(guild, action, ctx);
+      }
+
+      case 'honeypot_enable': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        return await Operations.enableHoneypot(guild, ctx);
+      }
+
+      case 'honeypot_disable': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        return await Operations.disableHoneypot(guild, ctx);
+      }
+
+      case 'honeypot_status': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        return await Operations.getHoneypotStatus(guild, ctx);
+      }
+
+      case 'honeypot_test': {
+        const ctx = invokingMember instanceof ExecutionContext ? invokingMember : {
+          invokingUser: invokingMember?.user,
+          executionId
+        };
+        return await Operations.testHoneypot(guild, ctx);
+      }
+
       default:
         return { success: false, error: `Unknown action: ${action.action}` };
     }
@@ -1164,6 +1314,18 @@ export class Executor {
       case 'music_leave':
         return await Operations.leaveVoice(guild, executionContext);
 
+      case 'music_shuffle':
+        return await Operations.shuffleMusic(guild, executionContext);
+
+      case 'music_clear':
+        return await Operations.clearMusicQueue(guild, executionContext);
+
+      case 'music_loop':
+        return await Operations.setMusicLoop(guild, intentObj.args?.mode || 'track', executionContext);
+
+      case 'music_help':
+        return await Operations.getMusicHelp(guild, executionContext);
+
       case 'open_dashboard': {
         const dashboardPayload = await DashboardManager.buildDashboardPayload(guild, executionContext.invokingMember, executionContext.invokingUser, 'overview');
         return {
@@ -1260,6 +1422,190 @@ export class Executor {
         }
         const mentions = ids.map(id => `<#${id}>`).join(', ');
         return { success: true, details: `Guarded channels in this server: ${mentions}` };
+      }
+
+      case 'honeypot_setup':
+      case 'setup_honeypot': {
+        return await Operations.setupHoneypot(guild, intentObj.args || {}, executionContext);
+      }
+
+      case 'honeypot_enable':
+      case 'enable_honeypot': {
+        return await Operations.enableHoneypot(guild, executionContext);
+      }
+
+      case 'honeypot_disable':
+      case 'disable_honeypot': {
+        return await Operations.disableHoneypot(guild, executionContext);
+      }
+
+      case 'honeypot_status': {
+        return await Operations.getHoneypotStatus(guild, executionContext);
+      }
+
+      case 'honeypot_test':
+      case 'test_honeypot': {
+        return await Operations.testHoneypot(guild, executionContext);
+      }
+
+      // Security & Anti-Raid
+      case 'lockdown_server':
+      case 'enable_lockdown': {
+        const res = await SecurityEngine.enableLockdown(guild, intentObj.args?.reason || 'Initiated via /go');
+        return {
+          success: res.success,
+          details: res.success ? `Server lockdown enabled. ${res.channelsLocked} public channels secured.` : res.error
+        };
+      }
+
+      case 'lift_lockdown':
+      case 'disable_lockdown': {
+        const res = await SecurityEngine.liftLockdown(guild, intentObj.args?.reason || 'Initiated via /go');
+        return {
+          success: res.success,
+          details: res.success ? `Server lockdown lifted. ${res.channelsUnlocked} channels restored.` : res.error
+        };
+      }
+
+      // Server Templates
+      case 'apply_server_template': {
+        const templateId = intentObj.args?.template || intentObj.targetRef || 'COMMUNITY_HUB';
+        const res = await ServerTemplateEngine.applyTemplate(guild, templateId, executionContext.invokingMember);
+        return {
+          success: res.success,
+          details: res.success ? `Applied server layout "${res.templateName}". Created ${res.createdChannels?.length || 0} channels, ${res.createdCategories?.length || 0} categories, and ${res.createdRoles?.length || 0} roles.` : res.error
+        };
+      }
+
+      case 'preview_server_template': {
+        const templateId = intentObj.args?.template || intentObj.targetRef || 'COMMUNITY_HUB';
+        const preview = ServerTemplateEngine.generatePreview(templateId);
+        return {
+          success: Boolean(preview),
+          details: preview || `Template "${templateId}" not found.`
+        };
+      }
+
+      // Onboarding & Verification
+      case 'setup_verification': {
+        const ch = intentObj.targetRef ? (guild.channels.cache.get(intentObj.targetRef) || guild.channels.cache.find(c => c.name === intentObj.targetRef) || executionContext.channel) : executionContext.channel;
+        const res = await MemberOnboardingManager.publishVerificationPanel(guild, ch.id);
+        return {
+          success: res.success,
+          details: res.success ? `Verification panel published in <#${ch.id}>.` : res.error
+        };
+      }
+
+      case 'configure_welcome': {
+        const ch = intentObj.targetRef ? (guild.channels.cache.get(intentObj.targetRef) || guild.channels.cache.find(c => c.name === intentObj.targetRef) || executionContext.channel) : executionContext.channel;
+        MemberOnboardingManager.updateConfig(guild.id, {
+          welcome: {
+            enabled: true,
+            channelId: ch?.id,
+            message: intentObj.args?.message || 'Welcome to **{server}**, {user}!'
+          }
+        });
+        return {
+          success: true,
+          details: `Welcome messages configured for <#${ch.id}>.`
+        };
+      }
+
+      // Tickets & Applications
+      case 'setup_ticket_system': {
+        const res = await TicketManager.setupTicketSystem(guild, intentObj.args || {});
+        return {
+          success: res.success,
+          details: res.success ? `Support ticket panel created in #${res.channel} under category "${res.category}".` : res.error
+        };
+      }
+
+      case 'publish_application_panel': {
+        const ch = intentObj.targetRef ? (guild.channels.cache.get(intentObj.targetRef) || guild.channels.cache.find(c => c.name === intentObj.targetRef) || executionContext.channel) : executionContext.channel;
+        const res = await ApplicationManager.publishApplicationPanel(guild, ch.id, intentObj.args?.type || 'staff');
+        return {
+          success: res.success,
+          details: res.success ? `Application panel published in <#${ch.id}>.` : res.error
+        };
+      }
+
+      // Community Utilities
+      case 'create_poll': {
+        const ch = executionContext.channel;
+        const options = intentObj.args?.options || ['Option A', 'Option B'];
+        const poll = await CommunityUtils.createPoll(ch, {
+          question: intentObj.args?.question || intentObj.targetRef || 'Community Poll',
+          options,
+          creator: executionContext.invokingUser
+        });
+        return {
+          success: true,
+          details: `Community poll [${poll.pollId}] published in <#${ch.id}> with ${poll.options.length} options.`
+        };
+      }
+
+      case 'submit_suggestion': {
+        const ch = executionContext.channel;
+        const sug = await CommunityUtils.submitSuggestion(ch, {
+          content: intentObj.args?.content || intentObj.targetRef || 'Suggestion',
+          author: executionContext.invokingUser
+        });
+        return {
+          success: true,
+          details: `Suggestion [${sug.id}] submitted and published to <#${ch.id}>.`
+        };
+      }
+
+      case 'configure_starboard': {
+        const ch = intentObj.targetRef ? (guild.channels.cache.get(intentObj.targetRef) || guild.channels.cache.find(c => c.name === intentObj.targetRef) || executionContext.channel) : executionContext.channel;
+        CommunityUtils.setStarboardConfig(guild.id, {
+          enabled: true,
+          channelId: ch.id,
+          threshold: intentObj.args?.threshold || 3
+        });
+        return {
+          success: true,
+          details: `Starboard configured in <#${ch.id}> (Reaction threshold: ⭐ >= ${intentObj.args?.threshold || 3}).`
+        };
+      }
+
+      // Scheduling & Reminders
+      case 'schedule_reminder': {
+        const targetTime = intentObj.args?.time ? new Date(Date.now() + (intentObj.args.minutes || 10) * 60000) : new Date(Date.now() + 600000);
+        const task = TaskScheduler.scheduleReminder(guild.id, executionContext.channel.id, executionContext.invokingUser.id, intentObj.args?.message || 'Reminder alert', targetTime);
+        return {
+          success: true,
+          details: `Reminder scheduled [${task.id}] for <t:${Math.floor(targetTime.getTime() / 1000)}:R>.`
+        };
+      }
+
+      case 'create_event': {
+        const ch = executionContext.channel;
+        const startTime = intentObj.args?.time ? new Date(intentObj.args.time) : new Date(Date.now() + 3600000);
+        const evt = await TaskScheduler.createCommunityEvent(ch, {
+          title: intentObj.args?.title || intentObj.targetRef || 'Community Gathering',
+          description: intentObj.args?.description || 'Server event',
+          startTime,
+          location: intentObj.args?.location || 'General Voice',
+          creator: executionContext.invokingUser
+        });
+        return {
+          success: true,
+          details: `Event "${evt.title}" created [${evt.id}] in <#${ch.id}> with interactive RSVP buttons.`
+        };
+      }
+
+      // Analytics
+      case 'view_analytics': {
+        const metrics = AnalyticsService.getOverviewMetrics(guild.id);
+        return {
+          success: true,
+          details: `Server Analytics for **${guild.name}**:\n` +
+                   `• Today: ${metrics.today.joins} joins, ${metrics.today.leaves} leaves, ${metrics.today.messages} messages, ${metrics.today.spamBlocks} spam blocks.\n` +
+                   `• Past 7 Days: ${metrics.past7Days.joins} joins, ${metrics.past7Days.leaves} leaves (Net growth: ${metrics.past7Days.netGrowth >= 0 ? '+' : ''}${metrics.past7Days.netGrowth}), ${metrics.past7Days.messages} messages.\n` +
+                   `• Moderation: ${metrics.totalCasesRecorded} recorded cases.\n` +
+                   `• Active Automation Workflows: ${metrics.activeWorkflows}.`
+        };
       }
 
       case 'unsupported':
