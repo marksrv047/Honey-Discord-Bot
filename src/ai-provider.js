@@ -454,7 +454,8 @@ export class AIProvider {
             ],
             response_format: { type: 'json_object' },
             temperature: 0.2
-          })
+          }),
+          signal: AbortSignal.timeout(15000)
         });
 
         if (!response.ok) {

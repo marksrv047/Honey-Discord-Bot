@@ -208,7 +208,11 @@ const client = new Client({
     Partials.Message,
     Partials.Channel,
     Partials.Reaction
-  ]
+  ],
+  presence: {
+    status: 'online',
+    activities: [{ name: '/go <instruction>', type: ActivityType.Playing }]
+  }
 });
 
 // Attach client to Autonomous Health Watchdog
@@ -286,6 +290,12 @@ client.on('shardResume', (shardId, replayedEvents) => {
   lastLoginError = null;
   watchdog.recordEvent(WatchdogEvent.GATEWAY_RECONNECT, 'info', { shardId, replayedEvents });
   logger.info(`Discord Shard ${shardId} connection resumed (${replayedEvents} events replayed).`);
+  try {
+    client.user?.setPresence({
+      activities: [{ name: '/go <instruction>', type: ActivityType.Playing }],
+      status: 'online'
+    });
+  } catch {}
 });
 
 // Event: Client Ready

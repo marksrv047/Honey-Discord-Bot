@@ -361,6 +361,10 @@ async function handleGoCommand(interaction) {
     // Hard safety timeout guard so interaction is never left stranded
     timeoutGuard = setTimeout(async () => {
       if (isDone) return;
+      isDone = true;
+      if (watchdog && typeof watchdog.recordInteractionFailed === 'function') {
+        watchdog.recordInteractionFailed(interaction, executionId, 25000, new Error('Operation timed out after 25s'));
+      }
       try {
         await interaction.editReply({
           content: '⏳ **Operation Timed Out:** The request took longer than expected to process. Please try again.',

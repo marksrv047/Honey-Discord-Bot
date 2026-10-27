@@ -11,6 +11,7 @@ import { TaskQueue } from './task-queue.js';
 import { AIProvider } from './ai-provider.js';
 import { globalLifecycle, LifecycleState } from './bot-lifecycle.js';
 import { globalCommandRegistry } from './command-registry.js';
+import { ActivityType } from 'discord.js';
 
 const logger = new Logger('Watchdog');
 const __filename = fileURLToPath(import.meta.url);
@@ -723,6 +724,14 @@ export class Watchdog {
     if (this.client && !this.client.isReady()) {
       try {
         await this.client.login(config.discord.token.trim());
+        if (this.client?.user && typeof this.client.user.setPresence === 'function') {
+          try {
+            this.client.user.setPresence({
+              activities: [{ name: '/go <instruction>', type: ActivityType.Playing }],
+              status: 'online'
+            });
+          } catch {}
+        }
         const verification = await this.verifyDiscordFunctionality();
         if (verification.verified) {
           this.reconnectAttempt = 0;
