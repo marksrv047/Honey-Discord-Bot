@@ -557,6 +557,17 @@ export class Watchdog {
 
     const isReady = this.isDiscordReady();
     if (!isReady) {
+      // If application is still in active startup sequence, do not interfere with startup manager
+      const lifecycleState = globalLifecycle.getState();
+      if (
+        lifecycleState === LifecycleState.BOOTING ||
+        lifecycleState === LifecycleState.VALIDATING_CONFIG ||
+        lifecycleState === LifecycleState.INITIALIZING_SERVICES ||
+        lifecycleState === LifecycleState.CONNECTING_DISCORD
+      ) {
+        return;
+      }
+
       this.consecutiveFailures++;
       logger.warn('Watchdog detected Discord client is offline or disconnected', {
         consecutiveFailures: this.consecutiveFailures

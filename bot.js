@@ -684,9 +684,6 @@ async function startDiscordLogin() {
   }
 }
 
-// Start Autonomous Health Watchdog monitor
-watchdog.start();
-
 // Atomic Startup Manager Execution
 const startupManager = new StartupManager({
   lifecycle: globalLifecycle,
@@ -694,6 +691,10 @@ const startupManager = new StartupManager({
   watchdog
 });
 
-startupManager.runStartup().catch(err => {
+startupManager.runStartup().then(() => {
+  // Start watchdog monitor once startup completes
+  watchdog.start();
+}).catch(err => {
   logger.error('StartupManager execution error', { error: err.message });
+  watchdog.start();
 });
