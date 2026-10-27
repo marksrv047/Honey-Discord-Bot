@@ -480,7 +480,7 @@ export class Watchdog {
         },
         httpEndpoint: {
           status: SubsystemStatus.HEALTHY,
-          port: Number(process.env.PORT || 3050),
+          port: Number(process.env.PORT || 3000),
           endpoints: ['/healthz', '/readyz', '/health', '/health/events', '/test-discord']
         },
         discordGateway: {

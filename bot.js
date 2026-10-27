@@ -59,7 +59,7 @@ let lastDebugInfo = 'No gateway packet received yet';
 const watchdog = new Watchdog();
 
 // Built-in 24/7 Cloud Web Health-Check Server (Supports Liveness, Readiness, and Subsystem breakdown)
-const port = process.env.PORT || 3050;
+const port = process.env.PORT || 3000;
 const server = http.createServer(async (req, res) => {
   const url = req.url ? req.url.split('?')[0] : '/';
 
@@ -184,8 +184,8 @@ function setupKeepAlive() {
   }, pingIntervalMs);
 }
 
-server.listen(port, () => {
-  logger.info(`🌐 24/7 Cloud health-check endpoint listening on port ${port}`);
+server.listen(port, '0.0.0.0', () => {
+  logger.info(`🌐 24/7 Cloud health-check endpoint listening on port ${port} (0.0.0.0)`);
   setupKeepAlive();
 });
 

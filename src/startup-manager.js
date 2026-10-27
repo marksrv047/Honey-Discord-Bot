@@ -46,7 +46,15 @@ export class StartupManager {
       this.lifecycle.transition(LifecycleState.BOOTING, { pid: process.pid });
 
       if (!options.skipLock) {
-        const lock = InstanceLock.acquire({ force: options.forceLock });
+        const isCloudContainer = Boolean(
+          process.env.RENDER ||
+          process.env.RENDER_EXTERNAL_URL ||
+          process.env.RAILWAY_STATIC_URL ||
+          process.env.KOYEB ||
+          process.env.DYNO ||
+          process.env.DISCLOUD
+        );
+        const lock = InstanceLock.acquire({ force: options.forceLock || isCloudContainer });
         if (!lock.acquired) {
           const errMsg = `Duplicate instance detected (Existing PID: ${lock.existingPid}). Startup aborted to prevent gateway routing conflicts.`;
           logger.error(errMsg);
